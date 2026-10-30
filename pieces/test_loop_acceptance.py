@@ -499,8 +499,24 @@ class FakeHttpResponse:
         return json.dumps({"choices": [{"message": {"content": self.reply}}]}).encode("utf-8")
 
 
+def fake_groq_time(tmp_path, monkeypatch):
+    """A fake clock for the shared key ledger: sleep() advances the clock instead of waiting; offset 0 makes the first key deterministic."""
+    state = {"t": 1000.0, "sleeps": []}
+
+    def sleep(seconds):
+        state["sleeps"].append(seconds)
+        state["t"] += seconds
+    monkeypatch.setattr(fl, "_GROQ_CLOCK", lambda: state["t"])
+    monkeypatch.setattr(fl, "_GROQ_SLEEP", sleep)
+    monkeypatch.setattr(fl, "_GROQ_OFFSET", 0)
+    ledger = tmp_path / "ledger"
+    monkeypatch.setenv("GROQ_LEDGER_DIR", str(ledger))
+    return state
+
+
 def groq_env(tmp_path, monkeypatch, reply, seen=None, error=None):
     import urllib.request
+    fake_groq_time(tmp_path, monkeypatch)
     key_file = tmp_path / "gk.txt"
     key_file.write_text("gsk_FAKEKEY_for_tests_only_0123456789", encoding="utf-8")
     monkeypatch.setenv("GROQ_KEY_FILE", str(key_file))
@@ -566,3 +582,63 @@ def test_qwen_reviewer_uses_the_qwen_model_with_reasoning_none_and_gpt_oss_keeps
     assert seen[2]["model"] == "openai/gpt-oss-120b" and seen[2]["reasoning_effort"] == "low"
     root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq", "qwen"])
     assert job["reviewers"] == ["codex", "groq", "qwen"]
+
+
+# 12. Groq key rotation = the NVIDIA ledger pool, one request per key per window (owner 2026-10-30): fake HTTP, fake key files, fake clock ----------------
+def three_keys(tmp_path, monkeypatch, behave):
+    import urllib.request
+    import urllib.error
+    kd = tmp_path / "keys"
+    kd.mkdir(exist_ok=True)
+    for n in (1, 2, 3):
+        (kd / f"groq_key_{n}.txt").write_text(f"gsk_FAKE_KEY_{n}_" + "x" * 24, encoding="utf-8")
+    monkeypatch.delenv("GROQ_KEY_FILE", raising=False)
+    monkeypatch.setenv("GROQ_KEY_DIR", str(kd))
+    state = fake_groq_time(tmp_path, monkeypatch)
+    used = []
+
+    def fake_urlopen(req, timeout=None):
+        which = req.get_header("Authorization").split("_KEY_")[1][0]
+        used.append(which)
+        code = behave(which)
+        if code != 200:
+            raise urllib.error.HTTPError("u", code, "x", {}, None)
+        return FakeHttpResponse("fine" + NL + "## Verdict: FIX FIRST")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return used, state
+
+
+def test_groq_moves_to_the_next_key_on_429_and_stops_when_all_keys_fail(tmp_path, monkeypatch):
+    used, _ = three_keys(tmp_path, monkeypatch, lambda k: 200 if k == "2" else 429)
+    out = tmp_path / "r.md"
+    code, _ = fl._groq_runner(["groq", "-m", "m", "-o", str(out), "-"], "text", 30)
+    assert code == 0 and used == ["1", "2"] and "FIX FIRST" in out.read_text(encoding="utf-8")
+    other = tmp_path / "other"
+    other.mkdir()
+    used2, _ = three_keys(other, monkeypatch, lambda k: 429)
+    out2 = other / "r2.md"
+    code, _ = fl._groq_runner(["groq", "-m", "m", "-o", str(out2), "-"], "text", 30)
+    assert code == 1 and not out2.exists() and used2 == ["1", "2", "3"]               # every key tried exactly once
+
+
+def test_groq_allows_one_request_per_key_per_window_and_waits_for_the_next_free_key(tmp_path, monkeypatch):
+    used, state = three_keys(tmp_path, monkeypatch, lambda k: 200)
+    for n in range(3):
+        assert fl._groq_runner(["groq", "-m", "m", "-o", str(tmp_path / f"a{n}.md"), "-"], "text", 30)[0] == 0
+    assert sorted(used) == ["1", "2", "3"] and state["sleeps"] == []                  # three calls, three keys, no wait
+    assert fl._groq_runner(["groq", "-m", "m", "-o", str(tmp_path / "a3.md"), "-"], "text", 30)[0] == 0
+    assert len(used) == 4 and state["sleeps"] and max(state["sleeps"]) >= 59          # the fourth call waits for the 60 s window
+
+
+def test_groq_does_not_move_on_an_error_another_key_cannot_cure(tmp_path, monkeypatch):
+    used, _ = three_keys(tmp_path, monkeypatch, lambda k: 413)
+    code, _ = fl._groq_runner(["groq", "-m", "m", "-o", str(tmp_path / "a.md"), "-"], "text", 30)
+    assert code == 1 and used == ["1"]
+
+
+def test_groq_retires_a_key_that_is_refused(tmp_path, monkeypatch):
+    used, _ = three_keys(tmp_path, monkeypatch, lambda k: 402 if k == "1" else 200)
+    assert fl._groq_runner(["groq", "-m", "m", "-o", str(tmp_path / "a.md"), "-"], "text", 30)[0] == 0
+    assert used == ["1", "2"]
+    assert fl._groq_runner(["groq", "-m", "m", "-o", str(tmp_path / "b.md"), "-"], "text", 30)[0] == 0
+    assert "1" not in used[2:]                                                          # key 1 has a dead marker and is not used again

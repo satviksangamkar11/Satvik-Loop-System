@@ -524,19 +524,48 @@ QWEN_MODEL = "qwen/qwen3.8-27b"      # second Groq reviewer (owner 2026-10-30); 
 GROQ_MAX_INPUT_CHARS = 18000       # the free tier allows 8,000 tokens per minute: about 4,500 tokens of input and a short answer fit
 
 
+_GROQ_CLOCK = time.time        # hooks for tests: the shared key ledger waits with these
+_GROQ_SLEEP = time.sleep
+_GROQ_OFFSET = None            # None = start at pid % number of keys (as the NVIDIA pool does)
+GROQ_PER_KEY = 1               # owner 2026-10-30: ONE request per key per window (60 s)
+
+
+def _groq_keys() -> list:
+    """The Groq keys, read inside the process: GROQ_KEY_FILE (one file) or every groq_key_*.txt in GROQ_KEY_DIR (default secrets/ of the repo), sorted by name."""
+    one = os.environ.get("GROQ_KEY_FILE")
+    files = [Path(one)] if one else sorted(Path(os.environ.get("GROQ_KEY_DIR", str(Path(__file__).resolve().parents[2] / "secrets"))).glob("groq_key_*.txt"))
+    keys = []
+    for f in files:
+        try:
+            k = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
 def _groq_runner(cmd, text, timeout_s):
-    """Groq Cloud (free tier) as a COMPACT reviewer (owner 2026-10-30): same interface as the other runners (the report goes to the path after -o). The key is read inside this
-    process from GROQ_KEY_FILE or secrets/groq_key_1.txt and is never printed or written. An input over the budget is truncated and a READY from a truncated view is
-    downgraded to no verdict (a partial view cannot approve); any HTTP or network failure leaves no report (NONE)."""
+    """Groq Cloud (free tier) as a COMPACT reviewer (owner 2026-10-30): same interface as the other runners (the report goes to the path after -o). The keys are read inside this
+    process and are never printed or written. KEY ROTATION IS THE NVIDIA POOL's (owner 2026-10-30): `p1_claims.LedgerKeyPool`, a ledger shared by every process under OS locks, ONE
+    request per key per 60 s window (GROQ_PER_KEY), a failed key is cooled, 401/402/403 retire it; acquire() waits until a key is free. A failure another key can cure (429, 401/402/403)
+    moves on to the next key; any other error returns at once. When every key fails there is no report (NONE). An input over the budget is truncated and a READY from a
+    truncated view is downgraded to no verdict."""
     import urllib.error
     import urllib.request
     out = Path(cmd[cmd.index("-o") + 1])
     model = cmd[cmd.index("-m") + 1] if "-m" in cmd else GROQ_MODEL
-    key_file = Path(os.environ.get("GROQ_KEY_FILE", str(Path(__file__).resolve().parents[2] / "secrets" / "groq_key_1.txt")))
-    try:
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
+    keys = _groq_keys()
+    if not keys:
         return 1, "groq key file unreadable"
+    repo = Path(__file__).resolve().parents[2]
+    ledger_dir = Path(os.environ.get("GROQ_LEDGER_DIR", str(repo / "_loop" / "groq_ledger")))
+    try:
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        claims = _load_module_by_path("p1_claims_for_groq", repo / "pieces" / "p1_claims.py")
+        pool = claims.LedgerKeyPool(keys, str(ledger_dir), offset=_GROQ_OFFSET, per_key=GROQ_PER_KEY, clock=_GROQ_CLOCK, sleep=_GROQ_SLEEP)
+    except Exception:
+        return 1, "groq key ledger unavailable"
     truncated = len(text) > GROQ_MAX_INPUT_CHARS
     if truncated:
         head, tail = text[:3000], text[-1200:]
@@ -544,18 +573,34 @@ def _groq_runner(cmd, text, timeout_s):
         text = head + text[3000:3000 + max(room, 0)] + "\n[TRUNCATED: " + str(len(text) - GROQ_MAX_INPUT_CHARS) + " characters omitted for the free-tier token limit]\n" + tail
     body = {"model": model, "messages": [{"role": "user", "content": text}], "max_tokens": 1500, "temperature": 0.1,
             "reasoning_effort": "none" if model.startswith("qwen/") else "low"}
-    req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
-                                 headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "python-urllib/3"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-        reply = (data["choices"][0]["message"].get("content") or "").replace(key, "[REDACTED]")
-    except urllib.error.HTTPError as exc:
-        return 1, f"groq HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TimeoutError):
-        return 1, "groq call failed"
+    reply, last = "", "groq call failed"
+    for _ in range(len(keys)):
+        try:
+            index, key = pool.acquire()
+        except Exception:
+            return 1, "groq all keys unavailable"
+        req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
+                                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "python-urllib/3"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            pool.report(index, 200)
+            reply = (data["choices"][0]["message"].get("content") or "")
+            break
+        except urllib.error.HTTPError as exc:
+            last = f"groq HTTP {exc.code}"
+            if exc.code not in (429, 401, 402, 403) and not 500 <= exc.code < 600:
+                return 1, last                                  # another error (413, ...) is not cured by another key
+            try:
+                pool.report(index, exc.code)
+            except Exception:
+                return 1, last
+        except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TimeoutError):
+            return 1, "groq call failed"
+    for k in keys:
+        reply = reply.replace(k, "[REDACTED]")
     if not reply.strip():
-        return 1, "groq empty reply"
+        return 1, last if last != "groq call failed" else "groq empty reply"
     if truncated:
         reply = _re.sub(r"(?im)^\W*#*\s*verdict:?\s*READY\W*$", "## Verdict: NONE (input truncated, a partial view cannot approve)", reply)
     out.write_text(reply, encoding="utf-8")
