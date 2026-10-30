@@ -36,7 +36,7 @@ JOB_SCHEMA = {
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
-        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
+        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "qwen"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
         "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron"]}, "default": ["nemotron", "nemotron", "nemotron"]},
     },
     "additionalProperties": False,
@@ -520,6 +520,7 @@ def _haiku_runner(cmd, text, timeout_s):
 
 
 GROQ_MODEL = "openai/gpt-oss-120b"
+QWEN_MODEL = "qwen/qwen3.8-27b"      # second Groq reviewer (owner 2026-10-30); it takes reasoning_effort "none", gpt-oss takes "low"
 GROQ_MAX_INPUT_CHARS = 18000       # the free tier allows 8,000 tokens per minute: about 4,500 tokens of input and a short answer fit
 
 
@@ -541,7 +542,8 @@ def _groq_runner(cmd, text, timeout_s):
         head, tail = text[:3000], text[-1200:]
         room = GROQ_MAX_INPUT_CHARS - len(head) - len(tail)
         text = head + text[3000:3000 + max(room, 0)] + "\n[TRUNCATED: " + str(len(text) - GROQ_MAX_INPUT_CHARS) + " characters omitted for the free-tier token limit]\n" + tail
-    body = {"model": model, "messages": [{"role": "user", "content": text}], "max_tokens": 1500, "temperature": 0.1, "reasoning_effort": "low"}
+    body = {"model": model, "messages": [{"role": "user", "content": text}], "max_tokens": 1500, "temperature": 0.1,
+            "reasoning_effort": "none" if model.startswith("qwen/") else "low"}
     req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
                                  headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "python-urllib/3"}, method="POST")
     try:
@@ -635,6 +637,16 @@ def _default_reviewers_factory(root: Path, review_prompt: str | None = None, cod
                 )
             return reviewer
         reviewers["groq"] = make_groq_reviewer()
+
+        def make_qwen_reviewer():
+            def reviewer(files: list[Path], report_path: Path) -> dict:
+                report_path.unlink(missing_ok=True)
+                return codex_review_for_loop.run_codex_review(
+                    prompt_file, files, report_path, root=root, model=QWEN_MODEL, effort="low",
+                    runner=_with_verdict_suffix(_groq_runner),
+                )
+            return reviewer
+        reviewers["qwen"] = make_qwen_reviewer()
     return reviewers
 
 

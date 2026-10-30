@@ -554,3 +554,15 @@ def test_groq_http_error_or_missing_key_leaves_no_report(tmp_path, monkeypatch):
 def test_groq_is_a_valid_reviewer_name_in_a_job(tmp_path):
     root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq"])
     assert job["reviewers"] == ["codex", "groq"]
+
+
+def test_qwen_reviewer_uses_the_qwen_model_with_reasoning_none_and_gpt_oss_keeps_low(tmp_path, monkeypatch):
+    seen = []
+    out = groq_env(tmp_path, monkeypatch, "## Verdict: FIX FIRST", seen)
+    fl._groq_runner(["groq", "-m", fl.QWEN_MODEL, "-o", str(out), "-"], "short", 30)
+    assert seen[0]["model"] == "qwen/qwen3.8-27b" and seen[0]["reasoning_effort"] == "none"
+    out2 = tmp_path / "r2.md"
+    fl._groq_runner(["groq", "-m", fl.GROQ_MODEL, "-o", str(out2), "-"], "short", 30)
+    assert seen[2]["model"] == "openai/gpt-oss-120b" and seen[2]["reasoning_effort"] == "low"
+    root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq", "qwen"])
+    assert job["reviewers"] == ["codex", "groq", "qwen"]

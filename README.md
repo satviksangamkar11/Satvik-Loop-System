@@ -16,7 +16,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
    - A reply with a refused block for a job file is rejected as a whole.
 4. **Review.** When tests pass, four reviewers read the code at the same time:
    Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6.1-sol, low, read-only) and Haiku (low effort, reviewer only).
-   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`, key from `GROQ_KEY_FILE` or `secrets/groq_key_1.txt`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE).
+   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`, key from `GROQ_KEY_FILE` or `secrets/groq_key_1.txt`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). A second Groq reviewer `qwen` (`qwen/qwen3.8-27b`, reasoning_effort none) uses the same runner and limits.
    Each ends its reply with `## Verdict: READY` or `## Verdict: FIX FIRST`. FIX FIRST reports go back to the coder.
 5. **Result.** The job ends in one of these states:
 
