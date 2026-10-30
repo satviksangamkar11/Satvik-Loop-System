@@ -142,6 +142,18 @@ except Exception:
     codex_review_for_loop = None  # type: ignore[assignment]
 
 
+def _freeze_note(job: dict, root: Path) -> str:
+    """Fix rounds: test files that exist on disk are frozen; a test file that does not exist yet (the first reply was refused) must still be written."""
+    frozen = [x for x in job.get("tests", []) if (root / x).is_file()]
+    missing = [x for x in job.get("tests", []) if x not in frozen]
+    note = "Return every NON-TEST file of the job in full."
+    if frozen:
+        note += " The test files (" + ", ".join(frozen) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass."
+    if missing:
+        note += " These test files do not exist yet and MUST be returned in full: " + ", ".join(missing) + "."
+    return note
+
+
 def build_prompt(job: dict, root: Path, round_no: int, pytest_output: str | None = None, review_report: str | None = None) -> tuple[str, str]:
     system = (
         "You write python 3.14 modules and tests for the GranthStudio pipeline. "
@@ -171,10 +183,10 @@ def build_prompt(job: dict, root: Path, round_no: int, pytest_output: str | None
         if pytest_output:
             tail = pytest_output[-9000:] if len(pytest_output) > 9000 else pytest_output
             user_parts.append(f"PYTEST OUTPUT (last 9000 chars):\n{tail}\n")
-            user_parts.append("Fix exactly the problems shown above. Change nothing else. Return every NON-TEST file of the job in full. The test files (" + ", ".join(job.get("tests", [])) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass.\n")
+            user_parts.append("Fix exactly the problems shown above. Change nothing else. " + _freeze_note(job, root) + "\n")
         if review_report:
             user_parts.append(f"REVIEW REPORT:\n{review_report}\n")
-            user_parts.append("Fix exactly the problems in the review. Change nothing else. Return every NON-TEST file of the job in full. The test files (" + ", ".join(job.get("tests", [])) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass.\n")
+            user_parts.append("Fix exactly the problems in the review. Change nothing else. " + _freeze_note(job, root) + "\n")
     user = "\n".join(user_parts)
     return system, user
 
@@ -325,7 +337,7 @@ def run_job(
     caller: Callable[[str, str], tuple[str, dict]] | None = None,
     callers: dict[str, Callable[[str, str], tuple[str, dict]]] | None = None,
     reviewer: dict[str, Callable[[list[Path], Path], dict]] | Callable[[list[Path], Path], dict] | None = None,
-    pytest_runner: Callable[[list[str], Path, int, str | None], tuple[bool, str]] | None = None,
+    pytest_runner: Callable[..., tuple[bool, str]] | None = None,
     status_dir: Path | None = None,
     scrub_keys: list[str] | None = None,
 ) -> dict:

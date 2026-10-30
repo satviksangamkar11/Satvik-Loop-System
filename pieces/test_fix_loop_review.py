@@ -227,6 +227,17 @@ def test_the_fix_prompt_tells_the_coder_to_return_every_file():
     assert "Return every NON-TEST file of the job in full" in user and "FROZEN" in user and job["tests"][0] in user
 
 
+def test_a_missing_test_file_is_asked_for_not_frozen(tmp_path):
+    note = fl._freeze_note({"tests": ["pieces/test_a.py", "pieces/test_b.py"]}, _tmp_with(tmp_path, "pieces/test_a.py"))
+    assert "FROZEN" in note and "pieces/test_a.py" in note.split("MUST")[0] and "MUST be returned in full: pieces/test_b.py" in note
+
+
+def _tmp_with(tmp_path, rel):
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text("x", encoding="utf-8")
+    return tmp_path
+
+
 def test_a_job_without_a_reviewer_list_gets_all_three_standing_reviewers(tmp_path):
     root = make_root(tmp_path)
     job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py"], "tests": ["pieces/m.py"], "reference": [], "max_rounds": 1, "fixers": ["nemotron"] * 3}
