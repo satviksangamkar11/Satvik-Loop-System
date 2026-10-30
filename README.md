@@ -15,7 +15,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
    - In round 0, a test file that already existed may only be extended, never rewritten.
    - A reply with a refused block for a job file is rejected as a whole.
 4. **Review.** When tests pass, four reviewers read the code at the same time:
-   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6.1-sol, low effort, read-only) and Haiku (low effort, reviewer only).
+   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6-luna, high effort, read-only) and Haiku (low effort, reviewer only).
    Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). A second Groq reviewer `qwen` (`qwen/qwen3.8-27b`, reasoning_effort none) uses the same runner and limits. Groq keys are read inside the process from `secrets/groq_key_*.txt` (or `GROQ_KEY_FILE` / `GROQ_KEY_DIR`) and never printed. Key rotation uses the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): a ledger shared by all processes under OS locks (`_loop/groq_ledger`), ONE request per key per 60 s window, a failed key is cooled, 401/402/403 retire a key, 429 and 5xx move to the next key, any other error returns at once; the runner waits for a free key.
    Each ends its reply with `## Verdict: READY` or `## Verdict: FIX FIRST`. FIX FIRST reports go back to the coder.
 5. **Result.** The job ends in one of these states:
@@ -135,6 +135,7 @@ The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested l
 |---|---|
 | ba3a2e7 | A job stops after three consecutive failed repairs with an IDENTICAL failing-test set (state `needs_review`, `NEEDS_REVIEW.md`, last passing version restored, the failing attempt kept under `attempt/`; a pass resets the count; a job that never passed ends as `escalate`). |
 | 9328281 | A reviewer finding that names a test file is routed to `TEST_FINDINGS.md` for the observer, never to the coder (tests are frozen after round 0), and the job ends `test-review-open` and is never READY while one is open; module lines that look written for a test are only a warning (`WARNINGS.md`); a pre-launch spec check rejects control characters (for example a backspace made by a regex written as `\b` in a normal string), an unreadable spec, and contradictory test-edit permissions (state `invalid-spec`, `INVALID_SPEC.md`, no coder call). |
-| fcfbf13 | Codex reviewer set to `gpt-6.1-sol` at low effort. |
+| fcfbf13 | Codex reviewer set to `gpt-6.1-sol` at low effort (later changed to `gpt-6-luna` at high effort by owner decision, see the next row). |
+| (owner 2026-10-30) | Codex reviewer set to `gpt-6-luna` at HIGH effort (read-only); job files may list `codex` together with `groq` and `qwen`. |
 | 7287a89, 1cbab19 | Added the `groq` and `qwen` compact reviewers on Groq Cloud free tier. |
 | 7ce7465 | Groq key rotation using the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): shared ledger under OS locks (`_loop/groq_ledger`), one request per key per 60 s window, failed key cooled, 401/402/403 retire key, 429/5xx move to next key, other errors return at once, runner waits for a free key. |

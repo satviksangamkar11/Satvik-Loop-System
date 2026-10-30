@@ -66,7 +66,7 @@ def test_codex_reviewer_runs_with_the_right_call_and_returns_the_verdict(tmp_pat
     result = reviewers["codex"]([root / "pieces" / "m.py"], root / "_loop" / "c.md")
     assert result["verdict"] == "READY"
     cmd = calls[0]
-    assert "gpt-6.1-sol" in cmd and "model_reasoning_effort=low" in cmd and "read-only" in cmd
+    assert "gpt-6-luna" in cmd and "model_reasoning_effort=high" in cmd and "read-only" in cmd
 
 
 def test_missing_review_prompt_is_a_refusal_not_a_crash(tmp_path, real_review_run):

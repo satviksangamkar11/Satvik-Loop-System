@@ -657,8 +657,8 @@ def _default_reviewers_factory(root: Path, review_prompt: str | None = None, cod
                     files,
                     report_path,
                     root=root,
-                    model="gpt-6.1-sol",
-                    effort="low",
+                    model="gpt-6-luna",
+                    effort="high",
                     runner=_with_verdict_suffix(codex_runner or _default_codex_runner),
                 )
             return reviewer
