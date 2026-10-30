@@ -482,3 +482,75 @@ def test_contradictory_test_edit_permissions_are_rejected_and_a_clear_spec_passe
     assert fl.validate_job_inputs(job, root) == []
     (root / "pieces" / "test_m.py").unlink()
     assert fl.validate_job_inputs(job, root)                                                # says frozen, but no test file exists
+
+
+# 11. Groq Cloud as a compact reviewer (owner 2026-10-30): fake HTTP only, no network, no real key ---------------------------------------------------
+class FakeHttpResponse:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps({"choices": [{"message": {"content": self.reply}}]}).encode("utf-8")
+
+
+def groq_env(tmp_path, monkeypatch, reply, seen=None, error=None):
+    import urllib.request
+    key_file = tmp_path / "gk.txt"
+    key_file.write_text("gsk_FAKEKEY_for_tests_only_0123456789", encoding="utf-8")
+    monkeypatch.setenv("GROQ_KEY_FILE", str(key_file))
+
+    def fake_urlopen(req, timeout=None):
+        if seen is not None:
+            seen.append(json.loads(req.data.decode("utf-8")))
+            seen.append(req.get_header("Authorization"))
+        if error is not None:
+            raise error
+        return FakeHttpResponse(reply)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return tmp_path / "report.md"
+
+
+def test_groq_reviewer_writes_the_report_and_never_leaks_the_key(tmp_path, monkeypatch):
+    seen = []
+    out = groq_env(tmp_path, monkeypatch, "MED - m.py:1 - bug gsk_FAKEKEY_for_tests_only_0123456789" + NL + "## Verdict: FIX FIRST", seen)
+    code, body = fl._groq_runner(["groq", "-m", "openai/gpt-oss-120b", "-o", str(out), "-"], "review this short text", 30)
+    assert code == 0 and "FIX FIRST" in out.read_text(encoding="utf-8")
+    assert "gsk_FAKEKEY" not in out.read_text(encoding="utf-8") and "gsk_FAKEKEY" not in body
+    assert seen[0]["model"] == "openai/gpt-oss-120b" and seen[0]["max_tokens"] == 1500 and seen[1].startswith("Bearer ")
+
+
+def test_groq_ready_from_a_truncated_input_is_not_a_pass(tmp_path, monkeypatch):
+    seen = []
+    out = groq_env(tmp_path, monkeypatch, "Looks fine." + NL + "## Verdict: READY", seen)
+    big = "x" * (fl.GROQ_MAX_INPUT_CHARS + 5000)
+    fl._groq_runner(["groq", "-m", "m", "-o", str(out), "-"], big, 30)
+    sent = seen[0]["messages"][0]["content"]
+    assert len(sent) <= fl.GROQ_MAX_INPUT_CHARS + 300 and "TRUNCATED" in sent
+    assert "Verdict: READY" not in out.read_text(encoding="utf-8")                 # a partial view cannot approve
+
+
+def test_groq_fix_first_from_a_truncated_input_still_blocks(tmp_path, monkeypatch):
+    out = groq_env(tmp_path, monkeypatch, "HIGH - a.py:1 - bug" + NL + "## Verdict: FIX FIRST")
+    fl._groq_runner(["groq", "-m", "m", "-o", str(out), "-"], "y" * (fl.GROQ_MAX_INPUT_CHARS + 10), 30)
+    assert "FIX FIRST" in out.read_text(encoding="utf-8")
+
+
+def test_groq_http_error_or_missing_key_leaves_no_report(tmp_path, monkeypatch):
+    import urllib.error
+    out = groq_env(tmp_path, monkeypatch, "", error=urllib.error.HTTPError("u", 429, "rate", {}, None))
+    code, _ = fl._groq_runner(["groq", "-m", "m", "-o", str(out), "-"], "text", 30)
+    assert code == 1 and not out.exists()
+    monkeypatch.setenv("GROQ_KEY_FILE", str(tmp_path / "missing.txt"))
+    code, _ = fl._groq_runner(["groq", "-m", "m", "-o", str(out), "-"], "text", 30)
+    assert code == 1 and not out.exists()
+
+
+def test_groq_is_a_valid_reviewer_name_in_a_job(tmp_path):
+    root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq"])
+    assert job["reviewers"] == ["codex", "groq"]

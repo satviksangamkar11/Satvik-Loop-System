@@ -36,7 +36,7 @@ JOB_SCHEMA = {
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
-        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
+        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
         "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron"]}, "default": ["nemotron", "nemotron", "nemotron"]},
     },
     "additionalProperties": False,
@@ -519,6 +519,47 @@ def _haiku_runner(cmd, text, timeout_s):
         return 1, f"OSError: {exc}"
 
 
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MAX_INPUT_CHARS = 18000       # the free tier allows 8,000 tokens per minute: about 4,500 tokens of input and a short answer fit
+
+
+def _groq_runner(cmd, text, timeout_s):
+    """Groq Cloud (free tier) as a COMPACT reviewer (owner 2026-10-30): same interface as the other runners (the report goes to the path after -o). The key is read inside this
+    process from GROQ_KEY_FILE or secrets/groq_key_1.txt and is never printed or written. An input over the budget is truncated and a READY from a truncated view is
+    downgraded to no verdict (a partial view cannot approve); any HTTP or network failure leaves no report (NONE)."""
+    import urllib.error
+    import urllib.request
+    out = Path(cmd[cmd.index("-o") + 1])
+    model = cmd[cmd.index("-m") + 1] if "-m" in cmd else GROQ_MODEL
+    key_file = Path(os.environ.get("GROQ_KEY_FILE", str(Path(__file__).resolve().parents[2] / "secrets" / "groq_key_1.txt")))
+    try:
+        key = key_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return 1, "groq key file unreadable"
+    truncated = len(text) > GROQ_MAX_INPUT_CHARS
+    if truncated:
+        head, tail = text[:3000], text[-1200:]
+        room = GROQ_MAX_INPUT_CHARS - len(head) - len(tail)
+        text = head + text[3000:3000 + max(room, 0)] + "\n[TRUNCATED: " + str(len(text) - GROQ_MAX_INPUT_CHARS) + " characters omitted for the free-tier token limit]\n" + tail
+    body = {"model": model, "messages": [{"role": "user", "content": text}], "max_tokens": 1500, "temperature": 0.1, "reasoning_effort": "low"}
+    req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
+                                 headers={"Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "python-urllib/3"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        reply = (data["choices"][0]["message"].get("content") or "").replace(key, "[REDACTED]")
+    except urllib.error.HTTPError as exc:
+        return 1, f"groq HTTP {exc.code}"
+    except (urllib.error.URLError, OSError, ValueError, KeyError, IndexError, TimeoutError):
+        return 1, "groq call failed"
+    if not reply.strip():
+        return 1, "groq empty reply"
+    if truncated:
+        reply = _re.sub(r"(?im)^\W*#*\s*verdict:?\s*READY\W*$", "## Verdict: NONE (input truncated, a partial view cannot approve)", reply)
+    out.write_text(reply, encoding="utf-8")
+    return 0, reply
+
+
 def _default_reviewers_factory(root: Path, review_prompt: str | None = None, codex_runner=None) -> dict[str, Callable[[list[Path], Path], dict]]:
     """Nemotron 3.5 Lightning (thinking off, 16k) and Codex (medium, file-based runner). The prompt file is the JOB's review_prompt (P1-D23)."""
     review_run_mod = _load_module_by_path("review_run", root / "scripts/source/review_run.py")
@@ -584,6 +625,16 @@ def _default_reviewers_factory(root: Path, review_prompt: str | None = None, cod
                 )
             return reviewer
         reviewers["haiku"] = make_haiku_reviewer()
+
+        def make_groq_reviewer():
+            def reviewer(files: list[Path], report_path: Path) -> dict:
+                report_path.unlink(missing_ok=True)
+                return codex_review_for_loop.run_codex_review(
+                    prompt_file, files, report_path, root=root, model=GROQ_MODEL, effort="low",
+                    runner=_with_verdict_suffix(_groq_runner),
+                )
+            return reviewer
+        reviewers["groq"] = make_groq_reviewer()
     return reviewers
 
 

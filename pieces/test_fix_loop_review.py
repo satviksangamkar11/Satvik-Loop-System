@@ -156,7 +156,7 @@ def test_minimax_reviewer_is_wired_next_to_glm_with_thinking_off_defaults(tmp_pa
 
     monkeypatch.setattr(fl, "_load_module_by_path", lambda name, path: FakeReviewRun)
     reviewers = fl._default_reviewers_factory(root, "docs/RP.md")
-    assert {"lightning", "minimax", "codex", "haiku"} == set(reviewers)
+    assert {"lightning", "minimax", "codex", "haiku", "groq"} == set(reviewers)
     assert reviewers["lightning"]([root / "pieces" / "m.py"], root / "_loop" / "m.md") == {"verdict": "READY"}
     assert seen[0]["model"] in ("nvidia/nemotron-3.5-lightning-30b-a3b", "minimaxai/minimax-m3.1-flash") and seen[0]["max_tokens"] in (16000, 32000)
     assert seen[0]["prompt_file"] == root / "docs" / "RP.md"
@@ -183,7 +183,7 @@ def test_minimax_reviewer_has_low_effort_a_big_budget_and_its_own_profile(tmp_pa
 
     monkeypatch.setattr(fl, "_load_module_by_path", lambda name, path: FakeReviewRun)
     reviewers = fl._default_reviewers_factory(root, "docs/RP.md")
-    assert set(reviewers) == {"lightning", "minimax", "codex", "haiku"}
+    assert set(reviewers) == {"lightning", "minimax", "codex", "haiku", "groq"}
     reviewers["minimax"]([root / "pieces" / "m.py"], root / "_loop" / "m.md")
     assert seen[0]["model"] == "minimaxai/minimax-m3.1-flash" and seen[0]["max_tokens"] == 32000 and seen[0]["effort"] == "low"
 
