@@ -1,12 +1,12 @@
 # Satvik Loop System
 
-**Status: READY and FROZEN (2026-10-30).** Only bug fixes from here, each with a failing test first. See `docs/LOOP_CLOSURE_REPORT.md` for the closure evidence.
+**Status: FROZEN (2026-10-30) — only owner-authorized bug fixes from here.** See `docs/LOOP_CLOSURE_REPORT.md` for the closure evidence.
 
 An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out. The supervisor only watches.
 
 ## How one job runs
 
-1. **Write.** The coder (Nemotron 3 Ultra, NVIDIA API) reads the spec and writes the module and its test file (round 0).
+1. **Write.** The coder (Nemotron 3 Ultra 550B, `nvidia/nemotron-3-ultra-550b-a55b`, fixed, not configurable) reads the spec and writes the module and its test file (round 0).
 2. **Test.** pytest runs on the job's test files.
 3. **Fix.** If tests fail, the real pytest output goes back to the coder. Rounds 0 to 3 are all Nemotron.
    - Tests that exist on disk are frozen: a fix round that changes one is rejected. The one exception is a test file with a syntax error: it cannot run, so the coder is told to return it fixed.
@@ -15,8 +15,8 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
    - In round 0, a test file that already existed may only be extended, never rewritten.
    - A reply with a refused block for a job file is rejected as a whole.
 4. **Review.** When tests pass, four reviewers read the code at the same time:
-   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6.1-sol, low, read-only) and Haiku (low effort, reviewer only).
-   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`, key from `GROQ_KEY_FILE` or `secrets/groq_key_1.txt`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). A second Groq reviewer `qwen` (`qwen/qwen3.8-27b`, reasoning_effort none) uses the same runner and limits. Key rotation is the NVIDIA pool's (`p1_claims.LedgerKeyPool`, a ledger shared by all processes under OS locks) over every `secrets/groq_key_*.txt`: ONE request per key per 60 s window, a failed key is cooled, 401/402/403 retire it, 429/5xx move on to the next key, another error returns at once; the runner waits for a free key.
+   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6.1-sol, low effort, read-only) and Haiku (low effort, reviewer only).
+   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). A second Groq reviewer `qwen` (`qwen/qwen3.8-27b`, reasoning_effort none) uses the same runner and limits. Groq keys are read inside the process from `secrets/groq_key_*.txt` (or `GROQ_KEY_FILE` / `GROQ_KEY_DIR`) and never printed. Key rotation uses the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): a ledger shared by all processes under OS locks (`_loop/groq_ledger`), ONE request per key per 60 s window, a failed key is cooled, 401/402/403 retire a key, 429 and 5xx move to the next key, any other error returns at once; the runner waits for a free key.
    Each ends its reply with `## Verdict: READY` or `## Verdict: FIX FIRST`. FIX FIRST reports go back to the coder.
 5. **Result.** The job ends in one of these states:
 
@@ -114,16 +114,27 @@ This repository holds the loop code only. It expects the surrounding project lay
 python -m pytest pieces -p no:cacheprovider -q
 ```
 
+Test files: `test_loop_acceptance.py`, `test_loop_races.py`, `test_fix_loop_review.py`, `test_guards.py`, `test_p1_claims.py`, `test_p1_escalate.py`, `test_keypool_rule.py` (about 150 tests across the loop files; they must be run with the repository's pieces folder).
+
 The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested live with four reviewers. A small job passed in 32 seconds.
 
 ## Known limits
 
 - Job files are still written by hand (validated at load time).
 - `yaml` and `jsonschema` are third-party dependencies of `fix_loop.py`.
-
 - The coder runs with thinking on (owner rule).
 - `pieces/test_guards.py` checks the surrounding Reverse-Video project (modules, rules file, job files); run it inside the full project.
-
 - A re-run on files that already exist cannot rewrite the existing tests (append only), so re-runs need new file names or a wiped state.
 - Haiku and Codex need their CLI logins. If one is signed out, its review is empty and the job ends with exit code 5.
 - A job launched from a shell that closes right afterwards dies with that shell. Run it as a background task.
+- The spec check's second rule ('existing tests are frozen' but no test file of the job exists) can misfire when the frozen tests belong to other files; worked around by wording.
+
+## Changes after the freeze
+
+| Commit | Change |
+|---|---|
+| ba3a2e7 | A job stops after three consecutive failed repairs with an IDENTICAL failing-test set (state `needs_review`, `NEEDS_REVIEW.md`, last passing version restored, the failing attempt kept under `attempt/`; a pass resets the count; a job that never passed ends as `escalate`). |
+| 9328281 | A reviewer finding that names a test file is routed to `TEST_FINDINGS.md` for the observer, never to the coder (tests are frozen after round 0), and the job ends `test-review-open` and is never READY while one is open; module lines that look written for a test are only a warning (`WARNINGS.md`); a pre-launch spec check rejects control characters (for example a backspace made by a regex written as `\b` in a normal string), an unreadable spec, and contradictory test-edit permissions (state `invalid-spec`, `INVALID_SPEC.md`, no coder call). |
+| fcfbf13 | Codex reviewer set to `gpt-6.1-sol` at low effort. |
+| 7287a89, 1cbab19 | Added the `groq` and `qwen` compact reviewers on Groq Cloud free tier. |
+| 7ce7465 | Groq key rotation using the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): shared ledger under OS locks (`_loop/groq_ledger`), one request per key per 60 s window, failed key cooled, 401/402/403 retire key, 429/5xx move to next key, other errors return at once, runner waits for a free key. |
