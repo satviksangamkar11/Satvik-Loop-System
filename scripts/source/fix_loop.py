@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import subprocess
 import copy
@@ -24,6 +25,7 @@ JOB_SCHEMA = {
         "files": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "tests": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "reference": {"type": "array", "items": {"type": "string"}, "default": []},
+        "regression": {"type": "array", "items": {"type": "string"}, "default": []},
         "max_rounds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
         "review": {"type": "boolean", "default": True},
         "review_rounds": {"type": "integer", "minimum": 0, "maximum": 10, "default": 4},
@@ -105,6 +107,8 @@ def load_job(path: str | Path) -> dict:
                 raise ValueError(f"tests[{i}] not in files and not under tests/: {t}")
     for i, r in enumerate(job["reference"]):
         _validate_path(r, root, f"reference[{i}]")
+    for i, r in enumerate(job.get("regression", [])):
+        _validate_path(r, root, f"regression[{i}]")
     if job["review_files"] is not None:
         for i, rf in enumerate(job["review_files"]):
             _validate_path(rf, root, f"review_files[{i}]")
@@ -121,6 +125,64 @@ def _read_file_safe(root: Path, rel: str) -> str | None:
     if p.exists():
         return p.read_text(encoding="utf-8")
     return None
+
+
+
+def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[str]) -> dict:
+    """Opus F4 + F7. (1) If the previous run was KILLED (status.json state still `running`) and an `original/` copy exists, put those originals back first,
+    so half-written files are never mistaken for the originals. (2) Move every old file of the job folder (status.json, round_N.txt, ESCALATE.md, review reports)
+    into `prev_<n>/`, so a supervisor never reads stale results. (3) Save the true originals under `original/` and return them as {rel: text or None}."""
+    orig_dir = status_dir_job / "original"
+    manifest = orig_dir / "manifest.json"
+    was_running = False
+    try:
+        was_running = json.loads((status_dir_job / "status.json").read_text(encoding="utf-8")).get("state") == "running"
+    except (OSError, ValueError, AttributeError):
+        pass
+    if was_running and manifest.is_file():
+        try:
+            existed = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            existed = {}
+        for rel, had in (existed.items() if isinstance(existed, dict) else []):
+            target = root / rel
+            if had and (orig_dir / rel).is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((orig_dir / rel).read_text(encoding="utf-8"), encoding="utf-8")
+            elif not had and target.exists():
+                target.unlink()
+    old = [p for p in status_dir_job.iterdir() if not p.name.startswith("prev_")]
+    if old:
+        n = 1
+        while (status_dir_job / f"prev_{n}").exists():
+            n += 1
+        archive = status_dir_job / f"prev_{n}"
+        archive.mkdir()
+        for p in old:
+            p.rename(archive / p.name)
+    originals: dict = {}
+    saved: dict = {}
+    for rel in expected_files:
+        text = _read_file_safe(root, rel)
+        originals[rel] = text
+        saved[rel] = text is not None
+        if text is not None:
+            dest = orig_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(text, encoding="utf-8")
+    orig_dir.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps(saved), encoding="utf-8")
+    return originals
+
+
+def _save_attempt(status_dir_job: Path, root: Path, expected_files: list[str]) -> None:
+    """Opus F8: before escalation restores the originals, keep the last attempted files under `attempt/`."""
+    for rel in expected_files:
+        src = root / rel
+        if src.is_file():
+            dest = status_dir_job / "attempt" / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _load_module_by_path(module_name: str, path: Path):
@@ -168,6 +230,20 @@ def _not_weaker(old: str, new: str) -> bool:
         return funcs, asserts
     (fo, ao), (fn, an) = count(tree_old), count(tree_new)
     return fn >= fo and an >= ao
+
+
+def _content_problem(rel: str, content: str) -> str | None:
+    """Same-round checks of a returned file (Opus F12 + F3): python files must parse (the exact line is fed back to the coder at once),
+    and no file may contain a reviewer verdict marker (a comment such as `## Verdict: READY` would reach every reviewer as an injected instruction)."""
+    if "## Verdict:" in content:
+        return "the file contains the text '## Verdict:' (reviewer verdict marker): remove it, it would be read as an instruction by the reviewers"
+    if rel.endswith(".py"):
+        import ast
+        try:
+            ast.parse(content)
+        except SyntaxError as exc:
+            return f"SyntaxError at line {exc.lineno}: {exc.msg}"
+    return None
 
 
 def _parses(path: Path) -> bool:
@@ -228,7 +304,7 @@ def build_prompt(job: dict, root: Path, round_no: int, pytest_output: str | None
         if pytest_output:
             tail = pytest_output[-9000:] if len(pytest_output) > 9000 else pytest_output
             user_parts.append(f"PYTEST OUTPUT (last 9000 chars):\n{tail}\n")
-            user_parts.append("Fix exactly the problems shown above. Change nothing else. " + _freeze_note(job, root) + "\n")
+            user_parts.append("Fix exactly the problems shown above. Change nothing else. " + _freeze_note(job, root, pytest_output) + "\n")
         if review_report:
             user_parts.append(f"REVIEW REPORT:\n{review_report}\n")
             user_parts.append("Fix exactly the problems in the review. Change nothing else. " + _freeze_note(job, root) + "\n")
@@ -444,9 +520,7 @@ def run_job(
     status_dir_job.mkdir(parents=True, exist_ok=True)
 
     last_good: dict[str, str] = {}
-    original_contents: dict[str, str | None] = {}
-    for rel in expected_files:
-        original_contents[rel] = _read_file_safe(root, rel)
+    original_contents: dict[str, str | None] = _prepare_job_folder(status_dir_job, root, expected_files)
 
     rounds_record: list[dict] = []
     state = "running"
@@ -475,7 +549,12 @@ def run_job(
         }
         (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
 
-    for round_no in range(max_rounds + 1):
+    ever_passed = False
+    # rounds 0..max_rounds are for making the tests pass; once they have passed, up to review_rounds more rounds exist for review fixes (a job whose tests
+    # first pass in the LAST round used to end review-open with no fix round at all)
+    for round_no in range(max_rounds + 1 + (review_rounds if review_enabled else 0)):
+        if not ever_passed and round_no > max_rounds:
+            break
         last_round_no = round_no
         review_report_combined = None
         if pending_review_reports:
@@ -542,6 +621,8 @@ def run_job(
             else:
                 for rel in parsed_files:
                     chk = check_path(rel)
+                    if chk is None:
+                        chk = _content_problem(rel, parsed_files[rel])
                     if chk is not None:
                         reason = f"check_path failed for {rel}: {chk}"
                         break
@@ -565,6 +646,11 @@ def run_job(
             for rel, content in parsed_files.items():
                 (root / rel).write_text(content, encoding="utf-8")
             passed, output = pytest_runner(tests, root, timeout_s=600)
+            if passed and job.get("regression"):          # Opus F5: tests of OTHER modules must keep passing; they are never edited by the job
+                reg_passed, reg_output = pytest_runner(list(job["regression"]), root, timeout_s=600)
+                if not reg_passed:
+                    passed = False
+                    output = "REGRESSION TESTS FAILED (these belong to other modules and cannot be edited; fix the module you were given):" + chr(10) + reg_output
             tests_passed = passed
         else:
             passed = False
@@ -585,6 +671,7 @@ def run_job(
         print(f"{name} round {round_no}: fixer={fixer_name} tests {'pass' if passed else 'fail'} files {'ok' if files_ok else 'bad'}")
 
         if passed:
+            ever_passed = True
             tests_passed = True
             last_good = {rel: (root / rel).read_text(encoding="utf-8") for rel in expected_files if (root / rel).is_file()}   # snapshot of the last version that passed
             last_pytest_output = None
@@ -678,6 +765,7 @@ def run_job(
         review_verdict = "FIX FIRST"
     if not tests_passed:
         state = "escalate"
+        _save_attempt(status_dir_job, root, expected_files)
         for rel, orig in original_contents.items():
             p = root / rel
             if orig is None:
@@ -772,6 +860,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--job", required=True)
     parser.add_argument("--root", default=".")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--solo", action="store_true", help="run without the launcher (no file claims, no shared key ledger): one job only")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -779,6 +868,10 @@ def main(argv: list[str] | None = None) -> int:
         job = load_job(root / args.job)
     except ValueError as e:
         print(f"invalid job: {e}", file=sys.stderr)
+        return 2
+
+    if not args.dry_run and not args.solo and os.environ.get("P1_LEDGER") != "1":
+        print("refusing to run: start jobs with `python pieces/p1_claims.py run <job.json> .` (file claims + shared key ledger), or pass --solo for one job", file=sys.stderr)
         return 2
 
     if args.dry_run:

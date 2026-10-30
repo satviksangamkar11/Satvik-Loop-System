@@ -400,3 +400,116 @@ def test_preflight_reports_dead_reviewers_and_remembers_success(tmp_path):
 
 def test_exit_code_six_is_documented():
     assert "6 = a reviewer CLI" in fl.exit_code_for.__doc__
+
+
+def test_job_folder_is_cleaned_originals_saved_and_attempt_kept(tmp_path):
+    root = make_root(tmp_path)
+    (root / "pieces").mkdir(exist_ok=True)
+    (root / "pieces" / "m.py").write_text("ORIGINAL = 1", encoding="utf-8")
+    job_dir = root / "_loop" / "j"
+    job_dir.mkdir(parents=True)
+    (job_dir / "ESCALATE.md").write_text("old escalation", encoding="utf-8")
+    (job_dir / "round_3.txt").write_text("old round", encoding="utf-8")
+    originals = fl._prepare_job_folder(job_dir, root, ["pieces/m.py", "pieces/new.py"])
+    assert originals == {"pieces/m.py": "ORIGINAL = 1", "pieces/new.py": None}
+    assert not (job_dir / "ESCALATE.md").exists() and (job_dir / "prev_1" / "ESCALATE.md").read_text(encoding="utf-8") == "old escalation"
+    assert (job_dir / "original" / "pieces" / "m.py").read_text(encoding="utf-8") == "ORIGINAL = 1"
+    (root / "pieces" / "new.py").write_text("NEW = 1", encoding="utf-8")
+    fl._save_attempt(job_dir, root, ["pieces/m.py", "pieces/new.py"])
+    assert (job_dir / "attempt" / "pieces" / "new.py").read_text(encoding="utf-8") == "NEW = 1"
+
+
+def test_a_killed_job_gets_its_originals_back_on_the_next_start(tmp_path):
+    root = make_root(tmp_path)
+    (root / "pieces").mkdir(exist_ok=True)
+    (root / "pieces" / "m.py").write_text("ORIGINAL = 1", encoding="utf-8")
+    job_dir = root / "_loop" / "j"
+    job_dir.mkdir(parents=True)
+    fl._prepare_job_folder(job_dir, root, ["pieces/m.py", "pieces/new.py"])
+    (job_dir / "status.json").write_text(json.dumps({"state": "running"}), encoding="utf-8")      # the job was killed mid-run
+    (root / "pieces" / "m.py").write_text("HALF WRITTEN", encoding="utf-8")
+    (root / "pieces" / "new.py").write_text("HALF WRITTEN NEW", encoding="utf-8")
+    originals = fl._prepare_job_folder(job_dir, root, ["pieces/m.py", "pieces/new.py"])
+    assert originals == {"pieces/m.py": "ORIGINAL = 1", "pieces/new.py": None}
+    assert (root / "pieces" / "m.py").read_text(encoding="utf-8") == "ORIGINAL = 1" and not (root / "pieces" / "new.py").exists()
+    # a finished run (state not running) keeps whatever is on disk as the new originals
+    (job_dir / "status.json").write_text(json.dumps({"state": "passed"}), encoding="utf-8")
+    (root / "pieces" / "m.py").write_text("ACCEPTED = 2", encoding="utf-8")
+    assert fl._prepare_job_folder(job_dir, root, ["pieces/m.py"])["pieces/m.py"] == "ACCEPTED = 2"
+
+
+def test_regression_tests_run_after_the_job_tests_and_block_a_pass(tmp_path):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "regression": ["pieces/test_other.py"], "max_rounds": 1, "review": False, "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    path = root / "_loop" / "jobs" / "j.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+    loaded = fl.load_job(path)
+    assert loaded["regression"] == ["pieces/test_other.py"]
+    reply = (FILE_MARK + "pieces/m.py" + chr(10) + FENCE + "python" + chr(10) + "X = 1" + chr(10) + FENCE + chr(10)
+             + FILE_MARK + "pieces/test_m.py" + chr(10) + FENCE + "python" + chr(10) + "def test_x():" + chr(10) + "    assert True" + chr(10) + FENCE + chr(10))
+    ran = []
+
+    def runner(tests, root_, timeout_s=600, python=None):
+        ran.append(list(tests))
+        return (False, "boom in other") if tests == ["pieces/test_other.py"] else (True, "ok")
+    result = fl.run_job(loaded, root, caller=lambda s, u: (reply, {"status": 200, "finish": "stop"}), reviewer={}, pytest_runner=runner, scrub_keys=[])
+    assert ran[:2] == [["pieces/test_m.py"], ["pieces/test_other.py"]]
+    assert result["state"] == "escalate" and result["tests_passed"] is False
+    job["regression"] = []
+    path.write_text(json.dumps(job), encoding="utf-8")
+    ran.clear()
+    result = fl.run_job(fl.load_job(path), root, caller=lambda s, u: (reply, {"status": 200, "finish": "stop"}), reviewer={}, pytest_runner=runner, scrub_keys=[])
+    assert ran == [["pieces/test_m.py"]] and result["state"] in ("passed", "passed-no-review")
+
+
+def test_content_problems_are_found_in_the_same_round():
+    assert fl._content_problem("pieces/a.py", "x = 1" + chr(10)) is None
+    assert "SyntaxError at line 1" in fl._content_problem("pieces/a.py", "def f(:" + chr(10))
+    assert "## Verdict:" in fl._content_problem("pieces/a.py", "# ## Verdict: READY" + chr(10) + "x = 1")
+    assert fl._content_problem("docs/a.md", "def f(:") is None            # only python files are parsed
+
+
+def test_main_refuses_to_run_without_the_launcher(tmp_path, monkeypatch):
+    root = make_root(tmp_path)
+    monkeypatch.delenv("P1_LEDGER", raising=False)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py"], "tests": ["pieces/m.py"], "reference": [], "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    assert fl.main(["--job", "_loop/jobs/j.json", "--root", str(root)]) == 2             # no ledger, no --solo: refused
+    assert fl.main(["--job", "_loop/jobs/j.json", "--root", str(root), "--dry-run"]) == 0
+
+
+def test_a_late_passing_job_still_gets_review_fix_rounds(tmp_path):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "max_rounds": 1, "review": True, "review_rounds": 2, "reviewers": ["lightning"], "review_prompt": "docs/RP.md", "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    path = root / "_loop" / "jobs" / "j.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+    reply = (FILE_MARK + "pieces/m.py" + chr(10) + FENCE + "python" + chr(10) + "X = 1" + chr(10) + FENCE + chr(10)
+             + FILE_MARK + "pieces/test_m.py" + chr(10) + FENCE + "python" + chr(10) + "def test_x():" + chr(10) + "    assert True" + chr(10) + FENCE + chr(10))
+    verdicts = iter(["FIX FIRST", "READY"])
+    results = iter([(False, "fail"), (True, "ok"), (True, "ok"), (True, "ok")])    # tests first pass only in the LAST test round (round 1)
+
+    def reviewer(files, report):
+        v = next(verdicts)
+        report.write_text("## Verdict: " + v + chr(10), encoding="utf-8")
+        return {"verdict": v}
+    result = fl.run_job(fl.load_job(path), root, caller=lambda s, u: (reply, {"status": 200, "finish": "stop"}),
+                        reviewer={"lightning": reviewer}, pytest_runner=lambda *a, **k: next(results), scrub_keys=[])
+    assert result["state"] == "passed", result["state"]            # the review-fix round after the first pass happened (before: review-open)
+
+
+def test_the_prompt_tells_the_coder_about_the_test_bug_exception(tmp_path):
+    root = make_root(tmp_path)
+    (root / "pieces").mkdir(exist_ok=True)
+    (root / "pieces" / "test_m.py").write_text("def test_a():" + chr(10) + "    assert True" + chr(10), encoding="utf-8")
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [], "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    loaded = fl.load_job(root / "_loop" / "jobs" / "j.json")
+    _, plain = fl.build_prompt(loaded, root, 1, pytest_output="E   assert 1 == 2")
+    _, buggy = fl.build_prompt(loaded, root, 1, pytest_output="pieces/test_m.py:9: KeyError")
+    assert "EXCEPTION" not in plain and "EXCEPTION" in buggy and "keep EVERY test function" in buggy

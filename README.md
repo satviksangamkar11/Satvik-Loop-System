@@ -66,6 +66,11 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 - A job file whose `review_files` do not include its own files is refused at load time (a copied job file once made the reviewers judge the wrong files). `pieces/test_guards.py` also checks every real job file for consistency.
 - Before round 0 the loop pings the Codex and Haiku CLIs (result remembered 30 minutes in `_loop/preflight_ok.json`); a dead login stops the job at once with exit code 6.
 - pytest exit 0 with no test PASSED (all skipped, xfailed or nothing collected) is not a pass.
+- Crash safety and a clean folder: before round 0 the original files are saved under `_loop/<job>/original/`; if the previous run was killed (status still `running`) they are put back first. Old job files move to `prev_<n>/`. When a job escalates, its last attempt is kept in `attempt/` before the originals are restored.
+- A job may list `regression` test files of other modules; they run after the job's own tests pass and a failure blocks the pass (those files are never edited by the job).
+- Files returned by the coder are checked in the same round: a python file must parse and no file may contain a `## Verdict:` marker (it would be read by the reviewers as an instruction).
+- Running `fix_loop.py` directly is refused unless the launcher set the shared key ledger (or `--solo` is given).
+- A job whose tests first pass in the last test round still gets its review-fix rounds (up to `review_rounds`).
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
 - Only the Nemotron coder writes code. Codex and Haiku only review.
