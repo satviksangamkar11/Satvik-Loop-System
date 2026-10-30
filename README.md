@@ -25,9 +25,13 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
 | `passed-no-review` | tests pass, a required review gave no verdict | 5 |
 | `review-open` | tests pass, FIX FIRST findings left when the rounds ran out (the last passing version is kept) | 1 |
 | `needs_review` | three consecutive failed repairs with the IDENTICAL failing-test set: the job stops at once (the call budget limits cost, this limits repeated attempts at one defect). The last passing version is restored, the failing attempt is kept under `attempt/`, `NEEDS_REVIEW.md` lists the failing tests and the last pytest output. A pass resets the count; a job that never passed ends as `escalate` after the same three repairs. | 3 |
+| `test-review-open` | tests pass, but a reviewer's FIX FIRST names a TEST file (tests are frozen after round 0, so the coder cannot repair it): the finding goes to `TEST_FINDINGS.md` for the observer, the coder is not called, and the job is never READY while a test finding is open | 1 |
+| `invalid-spec` | pre-launch check failed (control characters such as a backspace, an unreadable spec, or contradictory test-edit permissions): no coder call, `INVALID_SPEC.md` | 1 |
 | `escalate` | tests never passed: originals restored, `ESCALATE.md` written, Sonnet 5.5 writes `SONNET_DIAGNOSIS.md` | 3 |
 | claim conflict | another job holds one of the files | 4 |
 | reviewer CLI down | the Codex or Haiku CLI did not answer the start-up check; no coder call was made | 6 |
+
+Warnings (owner 2026-10-30): module lines that look written for a test (`HACK`, `test compatibility`, `for the test`) are recorded in `WARNINGS.md` and in the round record. They never reject a reply; contract tests and code inspection decide acceptance.
 
 ## Parallel jobs
 

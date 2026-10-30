@@ -211,6 +211,68 @@ def failing_test_set(output) -> frozenset:
     return frozenset(_re.findall(r"^(?:FAILED|ERROR) (\S+)", output or "", _re.M))
 
 
+import re as _re
+
+_FINDING = _re.compile(r"\b(HIGH|MED|MEDIUM|LOW)\b")
+_PATH = _re.compile(r"([\w./\\-]+\.py)")
+
+
+def split_test_findings(report: str, tests) -> tuple:
+    """Owner decision 2026-10-30: tests are frozen after round 0, so a finding that is ABOUT a test file cannot be repaired by the coder.
+    Returns (text for the coder, list of test-finding lines, number of coder-addressable findings). A report with no test finding goes to the coder unchanged;
+    a finding line is a test finding when it names a severity and a path whose file is one of the job's tests or is called test_*.py."""
+    test_names = {str(t).replace("\\", "/").split("::")[0] for t in (tests or [])}
+    keep, test_lines, coder_findings = [], [], 0
+    for line in (report or "").splitlines():
+        if _FINDING.search(line):
+            m = _PATH.search(line)
+            path = m.group(1).replace("\\", "/") if m else ""
+            if path and (path in test_names or path.rsplit("/", 1)[-1].startswith("test_") or path.endswith("_test.py")):
+                test_lines.append(line.strip())
+                continue
+            coder_findings += 1
+        keep.append(line)
+    return ("\n".join(keep) if test_lines else report), test_lines, (coder_findings if test_lines else -1)
+
+
+_SUSPICIOUS = _re.compile(r"HACK|test[- ]compat|for the tests?\b|to (?:satisfy|pass|appease) the tests?|special[- ]case(?:d)? (?:for )?(?:the )?tests?", _re.I)
+
+
+def suspicious_code(parsed_files: dict, tests) -> list:
+    """A WARNING only (owner 2026-10-30): lines of module code that look written for a test. Acceptance is decided by contract tests and code inspection."""
+    skip = {str(t).replace("\\", "/").split("::")[0] for t in (tests or [])}
+    found = []
+    for rel, content in parsed_files.items():
+        if rel.replace("\\", "/") in skip:
+            continue
+        for no, line in enumerate(content.splitlines(), 1):
+            if _SUSPICIOUS.search(line):
+                found.append(f"{rel}:{no}: {line.strip()[:160]}")
+    return found
+
+
+def validate_job_inputs(job: dict, root: Path) -> list:
+    """Pre-launch check of the spec and job (owner 2026-10-30): control characters (for example a backspace made by a regex written as \\b in a
+    normal string), a missing spec, and contradictory test-edit permissions. Returns a list of problems; empty = fine."""
+    problems = []
+    spec_path = Path(root) / job.get("spec", "")
+    try:
+        spec = spec_path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        return [f"spec unreadable: {job.get('spec')} ({type(exc).__name__})"]
+    bad = sorted({hex(ord(c)) for c in spec + json.dumps(job, ensure_ascii=False) if ord(c) < 32 and c not in "\n\r\t"})
+    if bad:
+        problems.append(f"control characters in the spec or job ({', '.join(bad)}): a regex written with \\b in a normal string becomes a backspace")
+    existing = [t for t in job.get("tests", []) if (Path(root) / str(t).split("::")[0]).is_file()]
+    wants_complete = _re.search(r"return (?:the )?complete[^.\n]{0,40}test file", spec, _re.I)
+    states_limit = _re.search(r"append|frozen|unchanged", spec, _re.I)
+    if existing and wants_complete and not states_limit:
+        problems.append(f"the spec asks for a COMPLETE test file but {existing} already exists and is frozen after round 0: say 'append only' or 'frozen'")
+    if not existing and _re.search(r"existing tests? (?:are|is) frozen", spec, _re.I):
+        problems.append("the spec says the existing tests are frozen but no test file of the job exists")
+    return problems
+
+
 REPEAT_LIMIT = 3          # failed repairs with an identical failing-test set that stop a job (owner decision 2026-10-30)
 
 
@@ -598,6 +660,14 @@ def run_job(
 
     status_dir_job = status_dir / name
     status_dir_job.mkdir(parents=True, exist_ok=True)
+    spec_problems = validate_job_inputs(job, root)
+    if spec_problems:                                          # owner 2026-10-30: no coder call is made on an invalid spec
+        nl = chr(10)
+        (status_dir_job / "INVALID_SPEC.md").write_text("# INVALID_SPEC" + nl + nl + nl.join(f"- {p}" for p in spec_problems) + nl, encoding="utf-8")
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": "invalid-spec", "problems": spec_problems, "coder_calls": 0}, indent=2))
+        print(f"{name}: invalid-spec {spec_problems}")
+        return {"name": name, "state": "invalid-spec", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0, "reviewer_calls": {},
+                "coder_budget": 0, "problems": spec_problems, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     last_good: dict[str, str] = {}
     original_contents: dict[str, str | None] = _prepare_job_folder(status_dir_job, root, expected_files)
@@ -613,6 +683,7 @@ def run_job(
     last_pytest_output: str | None = None
     pending_review_reports: list[tuple[str, str]] = []  # (reviewer_name, report_text)
     review_pass_count = 0
+    test_findings: list = []      # (reviewer, line): findings about test files, for the observer, never sent to the coder
     fail_sigs: list = []          # failing-test set of each consecutive failed repair round (round 1 and later)
     stuck_set = None
 
@@ -744,6 +815,10 @@ def run_job(
                         tests_repaired.append(rel)
                         diff = "".join(difflib.unified_diff(old_text.splitlines(True), content.splitlines(True), f"{rel} (before round {round_no})", f"{rel} (after round {round_no})"))
                         _atomic_write(status_dir_job / "test_edits" / f"round_{round_no}_{Path(rel).name}.diff", diff)
+        hack_warnings = suspicious_code(parsed_files, tests) if files_ok else []
+        if hack_warnings:                                       # a warning for the observer only, never a rejection
+            with open(status_dir_job / "WARNINGS.md", "a", encoding="utf-8") as _wf:
+                _wf.write(f"## round {round_no}" + chr(10) + chr(10).join(f"- {w}" for w in hack_warnings) + chr(10))
         if files_ok:
             for rel, content in parsed_files.items():
                 _atomic_write(root / rel, content)
@@ -767,6 +842,7 @@ def run_job(
             "tests_passed": passed,
             "reason": reason,
             "tests_changed": tests_changed if files_ok else [], "tests_repaired": tests_repaired if files_ok else [],
+            **({"warnings": hack_warnings} if hack_warnings else {}),
         })
         _write_status(round_no, coder_status, files_ok, passed, reason)
 
@@ -782,6 +858,7 @@ def run_job(
                 review_files_paths = [root / rf for rf in review_files]
                 all_ready = True
                 any_fix_first = False
+                test_review_open = False
                 any_missing = False
                 new_pending_reports: list[tuple[str, str]] = []
                 # P1-D37: start ALL reviewers at once (Lightning, MiniMax and Codex use different keys / processes); a job now waits for the slowest
@@ -851,17 +928,25 @@ def run_job(
                         pass
                     elif verdict == "FIX FIRST":
                         all_ready = False
-                        any_fix_first = True
                         report_text = _scrub(report_path.read_text(encoding="utf-8")) if report_path.exists() else ""
                         if report_path.exists():
                             report_path.write_text(report_text, encoding="utf-8")
-                        new_pending_reports.append((rname, report_text))
+                        coder_text, _test_lines, _n_coder = split_test_findings(report_text, tests)
+                        if _test_lines:                                    # a finding about a frozen test goes to the observer, and still blocks acceptance
+                            test_findings.extend((rname, ln) for ln in _test_lines)
+                            test_review_open = True
+                            nl = chr(10)
+                            (status_dir_job / "TEST_FINDINGS.md").write_text("# TEST FINDINGS (observer review; tests are frozen, the coder cannot fix these)" + nl + nl
+                                                                              + nl.join(f"- [{who}] {ln}" for who, ln in test_findings) + nl, encoding="utf-8")
+                        if _n_coder != 0:                                  # -1: no test finding at all (unchanged path); >0: findings the coder can fix
+                            any_fix_first = True
+                            new_pending_reports.append((rname, coder_text))
                     else:
                         all_ready = False
                         any_missing = True
                 _valid = sum(1 for _r in rounds_record[-len(reviewers_list):] if str(_r.get("reason", "")).startswith(("verdict=READY", "verdict=FIX FIRST")))
                 _quorum = job.get("min_valid_reviews", 0) or len(reviewers_list)
-                all_ready = (not any_fix_first) and _valid >= _quorum          # default quorum = every reviewer; a lower min_valid_reviews tolerates NONE/timeouts
+                all_ready = (not any_fix_first) and (not test_findings) and _valid >= _quorum          # default quorum = every reviewer; a lower min_valid_reviews tolerates NONE/timeouts
                 review_pass_count += 1
                 pending_review_reports = new_pending_reports
                 if all_ready:
@@ -870,6 +955,10 @@ def run_job(
                     break
                 elif any_fix_first:
                     continue
+                elif test_findings:
+                    state = "test-review-open"                          # tests pass, only test findings remain: never READY, never a coder repair
+                    review_verdict = "FIX FIRST (tests)"
+                    break
                 else:
                     state = "passed-no-review"
                     review_verdict = "unavailable"
@@ -924,7 +1013,7 @@ def run_job(
     if state == "running":
         state = "review-open"                                  # tests pass but a reviewer still says FIX FIRST and no round is left (P1-D23); files are kept
         review_verdict = review_verdict or "FIX FIRST"
-    _write_status(last_round_no, "", True, True, "repeated identical failure" if state == "needs_review" else "review findings still open" if state == "review-open" else "done")
+    _write_status(last_round_no, "", True, True, "repeated identical failure" if state == "needs_review" else "test findings need observer review" if state == "test-review-open" else "review findings still open" if state == "review-open" else "done")
     print(f"{name}: {state}")
     return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 

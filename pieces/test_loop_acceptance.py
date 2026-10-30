@@ -394,3 +394,91 @@ def test_a_pass_resets_the_streak(tmp_path):
     caller, state = scripted(seq)
     result = fl.run_job(job, root, caller=caller, reviewer={"lightning": fix_first}, scrub_keys=[])
     assert result["state"] != "needs_review" and state["n"] >= 7          # two failures, a pass, two failures, a pass: never three in a row
+
+
+# 10. owner decisions 2026-10-30: test-only findings are routed to the observer, hack warnings, pre-launch spec validation -----------------------------
+def report_with(text):
+    def reviewer(files, report):
+        report.write_text(text + NL + "## Verdict: FIX FIRST", encoding="utf-8")
+        return {"verdict": "FIX FIRST"}
+    return reviewer
+
+
+def test_a_test_only_finding_goes_to_the_observer_and_blocks_acceptance(tmp_path):
+    root, job = make_job(tmp_path, review=True, reviewers=["lightning"], review_rounds=4)
+    caller, state = scripted([reply(GOOD_MODULE, GOOD_TEST)])
+    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": report_with("MED - pieces/test_m.py:3 - the test is too weak")}, scrub_keys=[])
+    assert result["state"] == "test-review-open" and result["tests_passed"] is True
+    assert fl.exit_code_for(result["state"], job) == 1                      # never 0: a FIX FIRST is not turned into READY
+    assert state["n"] == 1                                                  # the coder is NOT called to repair a test it may not edit
+    note = (root / "_loop" / "j" / "TEST_FINDINGS.md").read_text(encoding="utf-8")
+    assert "too weak" in note and "lightning" in note
+
+
+def test_a_mixed_report_sends_only_the_non_test_findings_to_the_coder_and_the_test_finding_stays_open(tmp_path):
+    root, job = make_job(tmp_path, review=True, reviewers=["lightning"], review_rounds=4)
+    seen = []
+    state = {"n": 0}
+
+    def caller(system, user):
+        state["n"] += 1
+        seen.append(user)
+        return reply(GOOD_MODULE, GOOD_TEST), {"status": 200, "finish": "stop"}
+    calls = {"n": 0}
+
+    def reviewer(files, report):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            report.write_text("MED - pieces/test_m.py:3 - the test is too weak" + NL + "HIGH - pieces/m.py:1 - wrong constant" + NL + "## Verdict: FIX FIRST", encoding="utf-8")
+            return {"verdict": "FIX FIRST"}
+        report.write_text("## Verdict: READY", encoding="utf-8")
+        return {"verdict": "READY"}
+    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": reviewer}, scrub_keys=[])
+    assert state["n"] == 2 and "wrong constant" in seen[1] and "too weak" not in seen[1]
+    assert result["state"] == "test-review-open"                            # the second reviewer pass says READY, but the earlier test finding is still unresolved
+    assert "too weak" in (root / "_loop" / "j" / "TEST_FINDINGS.md").read_text(encoding="utf-8")
+
+
+def test_split_test_findings_keeps_unrelated_reports_unchanged():
+    rep = "HIGH - pieces/m.py - bug" + NL + "## Verdict: FIX FIRST"
+    assert fl.split_test_findings(rep, ["pieces/test_m.py"]) == (rep, [], -1)
+    text, lines, n = fl.split_test_findings("LOW - pieces/test_other.py:1 - nit" + NL + "HIGH - pieces/m.py - bug", [])
+    assert lines == ["LOW - pieces/test_other.py:1 - nit"] and n == 1 and "bug" in text and "nit" not in text
+
+
+def test_a_file_called_name_test_py_is_also_a_test_finding():
+    _, lines, n = fl.split_test_findings("MED - pieces/example_test.py:2 - weak", [])
+    assert lines and n == 0
+
+
+def test_suspicious_code_is_only_a_warning(tmp_path):
+    root, job = make_job(tmp_path)
+    hacked = reply("def answer():" + NL + "    # HACK: test compatibility" + NL + "    return 42", GOOD_TEST)
+    caller, state = scripted([hacked])
+    result = fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])
+    assert result["tests_passed"] is True and result["state"] in ("passed", "passed-no-review")      # not rejected
+    assert "HACK" in (root / "_loop" / "j" / "WARNINGS.md").read_text(encoding="utf-8")
+    assert any(r.get("warnings") for r in result["rounds"])
+    assert fl.suspicious_code({"pieces/test_m.py": "# HACK in a test"}, ["pieces/test_m.py"]) == []      # tests are not scanned
+
+
+def test_a_spec_with_a_control_character_stops_before_any_coder_call(tmp_path):
+    root, job = make_job(tmp_path)
+    (root / "specs" / "s.md").write_text("regex " + chr(8) + "word", encoding="utf-8")        # a backspace made by writing \b in a normal string
+    caller, state = scripted([reply(GOOD_MODULE, GOOD_TEST)])
+    result = fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])
+    assert result["state"] == "invalid-spec" and state["n"] == 0 and result["coder_calls"] == 0
+    assert "control characters" in (root / "_loop" / "j" / "INVALID_SPEC.md").read_text(encoding="utf-8")
+
+
+def test_contradictory_test_edit_permissions_are_rejected_and_a_clear_spec_passes(tmp_path):
+    root, job = make_job(tmp_path)
+    (root / "pieces" / "test_m.py").write_text(GOOD_TEST, encoding="utf-8")                 # the test file already exists, so it is frozen after round 0
+    (root / "specs" / "s.md").write_text("Return the COMPLETE test file and the module.", encoding="utf-8")
+    assert fl.validate_job_inputs(job, root)
+    caller, state = scripted([reply(GOOD_MODULE, GOOD_TEST)])
+    assert fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])["state"] == "invalid-spec" and state["n"] == 0
+    (root / "specs" / "s.md").write_text("The existing tests are frozen: return the test file unchanged, append only.", encoding="utf-8")
+    assert fl.validate_job_inputs(job, root) == []
+    (root / "pieces" / "test_m.py").unlink()
+    assert fl.validate_job_inputs(job, root)                                                # says frozen, but no test file exists
