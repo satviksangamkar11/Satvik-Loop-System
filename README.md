@@ -24,6 +24,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
 | `review-open` | tests pass, FIX FIRST findings left when the rounds ran out (the last passing version is kept) | 1 |
 | `escalate` | tests never passed: originals restored, `ESCALATE.md` written, Sonnet 5.5 writes `SONNET_DIAGNOSIS.md` | 3 |
 | claim conflict | another job holds one of the files | 4 |
+| reviewer CLI down | the Codex or Haiku CLI did not answer the start-up check; no coder call was made | 6 |
 
 ## Parallel jobs
 
@@ -63,6 +64,8 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 ## Safeguards
 
 - A job file whose `review_files` do not include its own files is refused at load time (a copied job file once made the reviewers judge the wrong files). `pieces/test_guards.py` also checks every real job file for consistency.
+- Before round 0 the loop pings the Codex and Haiku CLIs (result remembered 30 minutes in `_loop/preflight_ok.json`); a dead login stops the job at once with exit code 6.
+- pytest exit 0 with no test PASSED (all skipped, xfailed or nothing collected) is not a pass.
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
 - Only the Nemotron coder writes code. Codex and Haiku only review.

@@ -341,3 +341,62 @@ def test_a_test_bug_may_be_repaired_but_never_weakened():
     assert fl._not_weaker(old, fixed)
     assert not fl._not_weaker(old, fewer_tests) and not fl._not_weaker(old, fewer_asserts)
     assert not fl._not_weaker(old, "def test_a(:")
+
+
+def test_pytest_exit_zero_with_no_passed_test_is_not_a_pass(tmp_path):
+    (tmp_path / "test_skip.py").write_text("import pytest" + chr(10) + "@pytest.mark.skip(reason='x')" + chr(10) + "def test_a():" + chr(10) + "    pass" + chr(10), encoding="utf-8")
+    (tmp_path / "test_ok.py").write_text("def test_a():" + chr(10) + "    assert True" + chr(10), encoding="utf-8")
+    (tmp_path / "test_none.py").write_text("x = 1" + chr(10), encoding="utf-8")
+    ok, out = fl.run_pytest(["test_skip.py"], tmp_path)
+    assert ok is False and "no test PASSED" in out
+    ok, out = fl.run_pytest(["test_ok.py"], tmp_path)
+    assert ok is True
+    ok, out = fl.run_pytest(["test_none.py"], tmp_path)
+    assert ok is False
+    assert fl._some_test_passed("3 passed, 1 skipped in 0.1s") and not fl._some_test_passed("1 skipped in 0.1s") and not fl._some_test_passed("")
+
+
+def test_codex_and_haiku_never_say_ready_on_cut_off_input_or_a_failed_process(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("codex_review_t", REPO / "scripts" / "source" / "codex_review.py")
+    cr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cr)
+    (tmp_path / "prompt.md").write_text("review", encoding="utf-8")
+    (tmp_path / "a.py").write_text("x = 1", encoding="utf-8")
+
+    def runner(rc):
+        def run(cmd, text, timeout_s):
+            out = Path(cmd[cmd.index("-o") + 1])
+            out.write_text("No defects." + chr(10) + "## Verdict: READY" + chr(10), encoding="utf-8")
+            return rc, ""
+        return run
+    ok = cr.run_codex_review(tmp_path / "prompt.md", [tmp_path / "a.py"], tmp_path / "r1.md", root=tmp_path, runner=runner(0))
+    assert ok["verdict"] == "READY"
+    failed = cr.run_codex_review(tmp_path / "prompt.md", [tmp_path / "a.py"], tmp_path / "r2.md", root=tmp_path, runner=runner(1))
+    assert failed["verdict"] == "NONE"
+    missing = cr.run_codex_review(tmp_path / "prompt.md", [tmp_path / "gone.py"], tmp_path / "r3.md", root=tmp_path, runner=runner(0))
+    assert missing["problems"] and missing["verdict"] == "NONE"
+
+
+def test_preflight_reports_dead_reviewers_and_remembers_success(tmp_path):
+    root = make_root(tmp_path)
+    calls = []
+
+    def runner(name, prompt):
+        calls.append(name)
+        return (0, "OK") if name == "codex" else (1, "")
+    dead = fl.preflight_reviewers(root, ["lightning", "minimax", "codex", "haiku"], runner=runner, now=1000.0)
+    assert dead == ["haiku"] and calls == ["codex", "haiku"]           # nvidia reviewers are not pinged
+    calls.clear()
+    dead = fl.preflight_reviewers(root, ["codex", "haiku"], runner=runner, now=1100.0)
+    assert dead == ["haiku"] and calls == ["haiku"]                     # codex was remembered (fresh), haiku asked again
+    calls.clear()
+    assert fl.preflight_reviewers(root, ["codex"], runner=runner, now=1000.0 + 5000) == [] and calls == ["codex"]   # stale marker: asked again
+
+    def boom(name, prompt):
+        raise OSError("no cli")
+    assert fl.preflight_reviewers(make_root(tmp_path / "x"), ["codex"], runner=boom, now=1.0) == ["codex"]
+
+
+def test_exit_code_six_is_documented():
+    assert "6 = a reviewer CLI" in fl.exit_code_for.__doc__

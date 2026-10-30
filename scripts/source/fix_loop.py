@@ -236,6 +236,13 @@ def build_prompt(job: dict, root: Path, round_no: int, pytest_output: str | None
     return system, user
 
 
+def _some_test_passed(output: str) -> bool:
+    """True when the last non-empty pytest line reports at least one passed (or xpassed) test."""
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+    last = lines[-1] if lines else ""
+    return any(int(n) > 0 for n, kind in _re.findall(r"(\d+) (passed|xpassed)", last))
+
+
 def run_pytest(tests: list[str], root: Path, timeout_s: int = 600, python: str | None = None) -> tuple[bool, str]:
     if python is None:
         python = sys.executable
@@ -243,6 +250,8 @@ def run_pytest(tests: list[str], root: Path, timeout_s: int = 600, python: str |
     try:
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout_s)
         output = proc.stdout + proc.stderr
+        if proc.returncode == 0 and not _some_test_passed(output):       # exit 0 with every test skipped or nothing collected proves nothing (Opus F1)
+            return False, output + chr(10) + "LOOP: pytest exited 0 but no test PASSED (all skipped, xfailed, or none collected): that is not a pass."
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired:
         return False, "pytest timed out"
@@ -295,7 +304,7 @@ def _haiku_runner(cmd, text, timeout_s):
 def _default_reviewers_factory(root: Path, review_prompt: str | None = None, codex_runner=None) -> dict[str, Callable[[list[Path], Path], dict]]:
     """Nemotron 3.5 Lightning (thinking off, 16k) and Codex (medium, file-based runner). The prompt file is the JOB's review_prompt (P1-D23)."""
     review_run_mod = _load_module_by_path("review_run", root / "scripts/source/review_run.py")
-    prompt_file = root / (review_prompt or "docs/AGENT_RULES.md")
+    prompt_file = root / (review_prompt or "docs/REVIEW_PROMPT.md")
     reviewers: dict[str, Callable[[list[Path], Path], dict]] = {}
 
     def make_lightning_reviewer():
@@ -692,7 +701,7 @@ def run_job(
 
 
 def exit_code_for(state: str, job: dict) -> int:
-    """0 = done; 3 = escalate; 5 = a REQUIRED review (review: true) produced no verdict, so a chain must stop (P1-D24); 1 = anything else (for example review-open)."""
+    """0 = done; 3 = escalate; 6 = a reviewer CLI (codex or haiku) did not answer the start-up check, no coder call was made; 5 = a REQUIRED review (review: true) produced no verdict, so a chain must stop (P1-D24); 1 = anything else (for example review-open)."""
     if state == "passed":
         return 0
     if state == "review-missing":
@@ -702,6 +711,59 @@ def exit_code_for(state: str, job: dict) -> int:
     if state == "escalate":
         return 3
     return 1
+
+
+def preflight_reviewers(root: Path, reviewers: list[str], runner=None, ttl_s: int = 1800, now=None) -> list[str]:
+    """Before round 0: ask each CLI reviewer (codex, haiku) for a one-word reply. Returns the list of reviewers that did NOT answer (empty = all fine).
+    A successful check is remembered in _loop/preflight_ok.json for ttl_s seconds, so parallel jobs do not repeat it (Opus F6)."""
+    marker = root / "_loop" / "preflight_ok.json"
+    clock = now if now is not None else time.time()
+    try:
+        done = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        done = {}
+    if not isinstance(done, dict):
+        done = {}
+    ping = "Reply with the single word OK."
+    failed = []
+    for name in reviewers:
+        if name not in ("codex", "haiku"):
+            continue
+        stamp = done.get(name)
+        if isinstance(stamp, (int, float)) and clock - stamp < ttl_s:
+            continue
+        try:
+            if runner is not None:
+                rc, text = runner(name, ping)
+            else:
+                rc, text = _ping_cli(name, ping)
+        except Exception:
+            rc, text = 1, ""
+        if rc == 0 and "OK" in (text or "").upper():
+            done[name] = clock
+        else:
+            failed.append(name)
+    try:
+        if marker.parent.is_dir():
+            marker.write_text(json.dumps(done), encoding="utf-8")
+    except OSError:
+        pass
+    return failed
+
+
+def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
+    """One-line call of the reviewer CLI with output to a temp FILE (never a pipe)."""
+    import shutil
+    import tempfile
+    if name == "haiku":
+        cmd = [shutil.which("claude") or "claude", "-p", "--model", "haiku", "--effort", "low", "--tools", ""]
+    else:
+        cmd = [shutil.which("codex.cmd") or shutil.which("codex") or "codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", "-m", "gpt-6-luna",
+               "-c", "model_reasoning_effort=low", "-"]
+    with tempfile.TemporaryFile() as sink:
+        proc = subprocess.run(cmd, input=prompt.encode("utf-8"), stdout=sink, stderr=subprocess.STDOUT, timeout=180)
+        sink.seek(0)
+        return proc.returncode, sink.read().decode("utf-8", "replace")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -724,6 +786,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dry-run: prompt size {len(system) + len(user)} chars")
         return 0
 
+    if job.get("review", True):
+        dead = preflight_reviewers(root, job.get("reviewers", []))
+        if dead:
+            print(f"reviewer login/CLI check failed for: {dead}; stopping before round 0 (exit 6)", file=sys.stderr)
+            return 6
     try:
         scrub_keys = _load_module_by_path("draft_source", root / "scripts/source/draft_source.py").nt.load_keys()
     except Exception:

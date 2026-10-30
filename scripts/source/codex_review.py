@@ -125,6 +125,8 @@ def run_codex_review(
     if out_path.is_file() and out_path.stat().st_size > 0:
         report_text = out_path.read_text(encoding="utf-8")
         verdict = parse_verdict(report_text)
+        if problems or returncode != 0:          # cut-off or missing input, or a failed reviewer process, can never be READY (Opus F2)
+            verdict = "NONE"
         return {
             "model": model,
             "effort": effort,
