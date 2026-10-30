@@ -206,6 +206,14 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
     return originals
 
 
+def failing_test_set(output) -> frozenset:
+    """The ids of the tests a pytest run reported as FAILED or ERROR (empty when none can be read)."""
+    return frozenset(_re.findall(r"^(?:FAILED|ERROR) (\S+)", output or "", _re.M))
+
+
+REPEAT_LIMIT = 3          # failed repairs with an identical failing-test set that stop a job (owner decision 2026-10-30)
+
+
 def _save_attempt(status_dir_job: Path, root: Path, expected_files: list[str]) -> None:
     """Opus F8: before escalation restores the originals, keep the last attempted files under `attempt/`."""
     for rel in expected_files:
@@ -605,6 +613,8 @@ def run_job(
     last_pytest_output: str | None = None
     pending_review_reports: list[tuple[str, str]] = []  # (reviewer_name, report_text)
     review_pass_count = 0
+    fail_sigs: list = []          # failing-test set of each consecutive failed repair round (round 1 and later)
+    stuck_set = None
 
     def _scrub(text: str) -> str:
         for k in scrub_keys:
@@ -763,6 +773,7 @@ def run_job(
         print(f"{name} round {round_no}: fixer={fixer_name} tests {'pass' if passed else 'fail'} files {'ok' if files_ok else 'bad'}")
 
         if passed:
+            fail_sigs.clear()
             ever_passed = True
             tests_passed = True
             last_good = {rel: (root / rel).read_text(encoding="utf-8") for rel in expected_files if (root / rel).is_file()}   # snapshot of the last version that passed
@@ -870,14 +881,28 @@ def run_job(
         else:
             last_pytest_output = _scrub(output)              # P1-D20: pytest output goes into the next prompt and into ESCALATE.md
             pending_review_reports = []
+            if round_no >= 1:                                # repeated identical failure: a call budget limits cost, not repeated attempts at one defect
+                fail_sigs.append(failing_test_set(output))
+                if len(fail_sigs) >= REPEAT_LIMIT and fail_sigs[-1] and all(x == fail_sigs[-1] for x in fail_sigs[-REPEAT_LIMIT:]):
+                    stuck_set = sorted(fail_sigs[-1])
+                    break
+            else:
+                fail_sigs.clear()
             continue
 
+    if stuck_set:
+        _save_attempt(status_dir_job, root, expected_files)
+        nl = chr(10)
+        (status_dir_job / "NEEDS_REVIEW.md").write_text(
+            f"# NEEDS_REVIEW{nl}{nl}Job: {name}{nl}{nl}Stopped after {REPEAT_LIMIT} consecutive failed repairs with the identical failing-test set (round {last_round_no}, {coder_calls} coder calls). "
+            f"The failing attempt is kept under attempt/; the last passing version (if any) was restored.{nl}{nl}Failing tests:{nl}" + nl.join(f"- {t}" for t in stuck_set)
+            + f"{nl}{nl}Last pytest output (last 9000 chars):{nl}```{nl}{(last_pytest_output or '')[-9000:]}{nl}```{nl}", encoding="utf-8")
     if not tests_passed and last_good:
         # a later (review-driven) round broke tests that had passed: keep the last passing version instead of throwing everything away
         for rel, content in last_good.items():
             _atomic_write(root / rel, content)
         tests_passed = True
-        state = "review-open"
+        state = "needs_review" if stuck_set else "review-open"
         review_verdict = "FIX FIRST"
     if not tests_passed:
         state = "escalate"
@@ -899,7 +924,7 @@ def run_job(
     if state == "running":
         state = "review-open"                                  # tests pass but a reviewer still says FIX FIRST and no round is left (P1-D23); files are kept
         review_verdict = review_verdict or "FIX FIRST"
-    _write_status(last_round_no, "", True, True, "review findings still open" if state == "review-open" else "done")
+    _write_status(last_round_no, "", True, True, "repeated identical failure" if state == "needs_review" else "review findings still open" if state == "review-open" else "done")
     print(f"{name}: {state}")
     return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
@@ -910,7 +935,7 @@ def exit_code_for(state: str, job: dict) -> int:
         return 0
     if state == "passed-no-review":
         return 5 if job.get("review") else 0
-    if state == "escalate":
+    if state in ("escalate", "needs_review"):
         return 3
     return 1
 

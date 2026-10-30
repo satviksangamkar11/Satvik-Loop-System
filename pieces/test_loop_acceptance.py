@@ -339,3 +339,58 @@ def test_a_loop_crash_prints_its_traceback(tmp_path, capsys):
     script.write_text("raise RuntimeError('loop exploded')" + NL, encoding="utf-8")
     assert pc.run_job("job.json", repo, loop_script=str(script), loop_log=False) == 1
     assert "loop exploded" in capsys.readouterr().err
+
+
+# 9. repeated identical failure: three failed repairs with the same failing-test set stop the job (owner bug fix 2026-10-30) ---------------------------
+BAD_MODULE = "def answer():" + NL + "    return 41"
+
+
+def fix_first(files, report):
+    report.write_text("## Verdict: FIX FIRST" + NL + "HIGH - pieces/m.py - change something", encoding="utf-8")
+    return {"verdict": "FIX FIRST"}
+
+
+def test_failing_test_set_reads_the_pytest_summary_lines():
+    out = "x" + NL + "FAILED pieces/test_m.py::test_a - assert 1 == 2" + NL + "ERROR pieces/test_n.py::test_b" + NL + "FAILED pieces/test_m.py::test_a - again" + NL + "2 failed"
+    assert fl.failing_test_set(out) == frozenset({"pieces/test_m.py::test_a", "pieces/test_n.py::test_b"})
+    assert fl.failing_test_set("") == frozenset() and fl.failing_test_set(None) == frozenset()
+
+
+def test_three_identical_failed_review_repairs_stop_the_job_as_needs_review(tmp_path):
+    root, job = make_job(tmp_path, review=True, reviewers=["lightning"], review_rounds=6)
+    caller, state = scripted([reply(GOOD_MODULE, GOOD_TEST)] + [reply(BAD_MODULE, GOOD_TEST)] * 8)
+    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": fix_first}, scrub_keys=[])
+    assert result["state"] == "needs_review" and fl.exit_code_for("needs_review", job) == 3
+    assert state["n"] == 4 and result["coder_calls"] == 4                    # one passing round, then exactly three failed repairs
+    assert (root / "pieces" / "m.py").read_text(encoding="utf-8").strip() == GOOD_MODULE        # the last passing version is preserved
+    note = (root / "_loop" / "j" / "NEEDS_REVIEW.md").read_text(encoding="utf-8")
+    assert "pieces/test_m.py::test_answer" in note and "3" in note
+    assert "return 41" in (root / "_loop" / "j" / "attempt" / "pieces" / "m.py").read_text(encoding="utf-8")        # the failing attempt is kept as evidence
+    assert read_status(root)["state"] == "needs_review"
+
+
+def test_identical_failures_of_a_job_that_never_passed_stop_early_and_leave_evidence(tmp_path):
+    root, job = make_job(tmp_path, max_rounds=8)
+    caller, state = scripted([reply(BAD_MODULE, GOOD_TEST)])
+    result = fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])
+    assert result["state"] == "escalate" and state["n"] == 4 and result["coder_calls"] == 4          # round 0 plus three repairs, not nine rounds
+    assert "pieces/test_m.py::test_answer" in (root / "_loop" / "j" / "NEEDS_REVIEW.md").read_text(encoding="utf-8")
+
+
+def test_failures_with_different_failing_sets_are_not_stopped_early(tmp_path):
+    two = GOOD_TEST + NL + NL + NL + "def test_second():" + NL + "    assert answer() > 0"
+    only_a = "def answer():" + NL + "    return -1"                         # fails test_answer and test_second
+    only_b = "def answer():" + NL + "    return 42" + NL + NL + "import nonexistent_zz"      # collection error
+    root, job = make_job(tmp_path, max_rounds=5)
+    caller, state = scripted([reply(only_a, two), reply(only_a, two), reply(only_b, two), reply(only_a, two), reply(only_b, two), reply(GOOD_MODULE, two)])
+    result = fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])
+    assert state["n"] == 6 and result["tests_passed"] is True
+
+
+def test_a_pass_resets_the_streak(tmp_path):
+    root, job = make_job(tmp_path, review=True, reviewers=["lightning"], review_rounds=6)
+    seq = [reply(GOOD_MODULE, GOOD_TEST), reply(BAD_MODULE, GOOD_TEST), reply(BAD_MODULE, GOOD_TEST), reply(GOOD_MODULE, GOOD_TEST),
+           reply(BAD_MODULE, GOOD_TEST), reply(BAD_MODULE, GOOD_TEST), reply(GOOD_MODULE, GOOD_TEST)]
+    caller, state = scripted(seq)
+    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": fix_first}, scrub_keys=[])
+    assert result["state"] != "needs_review" and state["n"] >= 7          # two failures, a pass, two failures, a pass: never three in a row

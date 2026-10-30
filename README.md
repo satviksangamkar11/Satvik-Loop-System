@@ -24,6 +24,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
 | `passed` | tests pass, all reviewers READY | 0 |
 | `passed-no-review` | tests pass, a required review gave no verdict | 5 |
 | `review-open` | tests pass, FIX FIRST findings left when the rounds ran out (the last passing version is kept) | 1 |
+| `needs_review` | three consecutive failed repairs with the IDENTICAL failing-test set: the job stops at once (the call budget limits cost, this limits repeated attempts at one defect). The last passing version is restored, the failing attempt is kept under `attempt/`, `NEEDS_REVIEW.md` lists the failing tests and the last pytest output. A pass resets the count; a job that never passed ends as `escalate` after the same three repairs. | 3 |
 | `escalate` | tests never passed: originals restored, `ESCALATE.md` written, Sonnet 5.5 writes `SONNET_DIAGNOSIS.md` | 3 |
 | claim conflict | another job holds one of the files | 4 |
 | reviewer CLI down | the Codex or Haiku CLI did not answer the start-up check; no coder call was made | 6 |
