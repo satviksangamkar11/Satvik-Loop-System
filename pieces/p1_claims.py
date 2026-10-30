@@ -473,8 +473,8 @@ def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, esc
         job_path = repo / job_path
     job = json.loads(job_path.read_text(encoding="utf-8"))
     fixers = job.get("fixers")
-    if not isinstance(fixers, list) or not fixers or any(f != "nemotron" for f in fixers):
-        raise ValueError("job must set fixers to nemotron only (the loop default includes another coder)")
+    if not isinstance(fixers, list) or not fixers or any(f not in ("nemotron", "haiku") for f in fixers):
+        raise ValueError("job fixers must be nemotron or haiku (owner exception 2026-10-31)")
     paths = [job_path, repo / "_loop" / str(job.get("name", ""))] + [repo / f for f in list(job.get("files", [])) + list(job.get("tests", []))]
     env = os.environ if environ is None else environ
     script = str(loop_script or repo / "scripts" / "source" / "fix_loop.py")

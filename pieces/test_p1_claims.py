@@ -324,7 +324,7 @@ def test_main_returns_the_loop_exit_code(tmp_path, capsys, monkeypatch):
 
 def test_run_job_refuses_a_job_without_nemotron_only_fixers(tmp_path):
     repo, job, out = make_repo(tmp_path)
-    for fixers in (None, [], ["nemotron", "codex"], ["haiku"], "nemotron"):
+    for fixers in (None, [], ["nemotron", "codex"], ["haiku", "codex"], "nemotron"):   # owner exception 2026-10-31: "haiku" is now a valid fixer; "codex" is still refused
         data = json.loads(job.read_text())
         data.pop("fixers", None)
         if fixers is not None:

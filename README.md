@@ -6,9 +6,9 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
 
 ## How one job runs
 
-1. **Write.** The coder (Nemotron 3 Ultra 550B, `nvidia/nemotron-3-ultra-550b-a55b`, fixed, not configurable) reads the spec and writes the module and its test file (round 0).
+1. **Write.** The coder reads the spec and writes the module and its test file (round 0). A job names its coder in `fixers`: `nemotron` (Nemotron 3 Ultra 550B, `nvidia/nemotron-3-ultra-550b-a55b`) or `haiku` (Claude Haiku 5.5 at high effort, called through the Claude CLI with no tools and no MCP servers; no API key). Since 2026-10-31 the Step 4 repair runs on Haiku.
 2. **Test.** pytest runs on the job's test files.
-3. **Fix.** If tests fail, the real pytest output goes back to the coder. Rounds 0 to 3 are all Nemotron.
+3. **Fix.** If tests fail, the real pytest output goes back to the same coder named in `fixers`.
    - Tests that exist on disk are frozen: a fix round that changes one is rejected. The one exception is a test file with a syntax error: it cannot run, so the coder is told to return it fixed.
    - A bug INSIDE a frozen test (pytest shows a KeyError, NameError, TypeError and so on raised in the test's own code, not a failed assertion) may be repaired in a fix round, but only if the test-function count and the assert count do not drop.
    - A test file that does not exist yet (for example after a refused first reply) must still be written in a fix round.
@@ -16,7 +16,9 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
    - A reply with a refused block for a job file is rejected as a whole.
 4. **Review.** When tests pass, four reviewers read the code at the same time:
    Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6-luna, high effort, read-only) and Haiku (low effort, reviewer only).
-   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). A second Groq reviewer `qwen` (`qwen/qwen3.8-27b`, reasoning_effort none) uses the same runner and limits. Groq keys are read inside the process from `secrets/groq_key_*.txt` (or `GROQ_KEY_FILE` / `GROQ_KEY_DIR`) and never printed. Key rotation uses the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): a ledger shared by all processes under OS locks (`_loop/groq_ledger`), ONE request per key per 60 s window, a failed key is cooled, 401/402/403 retire a key, 429 and 5xx move to the next key, any other error returns at once; the runner waits for a free key.
+   Jobs of the Step 4 repair use the two reviewers `codex` and `groq`: GPT-OSS 120B on Groq is the second reviewer. The `qwen` reviewer was removed on 2026-10-31 (its model and wiring are gone from the loop).
+   **Contradiction rule (owner 2026-10-31):** a pass needs both reviewers to answer. If they agree (both READY, or both FIX FIRST) that verdict stands. If they disagree (READY against FIX FIRST), Haiku 5.5 at high effort decides: it reads both reports and the files under review, and its last `## Verdict:` line decides (READY moves the pass ahead, FIX FIRST sends its report to the coder). A timeout or error (NONE) is no review and blocks the pass; a Haiku reply with no verdict, or a failed Haiku call, is never a pass; a test finding still blocks, because tests are frozen after round 0.
+   Optional `groq` reviewer (Groq Cloud free tier, `openai/gpt-oss-120b`): a COMPACT reviewer. The free tier allows 8,000 tokens per minute, so the input is truncated to about 18,000 characters and a READY from a truncated view is downgraded to no verdict; an HTTP error leaves no report (NONE). Groq keys are read inside the process from `secrets/groq_key_*.txt` (or `GROQ_KEY_FILE` / `GROQ_KEY_DIR`) and never printed. Key rotation uses the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): a ledger shared by all processes under OS locks (`_loop/groq_ledger`), ONE request per key per 60 s window, a failed key is cooled, 401/402/403 retire a key, 429 and 5xx move to the next key, any other error returns at once; the runner waits for a free key.
    Each ends its reply with `## Verdict: READY` or `## Verdict: FIX FIRST`. FIX FIRST reports go back to the coder.
 5. **Result.** The job ends in one of these states:
 
@@ -67,7 +69,7 @@ Run it:
 python pieces/p1_claims.py run _loop/jobs/p1_example.json .
 ```
 
-The launcher refuses any job whose fixers are not all `nemotron`. Per-job state is in `_loop/<name>/status.json`, the replies are in `round_<n>.txt` and the reviews are in `review_<pass>_<reviewer>.md`.
+The launcher accepts only `nemotron` or `haiku` as fixers; any other name is refused. Per-job state is in `_loop/<name>/status.json`, the replies are in `round_<n>.txt` and the reviews are in `review_<pass>_<reviewer>.md`.
 
 ## Safeguards
 
@@ -89,7 +91,7 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 - `coder_model` and `reviewer_model` are refused unless they equal the fixed models (the loop always uses nemotron-3-ultra as coder and nemotron-3.5-lightning as Lightning reviewer).
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
-- Only the Nemotron coder writes code. Codex and Haiku only review.
+- The coder is the one named in `fixers` (Nemotron or Haiku). Codex, Groq, Lightning, MiniMax and Haiku-as-reviewer only review. Haiku is also the tie-breaker when two reviewers contradict each other.
 - API keys are read from a folder outside the repository (`NVIDIA_KEYS_DIR`, default `<repo parent>/secrets/nvidia`). Keys are scrubbed from every stored reply and report. No key is in this repository.
 - Output goes to existing folders only. The loop does not create project folders.
 - `pieces/test_guards.py` checks the recurring coder mistakes mechanically: swallowed `raise` inside `try/except`, Codex run through pipes, folder creation, a forbidden word, and the offline-only transcription switch.
@@ -137,5 +139,6 @@ The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested l
 | 9328281 | A reviewer finding that names a test file is routed to `TEST_FINDINGS.md` for the observer, never to the coder (tests are frozen after round 0), and the job ends `test-review-open` and is never READY while one is open; module lines that look written for a test are only a warning (`WARNINGS.md`); a pre-launch spec check rejects control characters (for example a backspace made by a regex written as `\b` in a normal string), an unreadable spec, and contradictory test-edit permissions (state `invalid-spec`, `INVALID_SPEC.md`, no coder call). |
 | fcfbf13 | Codex reviewer set to `gpt-6.1-sol` at low effort (later changed to `gpt-6-luna` at high effort by owner decision, see the next row). |
 | (owner 2026-10-30) | Codex reviewer set to `gpt-6-luna` at HIGH effort (read-only); job files may list `codex` together with `groq` and `qwen`. |
+| (owner 2026-10-31) | Haiku 5.5 high as coder (job `fixers: ["haiku"]`, through the Claude CLI: `--tools ""`, `--strict-mcp-config` with an empty MCP config, `--no-session-persistence`; a reply counts only with status 200). Haiku also decides when two reviewers contradict. Qwen removed from the loop. Reviewer set of the Step 4 repair: `codex` and `groq`. |
 | 7287a89, 1cbab19 | Added the `groq` and `qwen` compact reviewers on Groq Cloud free tier. |
 | 7ce7465 | Groq key rotation using the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): shared ledger under OS locks (`_loop/groq_ledger`), one request per key per 60 s window, failed key cooled, 401/402/403 retire key, 429/5xx move to next key, other errors return at once, runner waits for a free key. |

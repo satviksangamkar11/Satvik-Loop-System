@@ -191,7 +191,9 @@ def test_a_quorum_never_hides_a_fix_first_finding(tmp_path):
         report.write_text("MED - x - y" + NL + "## Verdict: FIX FIRST" + NL, encoding="utf-8")
         return {"verdict": "FIX FIRST"}
     caller, _ = scripted([reply(GOOD_MODULE, GOOD_TEST)])
-    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": fix_first, "codex": ready}, scrub_keys=[])
+    # READY vs FIX FIRST is a mixed panel: the tie-breaker decides (owner 2026-10-31). An offline judge that agrees with the fix request keeps this test offline
+    result = fl.run_job(job, root, caller=caller, reviewer={"lightning": fix_first, "codex": ready}, scrub_keys=[],
+                        callers={"judge": lambda system, user: ("MED - x - y" + NL + "## Verdict: FIX FIRST" + NL, {"status": 200})})
     assert result["state"] == "review-open"
 
 
@@ -572,16 +574,19 @@ def test_groq_is_a_valid_reviewer_name_in_a_job(tmp_path):
     assert job["reviewers"] == ["codex", "groq"]
 
 
-def test_qwen_reviewer_uses_the_qwen_model_with_reasoning_none_and_gpt_oss_keeps_low(tmp_path, monkeypatch):
+def test_groq_reviewer_is_gpt_oss_120b_at_low_effort_and_qwen_is_gone(tmp_path, monkeypatch):
     seen = []
     out = groq_env(tmp_path, monkeypatch, "## Verdict: FIX FIRST", seen)
-    fl._groq_runner(["groq", "-m", fl.QWEN_MODEL, "-o", str(out), "-"], "short", 30)
-    assert seen[0]["model"] == "qwen/qwen3.8-27b" and seen[0]["reasoning_effort"] == "none"
-    out2 = tmp_path / "r2.md"
-    fl._groq_runner(["groq", "-m", fl.GROQ_MODEL, "-o", str(out2), "-"], "short", 30)
-    assert seen[2]["model"] == "openai/gpt-oss-120b" and seen[2]["reasoning_effort"] == "low"
-    root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq", "qwen"])
-    assert job["reviewers"] == ["codex", "groq", "qwen"]
+    fl._groq_runner(["groq", "-m", fl.GROQ_MODEL, "-o", str(out), "-"], "short", 30)
+    assert seen[0]["model"] == "openai/gpt-oss-120b" and seen[0]["reasoning_effort"] == "low"
+    assert not hasattr(fl, "QWEN_MODEL")                             # owner 2026-10-31: Qwen removed from the loop
+    root, job = make_job(tmp_path, review=True, reviewers=["codex", "groq"])
+    assert job["reviewers"] == ["codex", "groq"]
+    with pytest.raises(ValueError):
+        (tmp_path / "_loop" / "jobs").mkdir(parents=True, exist_ok=True)
+        bad = tmp_path / "_loop" / "jobs" / "qwen_job.json"
+        bad.write_text(json.dumps({**job, "name": "qwen_job", "reviewers": ["codex", "qwen"]}), encoding="utf-8")
+        fl.load_job(bad)
 
 
 # 12. Groq key rotation = the NVIDIA ledger pool, one request per key per window (owner 2026-10-30): fake HTTP, fake key files, fake clock ----------------
