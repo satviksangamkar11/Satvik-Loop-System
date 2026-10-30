@@ -26,6 +26,7 @@ JOB_SCHEMA = {
         "tests": {"type": "array", "items": {"type": "string"}, "minItems": 1},
         "reference": {"type": "array", "items": {"type": "string"}, "default": []},
         "regression": {"type": "array", "items": {"type": "string"}, "default": []},
+        "deadline_min": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
         "max_rounds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
         "review": {"type": "boolean", "default": True},
         "review_rounds": {"type": "integer", "minimum": 0, "maximum": 10, "default": 4},
@@ -550,10 +551,15 @@ def run_job(
         (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
 
     ever_passed = False
+    job_started = time.monotonic()
+    deadline_s = float(job.get("deadline_min", 120)) * 60
     # rounds 0..max_rounds are for making the tests pass; once they have passed, up to review_rounds more rounds exist for review fixes (a job whose tests
     # first pass in the LAST round used to end review-open with no fix round at all)
     for round_no in range(max_rounds + 1 + (review_rounds if review_enabled else 0)):
         if not ever_passed and round_no > max_rounds:
+            break
+        if round_no > 0 and time.monotonic() - job_started > deadline_s:      # Opus F11: a job never runs for hours
+            print(f"{name}: deadline of {job.get('deadline_min', 120)} min reached before round {round_no}")
             break
         last_round_no = round_no
         review_report_combined = None
@@ -697,6 +703,10 @@ def run_job(
                 with ThreadPoolExecutor(max_workers=max(1, len(reviewers_list))) as _pool:
                     _futures = {name: _pool.submit(_run_one_reviewer, name) for name in reviewers_list}
                     _review_results = {name: fut.result() for name, fut in _futures.items()}
+                for _rn in reviewers_list:                                 # Opus F14: READY and NONE reports are scrubbed for keys too, not only FIX FIRST
+                    _rp = status_dir_job / f"review_{review_pass_count}_{_rn}.md"
+                    if _rp.is_file():
+                        _rp.write_text(_scrub(_rp.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
                 for rname in reviewers_list:
                     rfunc = reviewer.get(rname)
                     if rfunc is None:

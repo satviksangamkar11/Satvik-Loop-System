@@ -16,6 +16,7 @@ SYSTEM_PROMPT = (
 )
 
 
+REVIEW_TOTAL_S = 900          # seconds one review stream may take; MiniMax is allowed 2700 (owner: let it take time)
 REVIEW_THINKING = False                              # owner (P1-D18): thinking off for the GLM reviewer
 REVIEW_MAX_TOKENS = 100000                           # owner (P1-D18): high output limit for the GLM reviewer
 
@@ -265,6 +266,7 @@ def run_review(
             ds._stream_once = wrapped_stream_once
             keys = ds.nt.load_keys()
             pool = ds.nt.KeyPool(keys)
+            ds.STREAM_TOTAL_S = min(float(getattr(ds, "STREAM_TOTAL_S", 2700)), 2700.0 if "minimax" in model.lower() else REVIEW_TOTAL_S)       # Opus F11: one review never waits longer than 15 minutes
             reply_text, info = ds.chat_stream(pool, keys, model, SYSTEM_PROMPT, user_text, max_tokens=max_tokens)
             reply_text = ds.nt.scrub(reply_text, keys)
     except Exception as e:

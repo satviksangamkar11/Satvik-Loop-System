@@ -90,7 +90,7 @@ def run_codex_review(
     root: Optional[Path] = None,
     model: str = DEFAULT_MODEL,
     effort: str = DEFAULT_EFFORT,
-    timeout_s: int = 1800,
+    timeout_s: int = 900,
     runner: Optional[Callable[[List[str], str, int], Tuple[int, str]]] = None,
 ) -> Dict[str, Any]:
     if out_path.exists():

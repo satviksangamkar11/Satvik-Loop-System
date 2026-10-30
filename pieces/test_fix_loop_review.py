@@ -513,3 +513,41 @@ def test_the_prompt_tells_the_coder_about_the_test_bug_exception(tmp_path):
     _, plain = fl.build_prompt(loaded, root, 1, pytest_output="E   assert 1 == 2")
     _, buggy = fl.build_prompt(loaded, root, 1, pytest_output="pieces/test_m.py:9: KeyError")
     assert "EXCEPTION" not in plain and "EXCEPTION" in buggy and "keep EVERY test function" in buggy
+
+
+def test_review_reports_are_scrubbed_for_keys_even_when_ready(tmp_path):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "max_rounds": 1, "review": True, "reviewers": ["lightning"], "review_prompt": "docs/RP.md", "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    path = root / "_loop" / "jobs" / "j.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+    reply = (FILE_MARK + "pieces/m.py" + chr(10) + FENCE + "python" + chr(10) + "X = 1" + chr(10) + FENCE + chr(10)
+             + FILE_MARK + "pieces/test_m.py" + chr(10) + FENCE + "python" + chr(10) + "def test_x():" + chr(10) + "    assert True" + chr(10) + FENCE + chr(10))
+
+    def reviewer(files, report):
+        report.write_text("No defects. SECRET-KEY-123" + chr(10) + "## Verdict: READY" + chr(10), encoding="utf-8")
+        return {"verdict": "READY"}
+    result = fl.run_job(fl.load_job(path), root, caller=lambda s, u: (reply, {"status": 200, "finish": "stop"}), reviewer={"lightning": reviewer},
+                        pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=["SECRET-KEY-123"])
+    assert result["state"] == "passed"
+    report_text = (root / "_loop" / "j" / "review_0_lightning.md").read_text(encoding="utf-8")
+    assert "SECRET-KEY-123" not in report_text and "[REDACTED]" in report_text
+
+
+def test_the_job_deadline_stops_further_rounds(tmp_path, monkeypatch):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "max_rounds": 3, "review": False, "deadline_min": 1, "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    path = root / "_loop" / "jobs" / "j.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+    assert fl.load_job(path)["deadline_min"] == 1
+    reply = (FILE_MARK + "pieces/m.py" + chr(10) + FENCE + "python" + chr(10) + "X = 1" + chr(10) + FENCE + chr(10)
+             + FILE_MARK + "pieces/test_m.py" + chr(10) + FENCE + "python" + chr(10) + "def test_x():" + chr(10) + "    assert True" + chr(10) + FENCE + chr(10))
+    ticks = []
+    monkeypatch.setattr(fl.time, "monotonic", lambda: (ticks.append(1), 0.0 if len(ticks) == 1 else 500.0)[1])        # the first call starts the job, every later call is 500 s later
+    calls = []
+    result = fl.run_job(fl.load_job(path), root, caller=lambda s, u: (calls.append(1) or reply, {"status": 200, "finish": "stop"}), reviewer={},
+                        pytest_runner=lambda *a, **k: (False, "fail"), scrub_keys=[])
+    assert len(calls) == 1 and result["state"] == "escalate"            # round 0 ran, the deadline stopped round 1

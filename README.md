@@ -71,6 +71,8 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 - Files returned by the coder are checked in the same round: a python file must parse and no file may contain a `## Verdict:` marker (it would be read by the reviewers as an instruction).
 - Running `fix_loop.py` directly is refused unless the launcher set the shared key ledger (or `--solo` is given).
 - A job whose tests first pass in the last test round still gets its review-fix rounds (up to `review_rounds`).
+- Time limits: a job stops starting new rounds after `deadline_min` minutes (default 120). One Codex or Haiku review and one NVIDIA review stream may take 15 minutes; MiniMax is allowed 45.
+- Every review report (READY, NONE and FIX FIRST) is scrubbed for API keys before it is kept.
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
 - Only the Nemotron coder writes code. Codex and Haiku only review.
@@ -101,6 +103,9 @@ python -m pytest pieces -p no:cacheprovider -q
 The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested live with four reviewers. A small job passed in 32 seconds.
 
 ## Known limits
+
+- Job files are still written by hand. `reference` files are not locked, so a job could read a file another running job is rewriting (parallel jobs have not needed this yet).
+- `yaml` and `jsonschema` are third-party dependencies of `fix_loop.py`.
 
 - The job fields `coder_model` and `reviewer_model` are accepted but not used yet: the coder and the Lightning reviewer are fixed in `fix_loop.py`. The coder runs with thinking on (owner rule).
 
