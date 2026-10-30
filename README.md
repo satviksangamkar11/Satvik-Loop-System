@@ -15,7 +15,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
    - In round 0, a test file that already existed may only be extended, never rewritten.
    - A reply with a refused block for a job file is rejected as a whole.
 4. **Review.** When tests pass, four reviewers read the code at the same time:
-   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6-luna, medium, read-only) and Haiku (low effort, reviewer only).
+   Lightning (Nemotron 3.5 Lightning), MiniMax (MiniMax M3.1 Flash), Codex (gpt-6.1-sol, low, read-only) and Haiku (low effort, reviewer only).
    Each ends its reply with `## Verdict: READY` or `## Verdict: FIX FIRST`. FIX FIRST reports go back to the coder.
 5. **Result.** The job ends in one of these states:
 
