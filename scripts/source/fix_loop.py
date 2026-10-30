@@ -27,7 +27,7 @@ JOB_SCHEMA = {
         "max_rounds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
         "review": {"type": "boolean", "default": True},
         "review_rounds": {"type": "integer", "minimum": 0, "maximum": 10, "default": 4},
-        "review_files": {"type": "array", "items": {"type": "string"}, "default": None},
+        "review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
@@ -145,6 +145,31 @@ except Exception:
     codex_review_for_loop = None  # type: ignore[assignment]
 
 
+import re as _re
+
+_TEST_CODE_ERROR = _re.compile(r"test_[A-Za-z0-9_]+\.py:\d+: (KeyError|NameError|TypeError|AttributeError|IndexError|ValueError|UnboundLocalError|ImportError|ModuleNotFoundError)")
+
+
+def _test_bug_in_output(pytest_output) -> bool:
+    """True when pytest says an ERROR (not an assertion) was raised in the test file's own code: that is a bug in the test, not a wrong expectation."""
+    return bool(pytest_output and _TEST_CODE_ERROR.search(pytest_output))
+
+
+def _not_weaker(old: str, new: str) -> bool:
+    """A repaired test file must keep at least as many test functions and as many `assert` statements as before, and must still parse."""
+    import ast
+    try:
+        tree_old, tree_new = ast.parse(old), ast.parse(new)
+    except (SyntaxError, ValueError):
+        return False
+    def count(tree):
+        funcs = sum(1 for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test"))
+        asserts = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Assert))
+        return funcs, asserts
+    (fo, ao), (fn, an) = count(tree_old), count(tree_new)
+    return fn >= fo and an >= ao
+
+
 def _parses(path: Path) -> bool:
     """True when the python file exists and has valid syntax (a test file that cannot even be parsed is not 'frozen': it can never run)."""
     import ast
@@ -155,7 +180,7 @@ def _parses(path: Path) -> bool:
         return False
 
 
-def _freeze_note(job: dict, root: Path) -> str:
+def _freeze_note(job: dict, root: Path, pytest_output=None) -> str:
     """Fix rounds: test files that exist on disk are frozen; a test file that does not exist yet (the first reply was refused) must still be written."""
     frozen = [x for x in job.get("tests", []) if (root / x).is_file() and _parses(root / x)]
     missing = [x for x in job.get("tests", []) if x not in frozen]
@@ -166,6 +191,9 @@ def _freeze_note(job: dict, root: Path) -> str:
         note += " These test files have a SYNTAX ERROR and cannot run; return them fixed in full (change only what is needed to make them valid): " + ", ".join(broken) + "."
     if frozen:
         note += " The test files (" + ", ".join(frozen) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass."
+    if frozen and _test_bug_in_output(pytest_output):
+        note += (" EXCEPTION: the pytest output shows an ERROR raised inside the test file's own code (not a wrong expectation): you MAY return that test file with the bug fixed;"
+                 " keep EVERY test function and EVERY assert (a repair that removes tests or assertions is rejected).")
     if missing:
         note += " These test files do not exist yet and MUST be returned in full: " + ", ".join(missing) + "."
     return note
@@ -513,7 +541,8 @@ def run_job(
 
         tests_changed = [rel for rel, content in parsed_files.items()
                          if files_ok and round_no > 0 and rel in tests and (root / rel).exists() and _parses(root / rel)
-                         and (root / rel).read_text(encoding="utf-8") != content]
+                         and (root / rel).read_text(encoding="utf-8") != content
+                         and not (_test_bug_in_output(last_pytest_output) and _not_weaker((root / rel).read_text(encoding="utf-8"), content))]
         if files_ok and round_no == 0:            # round 0: a test file that existed before the job may only be EXTENDED (old text kept, new tests appended)
             rewritten = [rel for rel, content in parsed_files.items()
                          if rel in tests and original_contents.get(rel) and not content.startswith(original_contents[rel].rstrip())]

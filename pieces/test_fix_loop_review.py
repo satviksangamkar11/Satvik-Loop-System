@@ -219,9 +219,16 @@ def test_a_fix_round_may_return_only_the_changed_file(tmp_path):
     assert "assert True" in (root / "pieces" / "test_m.py").read_text(encoding="utf-8")            # the unchanged file stayed
 
 
-def test_the_fix_prompt_tells_the_coder_to_return_every_file():
-    root = REPO
-    job = fl.load_job(root / "_loop" / "jobs" / "p2_normalize.json")
+def test_the_fix_prompt_tells_the_coder_to_return_every_file(tmp_path):
+    root = make_root(tmp_path)
+    (root / "pieces").mkdir(exist_ok=True)
+    (root / "pieces" / "test_m.py").write_text("def test_a():
+    assert True
+", encoding="utf-8")
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [], "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    job = fl.load_job(root / "_loop" / "jobs" / "j.json")
     _, user = fl.build_prompt(job, root, 1, pytest_output="1 failed")
     # changed 2026-10-30 on purpose: tests are frozen after round 0, so a fix round must return only NON-TEST files (a reply that touches a test is rejected)
     assert "Return every NON-TEST file of the job in full" in user and "FROZEN" in user and job["tests"][0] in user
@@ -246,10 +253,13 @@ def test_a_job_without_a_reviewer_list_gets_all_three_standing_reviewers(tmp_pat
     assert fl.load_job(root / "_loop" / "jobs" / "j.json")["reviewers"] == ["lightning", "minimax", "codex", "haiku"]
 
 
-def test_the_default_review_prompt_exists_in_the_repo():
-    job = fl.load_job(REPO / "_loop" / "jobs" / "p3_audio.json")
+def test_the_default_review_prompt_is_the_repo_review_prompt(tmp_path):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py"], "tests": ["pieces/m.py"], "reference": [], "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    assert fl.load_job(root / "_loop" / "jobs" / "j.json")["review_prompt"] == "docs/REVIEW_PROMPT.md"
     assert (REPO / "docs" / "REVIEW_PROMPT.md").is_file()
-    assert "pilot" not in open(REPO / "scripts" / "source" / "fix_loop.py", encoding="utf-8").read().split("def load_job")[0].split("review_prompt")[1][:120]
 
 
 def test_review_rounds_used_up_after_fix_first_is_review_open(tmp_path):
@@ -320,3 +330,16 @@ def test_load_job_rejects_review_files_that_miss_a_job_file(tmp_path):
     job["review_files"] = ["pieces/m.py", "pieces/test_m.py", "specs/s.md"]
     path.write_text(json.dumps(job), encoding="utf-8")
     assert fl.load_job(path)["review_files"] == job["review_files"]
+
+
+def test_a_test_bug_may_be_repaired_but_never_weakened():
+    err = "pieces" + chr(92) + "test_x.py:241: KeyError"
+    assert fl._test_bug_in_output(err) and not fl._test_bug_in_output("E   assert 1 == 2" + chr(10) + "pieces/test_x.py:10: AssertionError")
+    assert not fl._test_bug_in_output(None)
+    old = "def test_a():NL    d = {}NL    assert d['k'] == 1NLdef test_b():NL    assert TrueNL".replace("NL", chr(10))
+    fixed = "def test_a():NL    d = {'k': 1}NL    assert d['k'] == 1NLdef test_b():NL    assert TrueNL".replace("NL", chr(10))
+    fewer_tests = "def test_a():NL    d = {'k': 1}NL    assert d['k'] == 1NL".replace("NL", chr(10))
+    fewer_asserts = "def test_a():NL    d = {'k': 1}NLdef test_b():NL    assert TrueNL".replace("NL", chr(10))
+    assert fl._not_weaker(old, fixed)
+    assert not fl._not_weaker(old, fewer_tests) and not fl._not_weaker(old, fewer_asserts)
+    assert not fl._not_weaker(old, "def test_a(:")

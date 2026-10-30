@@ -8,6 +8,7 @@ An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out.
 2. **Test.** pytest runs on the job's test files.
 3. **Fix.** If tests fail, the real pytest output goes back to the coder. Rounds 0 to 3 are all Nemotron.
    - Tests that exist on disk are frozen: a fix round that changes one is rejected. The one exception is a test file with a syntax error: it cannot run, so the coder is told to return it fixed.
+   - A bug INSIDE a frozen test (pytest shows a KeyError, NameError, TypeError and so on raised in the test's own code, not a failed assertion) may be repaired in a fix round, but only if the test-function count and the assert count do not drop.
    - A test file that does not exist yet (for example after a refused first reply) must still be written in a fix round.
    - In round 0, a test file that already existed may only be extended, never rewritten.
    - A reply with a refused block for a job file is rejected as a whole.
