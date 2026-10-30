@@ -222,9 +222,7 @@ def test_a_fix_round_may_return_only_the_changed_file(tmp_path):
 def test_the_fix_prompt_tells_the_coder_to_return_every_file(tmp_path):
     root = make_root(tmp_path)
     (root / "pieces").mkdir(exist_ok=True)
-    (root / "pieces" / "test_m.py").write_text("def test_a():
-    assert True
-", encoding="utf-8")
+    (root / "pieces" / "test_m.py").write_text("def test_a(): pass", encoding="utf-8")
     job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [], "fixers": ["nemotron"] * 3}
     (root / "_loop" / "jobs").mkdir(exist_ok=True)
     (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
