@@ -295,3 +295,14 @@ def test_the_reviewers_of_one_job_run_at_the_same_time(tmp_path):
     assert elapsed < 1.0, elapsed                                              # three 0.4 s reviewers: about 0.4 s in parallel, 1.2 s in sequence
     assert max(t for _, t in started) - min(t for _, t in started) < 0.3        # they really started together
     assert [r["round"] for r in result["rounds"] if str(r["round"]).startswith("review")] == ["review_0_lightning", "review_0_minimax", "review_0_codex"]   # original order kept
+
+
+def test_a_test_file_with_a_syntax_error_is_not_frozen(tmp_path):
+    (tmp_path / "pieces").mkdir()
+    (tmp_path / "pieces" / "test_ok.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "pieces" / "test_bad.py").write_text("@pytest.fixture(scope(\"class\")\ndef f():\n    pass\n", encoding="utf-8")
+    note = fl._freeze_note({"tests": ["pieces/test_ok.py", "pieces/test_bad.py", "pieces/test_new.py"]}, tmp_path)
+    assert "(pieces/test_ok.py) are FROZEN" in note                                     # parseable existing test: frozen
+    assert "SYNTAX ERROR" in note and "(change only what is needed to make them valid): pieces/test_bad.py." in note
+    assert "MUST be returned in full: pieces/test_new.py." in note                      # missing test: must be written
+    assert fl._parses(tmp_path / "pieces" / "test_ok.py") and not fl._parses(tmp_path / "pieces" / "test_bad.py")

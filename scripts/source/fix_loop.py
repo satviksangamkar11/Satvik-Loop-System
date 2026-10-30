@@ -142,11 +142,25 @@ except Exception:
     codex_review_for_loop = None  # type: ignore[assignment]
 
 
+def _parses(path: Path) -> bool:
+    """True when the python file exists and has valid syntax (a test file that cannot even be parsed is not 'frozen': it can never run)."""
+    import ast
+    try:
+        ast.parse(path.read_text(encoding="utf-8"))
+        return True
+    except (OSError, SyntaxError, ValueError):
+        return False
+
+
 def _freeze_note(job: dict, root: Path) -> str:
     """Fix rounds: test files that exist on disk are frozen; a test file that does not exist yet (the first reply was refused) must still be written."""
-    frozen = [x for x in job.get("tests", []) if (root / x).is_file()]
+    frozen = [x for x in job.get("tests", []) if (root / x).is_file() and _parses(root / x)]
     missing = [x for x in job.get("tests", []) if x not in frozen]
+    broken = [x for x in missing if (root / x).is_file()]
+    missing = [x for x in missing if x not in broken]
     note = "Return every NON-TEST file of the job in full."
+    if broken:
+        note += " These test files have a SYNTAX ERROR and cannot run; return them fixed in full (change only what is needed to make them valid): " + ", ".join(broken) + "."
     if frozen:
         note += " The test files (" + ", ".join(frozen) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass."
     if missing:
@@ -495,7 +509,8 @@ def run_job(
                     files_ok = True
 
         tests_changed = [rel for rel, content in parsed_files.items()
-                         if files_ok and round_no > 0 and rel in tests and (root / rel).exists() and (root / rel).read_text(encoding="utf-8") != content]
+                         if files_ok and round_no > 0 and rel in tests and (root / rel).exists() and _parses(root / rel)
+                         and (root / rel).read_text(encoding="utf-8") != content]
         if files_ok and round_no == 0:            # round 0: a test file that existed before the job may only be EXTENDED (old text kept, new tests appended)
             rewritten = [rel for rel, content in parsed_files.items()
                          if rel in tests and original_contents.get(rel) and not content.startswith(original_contents[rel].rstrip())]
