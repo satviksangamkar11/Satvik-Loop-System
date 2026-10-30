@@ -1,6 +1,7 @@
 """Safe parallel loops (decision P1-D6/D10, spec specs/phase1_claims.md): shared key ledger, dead-key markers, file claims, job launcher.
 No network, no model call. Keys are never stored: only sha256(key)[:16] hashes reach the shared files."""
 import hashlib
+import uuid
 import json
 import os
 import runpy
@@ -288,13 +289,20 @@ class LedgerKeyPool:
 
 
 class Claim:
-    def __init__(self, locks):
+    def __init__(self, locks, files=()):
         self._locks = locks
+        self._files = list(files)             # reader lock files of this claim: removed again on release
 
     def release(self):
         locks, self._locks = self._locks, []
         for lock in locks:
             lock.release()
+        files, self._files = self._files, []
+        for name in files:
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
 
     def __enter__(self):
         return self
@@ -309,25 +317,122 @@ class ClaimStore:
         if not os.path.isdir(self.dir):
             raise ValueError(f"claims folder does not exist: {self.dir}")
 
-    def claim(self, paths, job_name="") -> Claim:
-        taken, seen = [], set()
+    def _hash(self, canon: str) -> str:
+        return hashlib.sha256(canon.encode()).hexdigest()[:16]
+
+    def _live_reader(self, canon: str) -> bool:
+        """True when another job still reads this file. A reader holds an OS lock on `read_<hash>_<pid>.lock` for its whole life; a lock that can be
+        taken belongs to a dead reader and is removed (F10)."""
+        prefix = f"read_{self._hash(canon)}_"
+        for name in os.listdir(self.dir):
+            if not (name.startswith(prefix) and name.endswith(".lock")):
+                continue
+            probe = FileLock(os.path.join(self.dir, name))
+            try:
+                free = probe.try_acquire()
+            except OSError:
+                free = False
+            if free:
+                probe.release()
+                try:
+                    os.unlink(os.path.join(self.dir, name))
+                except OSError:
+                    pass
+            else:
+                return True
+        return False
+
+    def claim(self, paths, job_name="", reads=()) -> Claim:
+        """`paths` are claimed exclusively (a job writes them). `reads` are files the job only READS (reference files, the spec): any number of readers
+        may hold one together, but a reader and a writer of the same file exclude each other, so nobody ever reads a file that is being rewritten."""
+        taken, seen, reader_files = [], set(), []
+
+        def give_up(canon):
+            for held in taken:
+                held.release()
+            for name in reader_files:
+                try:
+                    os.unlink(name)
+                except OSError:
+                    pass
+            raise ClaimConflict(canon)
+
         for path in paths:
             canon = canonical_path(path)
             if canon in seen:
                 continue                                  # a job lists its test file under files AND tests: duplicates in ONE call are normal
             seen.add(canon)
-            lock = FileLock(os.path.join(self.dir, f"claim_{hashlib.sha256(canon.encode()).hexdigest()[:16]}.json"))
+            lock = FileLock(os.path.join(self.dir, f"claim_{self._hash(canon)}.json"))
             try:
                 ok = lock.try_acquire()
             except OSError:
                 ok = False
             if not ok:
-                for held in taken:
-                    held.release()
-                raise ClaimConflict(canon)
+                give_up(canon)
+            if self._live_reader(canon):
+                lock.release()
+                give_up(canon + " (being read by another job)")
             lock.write_info(json.dumps({"path": canon, "job": job_name, "pid": os.getpid(), "started": time.time()}))
             taken.append(lock)
-        return Claim(taken)
+        for path in reads:
+            canon = canonical_path(path)
+            if canon in seen:
+                continue                                  # this job writes it itself
+            seen.add(canon)
+            gate = FileLock(os.path.join(self.dir, f"claim_{self._hash(canon)}.json"))
+            try:
+                ok = gate.try_acquire()                   # momentary: no writer may hold the file while a reader registers
+            except OSError:
+                ok = False
+            if not ok:
+                give_up(canon + " (being written by another job)")
+            try:
+                reader_name = os.path.join(self.dir, f"read_{self._hash(canon)}_{os.getpid()}_{uuid.uuid4().hex[:8]}.lock")
+                mark = FileLock(reader_name)
+                if not mark.try_acquire():
+                    give_up(canon + " (reader mark busy)")
+                taken.append(mark)
+                reader_files.append(reader_name)
+            finally:
+                gate.release()
+        return Claim(taken, reader_files)
+
+
+def reconcile_stale(repo, claims_dir=None, note="") -> list:
+    """Honest cleanup of jobs killed while running. A job folder whose status.json says `running` but whose claim on `_loop/<job>` can be taken has no live
+    process: its state becomes `stopped` (with the time, the last round and the note), NEVER passed. Returns the job names that were changed."""
+    repo = Path(repo)
+    claims = Path(claims_dir or repo / "_loop")
+    changed = []
+    loop_dir = repo / "_loop"
+    if not loop_dir.is_dir():
+        return changed
+    for folder in sorted(p for p in loop_dir.iterdir() if p.is_dir() and p.name != "jobs"):
+        status_file = folder / "status.json"
+        try:
+            status = json.loads(status_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(status, dict) or status.get("state") != "running":
+            continue
+        probe = FileLock(claims / f"claim_{hashlib.sha256(canonical_path(folder).encode()).hexdigest()[:16]}.json")
+        try:
+            free = probe.try_acquire()
+        except OSError:
+            free = False
+        if not free:
+            continue                                      # a live process still holds the job
+        try:
+            status["state"] = "stopped"
+            status["stopped_reason"] = "process gone while the status said running" + (f"; {note}" if note else "")
+            status["stopped_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            tmp = status_file.with_name("status.json.tmp")
+            tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+            os.replace(tmp, status_file)
+            changed.append(folder.name)
+        finally:
+            probe.release()
+    return changed
 
 
 def _after_job(job, job_path, repo, code, escalate, loop_log):
@@ -373,7 +478,12 @@ def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, esc
     paths = [job_path, repo / "_loop" / str(job.get("name", ""))] + [repo / f for f in list(job.get("files", [])) + list(job.get("tests", []))]
     env = os.environ if environ is None else environ
     script = str(loop_script or repo / "scripts" / "source" / "fix_loop.py")
-    claim = ClaimStore(claims_dir or repo / "_loop").claim(paths, job.get("name", ""))
+    reads = ([repo / str(r) for r in list(job.get("reference") or []) + list(job.get("regression") or [])]
+             + [repo / str(job.get("spec", ""))]
+             + ([repo / str(job.get("review_prompt"))] if job.get("review_prompt") else [])
+             + [repo / str(r) for r in list(job.get("review_files") or [])])
+    (repo / "_loop").mkdir(exist_ok=True)                    # the loop's own state folder (a fresh repo has none)
+    claim = ClaimStore(claims_dir or repo / "_loop").claim(paths, job.get("name", ""), reads=reads)
     old_argv = sys.argv
     saved_env = {k: env.get(k) for k in ("PYTEST_ADDOPTS", "P1_LEDGER", "P1_KEY_OFFSET")}      # restored in finally: the launcher must not leak into its caller (P1-D21)
     try:
@@ -389,6 +499,8 @@ def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, esc
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
         except Exception:                      # the loop crashed (OSError, reviewer build error ...): still log it and release the claims (P1-D36)
+            import traceback
+            traceback.print_exc()              # never invisible: the log of the run shows why
             code = 1
         _after_job(job, job_path, repo, code, escalate, loop_log)
         return code
@@ -408,6 +520,7 @@ def main(argv) -> int:
         return 2
     repo = argv[2] if len(argv) > 2 else os.getcwd()
     try:
+        reconcile_stale(repo)                         # jobs killed earlier must not stay `running` (A2)
         return run_job(argv[1], repo)
     except ClaimConflict as exc:
         print(f"claims: conflict {exc}")

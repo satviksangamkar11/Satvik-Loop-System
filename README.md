@@ -1,5 +1,7 @@
 # Satvik Loop System
 
+**Status: READY and FROZEN (2026-10-30).** Only bug fixes from here, each with a failing test first. See `docs/LOOP_CLOSURE_REPORT.md` for the closure evidence.
+
 An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out. The supervisor only watches.
 
 ## How one job runs
@@ -73,6 +75,12 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 - A job whose tests first pass in the last test round still gets its review-fix rounds (up to `review_rounds`).
 - Time limits: a job stops starting new rounds after `deadline_min` minutes (default 120). One Codex or Haiku review and one NVIDIA review stream may take 15 minutes; MiniMax is allowed 45.
 - Every review report (READY, NONE and FIX FIRST) is scrubbed for API keys before it is kept.
+- File races (F10): a job's `reference`, `regression`, spec, review prompt and review files are READ-marked; a reader and a writer of the same file exclude each other (readers coexist, a dead reader's mark cleans itself). Every file the loop writes is published atomically (temp file, then `os.replace`), so nobody ever reads half a file.
+- Stale state: at every launch `reconcile_stale()` turns a status that still says `running` (no process holds the job) into `stopped`, never `passed`.
+- Accounting: `status.json` carries `coder_calls`, `reviewer_calls` and `coder_budget` (`max_rounds + 1 + review_rounds`); the coder is never called beyond the budget. Repair limit: `max_rounds` repairs after round 0.
+- Reviewer time and quorum: `reviewer_deadline_s` (default 2800 s, lowest 10) is the outer cap that turns a hung reviewer into NONE; `min_valid_reviews` (default 0 = every reviewer must answer) is an optional quorum; a FIX FIRST finding is never hidden by a quorum.
+- Test edits: only an error raised in the test's own code (read from the real short traceback) or a syntax error may be repaired; the repair must keep every test function and every assert expression; each accepted edit is saved as a diff under `_loop/<job>/test_edits/` and listed as `tests_repaired`.
+- `coder_model` and `reviewer_model` are refused unless they equal the fixed models (the loop always uses nemotron-3-ultra as coder and nemotron-3.5-lightning as Lightning reviewer).
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
 - Only the Nemotron coder writes code. Codex and Haiku only review.
@@ -104,10 +112,11 @@ The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested l
 
 ## Known limits
 
-- Job files are still written by hand. `reference` files are not locked, so a job could read a file another running job is rewriting (parallel jobs have not needed this yet).
+- Job files are still written by hand (validated at load time).
 - `yaml` and `jsonschema` are third-party dependencies of `fix_loop.py`.
 
-- The job fields `coder_model` and `reviewer_model` are accepted but not used yet: the coder and the Lightning reviewer are fixed in `fix_loop.py`. The coder runs with thinking on (owner rule).
+- The coder runs with thinking on (owner rule).
+- `pieces/test_guards.py` checks the surrounding Reverse-Video project (modules, rules file, job files); run it inside the full project.
 
 - A re-run on files that already exist cannot rewrite the existing tests (append only), so re-runs need new file names or a wiped state.
 - Haiku and Codex need their CLI logins. If one is signed out, its review is empty and the job ends with exit code 5.

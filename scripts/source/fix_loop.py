@@ -27,6 +27,8 @@ JOB_SCHEMA = {
         "reference": {"type": "array", "items": {"type": "string"}, "default": []},
         "regression": {"type": "array", "items": {"type": "string"}, "default": []},
         "deadline_min": {"type": "integer", "minimum": 1, "maximum": 600, "default": 120},
+        "reviewer_deadline_s": {"type": "integer", "minimum": 10, "maximum": 7200, "default": 2800},
+        "min_valid_reviews": {"type": "integer", "minimum": 0, "maximum": 4, "default": 0},
         "max_rounds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
         "review": {"type": "boolean", "default": True},
         "review_rounds": {"type": "integer", "minimum": 0, "maximum": 10, "default": 4},
@@ -80,9 +82,14 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review_prompt", "docs/REVIEW_PROMPT.md")
     job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
     job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
+    if job["coder_model"] != "nvidia/nemotron-3-ultra-550b-a55b" or job["reviewer_model"] != "nvidia/nemotron-3.5-lightning-30b-a3b":
+        raise ValueError("coder_model and reviewer_model are not configurable: the loop always uses nemotron-3-ultra (coder) and nemotron-3.5-lightning (Lightning reviewer)")
+    job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
     job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
     job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
 
+    if job.get("min_valid_reviews", 0) > len(job["reviewers"]):
+        raise ValueError("min_valid_reviews cannot exceed the number of reviewers")
     if job.get("review", True) and not job["reviewers"]:
         raise ValueError("reviewers cannot be empty while review is enabled")
     # Validate fixers field
@@ -121,6 +128,29 @@ def load_job(path: str | Path) -> dict:
     return job
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Publish a file in one step (F10): write a temp file next to it, then os.replace, so a concurrent reader sees the old or the new text, never half of it.
+    Windows refuses the replace while a reader has the file open: retry for a few seconds."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        for attempt in range(200):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _read_file_safe(root: Path, rel: str) -> str | None:
     p = root / rel
     if p.exists():
@@ -149,7 +179,7 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
             target = root / rel
             if had and (orig_dir / rel).is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text((orig_dir / rel).read_text(encoding="utf-8"), encoding="utf-8")
+                _atomic_write(target, (orig_dir / rel).read_text(encoding="utf-8"))
             elif not had and target.exists():
                 target.unlink()
     old = [p for p in status_dir_job.iterdir() if not p.name.startswith("prev_")]
@@ -213,24 +243,65 @@ import re as _re
 _TEST_CODE_ERROR = _re.compile(r"test_[A-Za-z0-9_]+\.py:\d+: (KeyError|NameError|TypeError|AttributeError|IndexError|ValueError|UnboundLocalError|ImportError|ModuleNotFoundError)")
 
 
+_E_LINE = _re.compile(r"^E\s+(KeyError|NameError|TypeError|AttributeError|IndexError|ValueError|UnboundLocalError|ImportError|ModuleNotFoundError)\b")
+_FRAME = _re.compile(r"^(\S+\.py):\d+: ")
+
+
 def _test_bug_in_output(pytest_output) -> bool:
-    """True when pytest says an ERROR (not an assertion) was raised in the test file's own code: that is a bug in the test, not a wrong expectation."""
-    return bool(pytest_output and _TEST_CODE_ERROR.search(pytest_output))
+    """True when pytest says an ERROR (not an assertion) was raised by the TEST file's own code: that is a bug in the test, not a wrong expectation.
+    The loop runs pytest with --tb=short, so the last frame printed before an `E   KeyError: ...` line tells where the error was raised; the long format
+    (`test_x.py:41: KeyError`) is understood too. An error raised inside the module under test never counts."""
+    if not pytest_output:
+        return False
+    last_file = ""
+    for line in pytest_output.splitlines():
+        frame = _FRAME.match(line)
+        if frame:
+            last_file = frame.group(1)
+            long_form = _TEST_CODE_ERROR.search(line)
+            if long_form:
+                return True
+            continue
+        if _E_LINE.match(line) and last_file:
+            name = last_file.replace(chr(92), "/").rsplit("/", 1)[-1]
+            if name.startswith("test_"):
+                return True
+    return False
+
+
+def _text_not_weaker(old: str, new: str) -> bool:
+    """For a test file that cannot be parsed: every test function name and at least as many `assert` words as before must survive (textual check)."""
+    names_old = set(_re.findall(r"(?m)^\s*(?:async\s+)?def\s+(test\w*)", old))
+    names_new = set(_re.findall(r"(?m)^\s*(?:async\s+)?def\s+(test\w*)", new))
+    return names_old <= names_new and len(_re.findall(r"\bassert\b", new)) >= len(_re.findall(r"\bassert\b", old))
+
+
+def _test_change_forbidden(path: Path, content: str, pytest_output) -> bool:
+    """True when a fix round may NOT replace this existing test file with `content`."""
+    old = path.read_text(encoding="utf-8")
+    if old == content:
+        return False
+    if _parses(path):                                  # a working test: repairable only for an error in its own code, and never weaker
+        return not (_test_bug_in_output(pytest_output) and _not_weaker(old, content))
+    return not _text_not_weaker(old, content)          # a test with a syntax error: repairable, but still never weaker
 
 
 def _not_weaker(old: str, new: str) -> bool:
-    """A repaired test file must keep at least as many test functions and as many `assert` statements as before, and must still parse."""
+    """A repaired test file must keep EVERY test function and EVERY assert statement it had (compared by the assert's expression, not by count, so
+    `assert answer() == 42` cannot be swapped for `assert True`), and must still parse. Only the code AROUND the asserts may change."""
     import ast
+    from collections import Counter
     try:
         tree_old, tree_new = ast.parse(old), ast.parse(new)
     except (SyntaxError, ValueError):
         return False
-    def count(tree):
-        funcs = sum(1 for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test"))
-        asserts = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Assert))
-        return funcs, asserts
-    (fo, ao), (fn, an) = count(tree_old), count(tree_new)
-    return fn >= fo and an >= ao
+
+    def facts(tree):
+        names = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test")}
+        asserts = Counter(ast.dump(n.test) for n in ast.walk(tree) if isinstance(n, ast.Assert))
+        return names, asserts
+    (names_old, asserts_old), (names_new, asserts_new) = facts(tree_old), facts(tree_new)
+    return names_old <= names_new and all(asserts_new[k] >= v for k, v in asserts_old.items())
 
 
 def _content_problem(rel: str, content: str) -> str | None:
@@ -524,6 +595,9 @@ def run_job(
     original_contents: dict[str, str | None] = _prepare_job_folder(status_dir_job, root, expected_files)
 
     rounds_record: list[dict] = []
+    coder_calls = 0
+    reviewer_calls: dict = {}
+    coder_budget = max_rounds + 1 + (review_rounds if review_enabled else 0)
     state = "running"
     tests_passed = False
     review_verdict = None
@@ -545,10 +619,10 @@ def run_job(
             "round": round_no,
             "tests_passed": tests_passed_,
             "review_verdict": review_verdict,
-            "rounds": rounds_record,
+            "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget,
             "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-        (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+        _atomic_write(status_dir_job / "status.json", json.dumps(status, indent=2))
 
     ever_passed = False
     job_started = time.monotonic()
@@ -575,6 +649,9 @@ def run_job(
         fixer_name = fixers[min(round_no, len(fixers) - 1)]
         round_caller = effective_callers.get(fixer_name)
 
+        if coder_calls >= coder_budget:                      # hard call budget: the coder is never called more often than max_rounds + 1 + review_rounds
+            break
+        coder_calls += 1
         try:
             reply_text, info = round_caller(system, user)
         except Exception as e:
@@ -636,9 +713,8 @@ def run_job(
                     files_ok = True
 
         tests_changed = [rel for rel, content in parsed_files.items()
-                         if files_ok and round_no > 0 and rel in tests and (root / rel).exists() and _parses(root / rel)
-                         and (root / rel).read_text(encoding="utf-8") != content
-                         and not (_test_bug_in_output(last_pytest_output) and _not_weaker((root / rel).read_text(encoding="utf-8"), content))]
+                         if files_ok and round_no > 0 and rel in tests and (root / rel).exists()
+                         and _test_change_forbidden(root / rel, content, last_pytest_output)]
         if files_ok and round_no == 0:            # round 0: a test file that existed before the job may only be EXTENDED (old text kept, new tests appended)
             rewritten = [rel for rel, content in parsed_files.items()
                          if rel in tests and original_contents.get(rel) and not content.startswith(original_contents[rel].rstrip())]
@@ -648,9 +724,19 @@ def run_job(
             files_ok = False
             reason = f"the coder tried to change frozen or pre-existing tests (only appending is allowed in round 0): {sorted(tests_changed)}"
             tests_changed = []
+        tests_repaired = []
+        if files_ok and round_no > 0:
+            import difflib
+            for rel, content in parsed_files.items():
+                if rel in tests and (root / rel).exists():
+                    old_text = (root / rel).read_text(encoding="utf-8")
+                    if old_text != content:                              # only reachable for an accepted test-bug repair or a syntax-error repair
+                        tests_repaired.append(rel)
+                        diff = "".join(difflib.unified_diff(old_text.splitlines(True), content.splitlines(True), f"{rel} (before round {round_no})", f"{rel} (after round {round_no})"))
+                        _atomic_write(status_dir_job / "test_edits" / f"round_{round_no}_{Path(rel).name}.diff", diff)
         if files_ok:
             for rel, content in parsed_files.items():
-                (root / rel).write_text(content, encoding="utf-8")
+                _atomic_write(root / rel, content)
             passed, output = pytest_runner(tests, root, timeout_s=600)
             if passed and job.get("regression"):          # Opus F5: tests of OTHER modules must keep passing; they are never edited by the job
                 reg_passed, reg_output = pytest_runner(list(job["regression"]), root, timeout_s=600)
@@ -670,7 +756,7 @@ def run_job(
             "files_ok": files_ok,
             "tests_passed": passed,
             "reason": reason,
-            "tests_changed": tests_changed if files_ok else [],
+            "tests_changed": tests_changed if files_ok else [], "tests_repaired": tests_repaired if files_ok else [],
         })
         _write_status(round_no, coder_status, files_ok, passed, reason)
 
@@ -689,7 +775,8 @@ def run_job(
                 new_pending_reports: list[tuple[str, str]] = []
                 # P1-D37: start ALL reviewers at once (Lightning, MiniMax and Codex use different keys / processes); a job now waits for the slowest
                 # one instead of the sum of the three. Results are processed below in the original order, so everything downstream is unchanged.
-                from concurrent.futures import ThreadPoolExecutor
+                import threading
+                _reviewer_deadline_s = float(job.get("reviewer_deadline_s", 2800))
 
                 def _run_one_reviewer(name, _pass=review_pass_count):
                     func = reviewer.get(name)
@@ -700,9 +787,25 @@ def run_job(
                     except Exception as exc:
                         return {"verdict": "NONE", "status": "error", "out": str(exc)}
 
-                with ThreadPoolExecutor(max_workers=max(1, len(reviewers_list))) as _pool:
-                    _futures = {name: _pool.submit(_run_one_reviewer, name) for name in reviewers_list}
-                    _review_results = {name: fut.result() for name, fut in _futures.items()}
+                _box: dict = {}
+
+                def _worker(name):
+                    _box[name] = _run_one_reviewer(name)
+
+                _threads = {}
+                for _rn in reviewers_list:
+                    if reviewer.get(_rn) is not None:
+                        reviewer_calls[_rn] = reviewer_calls.get(_rn, 0) + 1          # exact call accounting: one call per reviewer per pass
+                    _threads[_rn] = threading.Thread(target=_worker, args=(_rn,), daemon=True)
+                    _threads[_rn].start()
+                _t0 = time.monotonic()
+                _review_results = {}
+                for _rn, _th in _threads.items():
+                    _th.join(max(0.0, _reviewer_deadline_s - (time.monotonic() - _t0)))
+                    if _th.is_alive():                                                 # no answer inside the deadline: NONE, never a pass
+                        _review_results[_rn] = {"verdict": "NONE", "status": "timeout", "out": f"reviewer did not answer within {_reviewer_deadline_s:g} s"}
+                    else:
+                        _review_results[_rn] = _box.get(_rn)
                 for _rn in reviewers_list:                                 # Opus F14: READY and NONE reports are scrubbed for keys too, not only FIX FIRST
                     _rp = status_dir_job / f"review_{review_pass_count}_{_rn}.md"
                     if _rp.is_file():
@@ -730,7 +833,7 @@ def run_job(
                         "coder_status": "review",
                         "files_ok": True,
                         "tests_passed": True,
-                        "reason": f"verdict={verdict}",
+                        "reason": f"verdict={verdict}" + (f" ({rev_result.get('status')})" if rev_result.get("status") in ("timeout", "error") else ""),
                     })
                     _write_status(round_no, "review", True, True, f"verdict={verdict}")
                     if verdict == "READY":
@@ -745,6 +848,9 @@ def run_job(
                     else:
                         all_ready = False
                         any_missing = True
+                _valid = sum(1 for _r in rounds_record[-len(reviewers_list):] if str(_r.get("reason", "")).startswith(("verdict=READY", "verdict=FIX FIRST")))
+                _quorum = job.get("min_valid_reviews", 0) or len(reviewers_list)
+                all_ready = (not any_fix_first) and _valid >= _quorum          # default quorum = every reviewer; a lower min_valid_reviews tolerates NONE/timeouts
                 review_pass_count += 1
                 pending_review_reports = new_pending_reports
                 if all_ready:
@@ -769,7 +875,7 @@ def run_job(
     if not tests_passed and last_good:
         # a later (review-driven) round broke tests that had passed: keep the last passing version instead of throwing everything away
         for rel, content in last_good.items():
-            (root / rel).write_text(content, encoding="utf-8")
+            _atomic_write(root / rel, content)
         tests_passed = True
         state = "review-open"
         review_verdict = "FIX FIRST"
@@ -782,28 +888,26 @@ def run_job(
                 if p.exists():
                     p.unlink()
             else:
-                p.write_text(orig, encoding="utf-8")
+                _atomic_write(p, orig)
         escalate_md = status_dir_job / "ESCALATE.md"
         escalate_content = f"# Escalation Report\n\nJob: {name}\n\nLast pytest output (last 9000 chars):\n```\n{(last_pytest_output or '')[-9000:]}\n```\n\nExpected files:\n" + "\n".join(f"- {f}" for f in expected_files)
         escalate_md.write_text(escalate_content, encoding="utf-8")
         _write_status(last_round_no, "", False, False, "max rounds exceeded")
         print(f"{name}: {state}")
-        return {"name": name, "state": state, "round": last_round_no, "tests_passed": False, "review_verdict": review_verdict, "rounds": rounds_record, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        return {"name": name, "state": state, "round": last_round_no, "tests_passed": False, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     if state == "running":
         state = "review-open"                                  # tests pass but a reviewer still says FIX FIRST and no round is left (P1-D23); files are kept
         review_verdict = review_verdict or "FIX FIRST"
     _write_status(last_round_no, "", True, True, "review findings still open" if state == "review-open" else "done")
     print(f"{name}: {state}")
-    return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
 def exit_code_for(state: str, job: dict) -> int:
     """0 = done; 3 = escalate; 6 = a reviewer CLI (codex or haiku) did not answer the start-up check, no coder call was made; 5 = a REQUIRED review (review: true) produced no verdict, so a chain must stop (P1-D24); 1 = anything else (for example review-open)."""
     if state == "passed":
         return 0
-    if state == "review-missing":
-        return 5
     if state == "passed-no-review":
         return 5 if job.get("review") else 0
     if state == "escalate":
@@ -837,7 +941,7 @@ def preflight_reviewers(root: Path, reviewers: list[str], runner=None, ttl_s: in
                 rc, text = _ping_cli(name, ping)
         except Exception:
             rc, text = 1, ""
-        if rc == 0 and "OK" in (text or "").upper():
+        if rc == 0 and any(_re.fullmatch(r"[^A-Z0-9]*OK[^A-Z0-9]*", ln.strip().upper()) for ln in (text or "").splitlines()):
             done[name] = clock
         else:
             failed.append(name)

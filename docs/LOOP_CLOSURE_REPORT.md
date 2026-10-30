@@ -1,0 +1,26 @@
+# Loop System closure report (2026-10-30)
+
+**LOOP SYSTEM: READY. Feature development is FROZEN from this gate.** Bug fixes only, each with a failing test first.
+
+Reviewed by Luna (gpt-6-luna, medium) and Haiku (low), two rounds each, no Opus (owner rule). Reviewer opinions are listed separately from test evidence.
+
+| Issue | Fix | Tests (evidence) | Reviewer result | Blocker |
+|---|---|---|---|---|
+| **F10 concurrent file access** | Readers (reference, regression, spec, review prompt/files) take a reader mark; writers take the claim; a reader and a writer of one file exclude each other, readers coexist. Dead readers clean themselves (OS lock). Every file the loop publishes is written to a temp file and `os.replace`d, with retry while a Windows reader holds it. | `test_loop_races.py`: reader/writer both directions, dead-reader cleanup, failed claim leaves nothing, 4 threads reading while a writer flips a 400 KB file for 2 s (never a partial read), a second OS process as reader. Repeated 5 times: stable. | Luna: no finding on the design. Haiku: real-clock waits are inherent (rule added). | none |
+| **Stale `running` statuses** | `reconcile_stale()`: a status that says `running` while no process holds the job's claim becomes `stopped` (never passed); it runs at every launcher start. The three stopped jobs (`d4_timing`, `p1_boundaries`, `p4_statuses`) were reconciled, each with the test evidence of that day. | `test_reconcile_stale_*` (dead, live, finished, malformed). | none | none |
+| **Review and repair accounting** | `reviewer_deadline_s` (outer wall-clock cap, default 2800 s, lowest 10 s) turns a hung reviewer into NONE without waiting for it; `min_valid_reviews` (optional quorum, default every reviewer, a FIX FIRST is never hidden); `coder_calls`, `reviewer_calls` and `coder_budget` are counted exactly and written to `status.json`; a hard budget stops any extra coder call. | `test_loop_acceptance.py`: repair limit exact for max_rounds 1, 2, 3 (rounds+1 calls); review passes and coder calls inside the budget; hung reviewer blocks the pass by default and passes with a quorum of 1; quorum never hides FIX FIRST; job deadline stops the next round. | Luna/Haiku: real-clock tests (documented exception). | **The order mentions 200 s deadlines and a quorum of 2; the system had neither.** Both are now configurable (`reviewer_deadline_s: 200`, `min_valid_reviews: 2`). Defaults were NOT changed because MiniMax needs up to 45 min and "all reviewers must say READY" is the stricter existing rule. Owner may set them per job. |
+| **F13 `rewrite_tests`** | Existing test-bug repair verified and corrected. It never fired in the real loop (it looked for the long pytest traceback; the loop runs `--tb=short`). Now it reads the short format and only counts an error raised in the TEST's own code. The guard compares the assert expressions, not their count (`assert True` can no longer replace a real assertion), keeps every test function, and also covers syntax-error repairs. Every accepted test edit is saved as a unified diff in `_loop/<job>/test_edits/` and listed in the round record (`tests_repaired`). | `test_a_test_bug_repair_is_allowed_recorded_and_diffed`, `..._weakens_the_test_is_rejected`, `test_an_assertion_change_is_never_a_test_bug_repair`, syntax-repair guard, detector tests on real pytest output. | Haiku found the syntax-repair gap: fixed. | none |
+| **F15 dead `review-missing`** | Removed from `exit_code_for`. Missing verdicts end `passed-no-review` (exit 5 when review is required). | `test_there_is_no_unreachable_review_missing_state`. | none | none |
+| **Unused model fields** | `coder_model` / `reviewer_model` that differ from the fixed models are refused at load time. | `test_unsupported_model_fields_are_refused_not_ignored`. | none | none |
+| Hand-written job files | Kept; `load_job` plus the all-job-files guard validate them. | `test_every_real_job_file_is_consistent`. | none | none |
+| Also found | Launcher creates `_loop` on a fresh repo (loop state folder only, guard exception recorded) and prints the traceback of a crashed loop. | `test_the_launcher_reads_...`, `test_a_loop_crash_prints_its_traceback`. | | |
+
+## Adversarial acceptance gate (`pieces/test_loop_acceptance.py`, 22 test functions (24 cases), real pytest, real claims, fake models)
+file race; missing dependency (escalates after exactly the repair limit, originals restored, last attempt kept); coder that raises or returns nothing (retried, recovers, or escalates inside the budget); failed test then repair; test-bug repair accepted with a diff; weakened or assertion-changing test rejected; hung reviewer; quorum; exact call budgets; normal job (1 coder call, 1 call per reviewer, `passed`).
+
+Whole repo: **1289 tests pass**. No Opus call was made.
+
+## Remaining, accepted, not blocking
+- Reviewer opinions that stay open: Luna repeats that NVIDIA API calls are "paid" (they are free and allowed by the owner for tests); Haiku cites the older "other 4xx does not cool the key" rule (the owner's later rule is: any failed request cools the key one minute).
+- The last fix round of a job that used up its review rounds is not reviewed again (`review-open`), by design.
+- `fix_loop.py` needs `yaml` and `jsonschema` (exception recorded in AGENT_RULES).

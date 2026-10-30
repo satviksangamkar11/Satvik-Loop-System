@@ -551,3 +551,37 @@ def test_the_job_deadline_stops_further_rounds(tmp_path, monkeypatch):
     result = fl.run_job(fl.load_job(path), root, caller=lambda s, u: (calls.append(1) or reply, {"status": 200, "finish": "stop"}), reviewer={},
                         pytest_runner=lambda *a, **k: (False, "fail"), scrub_keys=[])
     assert len(calls) == 1 and result["state"] == "escalate"            # round 0 ran, the deadline stopped round 1
+
+
+def test_the_test_bug_detector_reads_the_real_short_traceback_format(tmp_path):
+    import subprocess
+    (tmp_path / "m.py").write_text("def answer():" + chr(10) + "    d = {}" + chr(10) + "    return d['zz']" + chr(10), encoding="utf-8")
+    (tmp_path / "test_bug.py").write_text("def test_a():" + chr(10) + "    t = {}" + chr(10) + "    assert t['k'] == 1" + chr(10), encoding="utf-8")
+    (tmp_path / "test_module.py").write_text("from m import answer" + chr(10) + chr(10) + "def test_b():" + chr(10) + "    assert answer() == 1" + chr(10), encoding="utf-8")
+    (tmp_path / "test_assert.py").write_text("def test_c():" + chr(10) + "    assert 1 == 2" + chr(10), encoding="utf-8")
+    ok_bug, out_bug = fl.run_pytest(["test_bug.py"], tmp_path)
+    ok_mod, out_mod = fl.run_pytest(["test_module.py"], tmp_path)
+    ok_ass, out_ass = fl.run_pytest(["test_assert.py"], tmp_path)
+    assert not (ok_bug or ok_mod or ok_ass)
+    assert fl._test_bug_in_output(out_bug) is True            # KeyError raised in the test's own code
+    assert fl._test_bug_in_output(out_mod) is False           # KeyError raised in the MODULE under test
+    assert fl._test_bug_in_output(out_ass) is False           # a failed assertion is a wrong expectation, not a test bug
+
+
+def test_not_weaker_compares_the_assertions_themselves():
+    old = "def test_a():" + chr(10) + "    d = {}" + chr(10) + "    assert d['k'] == answer()" + chr(10)
+    repaired = "def test_a():" + chr(10) + "    d = {'k': 1}" + chr(10) + "    assert d['k'] == answer()" + chr(10)
+    swapped = "def test_a():" + chr(10) + "    d = {'k': 1}" + chr(10) + "    assert True" + chr(10)
+    renamed = "def test_renamed():" + chr(10) + "    d = {'k': 1}" + chr(10) + "    assert d['k'] == answer()" + chr(10)
+    extra = repaired + "def test_b():" + chr(10) + "    assert 1" + chr(10)
+    assert fl._not_weaker(old, repaired) and fl._not_weaker(old, extra)
+    assert not fl._not_weaker(old, swapped) and not fl._not_weaker(old, renamed)
+
+
+def test_preflight_requires_the_answer_ok_not_a_text_containing_ok(tmp_path):
+    root = make_root(tmp_path)
+    for text, expected_dead in (("OK", []), ("ok.", []), ("banner" + chr(10) + "OK" + chr(10), []), ("NOT OK", ["codex"]), ("BROKEN", ["codex"]), ("", ["codex"])):
+        marker = root / "_loop" / "preflight_ok.json"
+        if marker.exists():
+            marker.unlink()
+        assert fl.preflight_reviewers(root, ["codex"], runner=lambda n, p, _t=text: (0, _t), now=1.0) == expected_dead, text

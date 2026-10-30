@@ -11,7 +11,7 @@ FORBIDDEN = "blend" + "er"                                       # the 7-letter 
 # SCOPE: the new Phase 1 code (p1_*, p2_*, p3_* modules and tools/). The older frozen modules (a*, c*, d*, f*, g*) and the copied loop scripts are reviewed
 # and not changed here. Every allowlist entry carries its reason.
 ALLOW_SWALLOWED_RAISE = {"p1_claims.py": "KeyLedger._read raises ValueError on purpose to reach its own 'unparseable ledger: rebuild' handler"}
-ALLOW_MKDIR = {"p1_inventory.py": "write_inventory creates only the output folder its caller names", "boundary_check.py": "creates its own work/phase1/boundary folder"}
+ALLOW_MKDIR = {"p1_inventory.py": "write_inventory creates only the output folder its caller names", "boundary_check.py": "creates its own work/phase1/boundary folder", "p1_claims.py": "the launcher creates only the loop's own state folder _loop (P1-D22), never a project folder"}
 
 
 def code_files(include_tests=False):
