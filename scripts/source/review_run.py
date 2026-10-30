@@ -279,6 +279,8 @@ def run_review(
     verdict = "NONE"
     for line in reversed(reply_text.splitlines()):
         line = line.strip()
+        if "## Verdict:" in line:                       # tolerate text glued before the marker ("No defects.## Verdict: READY")
+            line = line[line.index("## Verdict:"):]
         if line.startswith("## Verdict:"):
             verdict_raw = line.split(":", 1)[1].strip()
             verdict_lower = verdict_raw.lower()
@@ -290,7 +292,12 @@ def run_review(
                 verdict = "NONE"
             break
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if problems:                                  # an incomplete input set can never be READY
+        verdict = "NONE"
+    if str(info.get("finish", "")) in ("length", "deadline", "too_large", "error"):      # a cut-off reply can never be READY
+        verdict = "NONE"
+    if not out_path.parent.is_dir():              # never create a folder here (owner rule): the loop state folder already exists
+        raise ValueError(f"output folder does not exist: {out_path.parent}")
 
     # Scrub error message before writing to output file
     error_msg = info.get("error", "unknown error")
@@ -349,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run a review via NVIDIA GLM endpoint")
-    parser.add_argument("--model", default="z-ai/glm-5.3-flash")
+    parser.add_argument("--model", default="nvidia/nemotron-3.5-lightning-30b-a3b")
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--file", type=Path, action="append", default=[])
     parser.add_argument("--out", type=Path, required=True)
@@ -387,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         f"review: status={result['status']} wall_s={result['wall_s']:.3f} "
         f"verdict={result['verdict']} problems={len(result['problems'])} out={result['out']}"
     )
-    ok = result["status"] == 200 and result["chars"] > 0
+    ok = result["status"] == 200 and result["chars"] > 0 and result["verdict"] == "READY"      # exit 0 only for a real READY verdict
     return 0 if ok else 1
 
 

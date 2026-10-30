@@ -113,4 +113,4 @@ def test_codex_prompt_gets_the_verdict_instruction():
 
 def test_all_three_reviewers_are_known_to_the_job_schema():
     import fix_loop as fl
-    assert set(fl.JOB_SCHEMA["properties"]["reviewers"]["items"]["enum"]) == {"lightning", "minimax", "codex"} if hasattr(fl, "JOB_SCHEMA") else True
+    assert set(fl.JOB_SCHEMA["properties"]["reviewers"]["items"]["enum"]) == {"lightning", "minimax", "codex", "haiku"} if hasattr(fl, "JOB_SCHEMA") else True

@@ -156,7 +156,7 @@ def test_minimax_reviewer_is_wired_next_to_glm_with_thinking_off_defaults(tmp_pa
 
     monkeypatch.setattr(fl, "_load_module_by_path", lambda name, path: FakeReviewRun)
     reviewers = fl._default_reviewers_factory(root, "docs/RP.md")
-    assert {"lightning", "minimax", "codex"} == set(reviewers)
+    assert {"lightning", "minimax", "codex", "haiku"} == set(reviewers)
     assert reviewers["lightning"]([root / "pieces" / "m.py"], root / "_loop" / "m.md") == {"verdict": "READY"}
     assert seen[0]["model"] in ("nvidia/nemotron-3.5-lightning-30b-a3b", "minimaxai/minimax-m3.1-flash") and seen[0]["max_tokens"] in (16000, 32000)
     assert seen[0]["prompt_file"] == root / "docs" / "RP.md"
@@ -183,7 +183,7 @@ def test_minimax_reviewer_has_low_effort_a_big_budget_and_its_own_profile(tmp_pa
 
     monkeypatch.setattr(fl, "_load_module_by_path", lambda name, path: FakeReviewRun)
     reviewers = fl._default_reviewers_factory(root, "docs/RP.md")
-    assert set(reviewers) == {"lightning", "minimax", "codex"}
+    assert set(reviewers) == {"lightning", "minimax", "codex", "haiku"}
     reviewers["minimax"]([root / "pieces" / "m.py"], root / "_loop" / "m.md")
     assert seen[0]["model"] == "minimaxai/minimax-m3.1-flash" and seen[0]["max_tokens"] == 32000 and seen[0]["effort"] == "low"
 
@@ -223,7 +223,8 @@ def test_the_fix_prompt_tells_the_coder_to_return_every_file():
     root = REPO
     job = fl.load_job(root / "_loop" / "jobs" / "p2_normalize.json")
     _, user = fl.build_prompt(job, root, 1, pytest_output="1 failed")
-    assert "Return every file of the job in full" in user
+    # changed 2026-10-30 on purpose: tests are frozen after round 0, so a fix round must return only NON-TEST files (a reply that touches a test is rejected)
+    assert "Return every NON-TEST file of the job in full" in user and "FROZEN" in user and job["tests"][0] in user
 
 
 def test_a_job_without_a_reviewer_list_gets_all_three_standing_reviewers(tmp_path):
@@ -231,7 +232,7 @@ def test_a_job_without_a_reviewer_list_gets_all_three_standing_reviewers(tmp_pat
     job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py"], "tests": ["pieces/m.py"], "reference": [], "max_rounds": 1, "fixers": ["nemotron"] * 3}
     (root / "_loop" / "jobs").mkdir()
     (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
-    assert fl.load_job(root / "_loop" / "jobs" / "j.json")["reviewers"] == ["lightning", "minimax", "codex"]
+    assert fl.load_job(root / "_loop" / "jobs" / "j.json")["reviewers"] == ["lightning", "minimax", "codex", "haiku"]
 
 
 def test_the_default_review_prompt_exists_in_the_repo():
@@ -254,3 +255,32 @@ def test_the_coder_pool_is_built_per_call_not_once_per_job():
 def test_the_codex_report_is_scrubbed_before_the_next_prompt():
     src = Path(fl.__file__).read_text(encoding="utf-8")
     assert "_scrub(report_path.read_text" in src
+
+
+def test_the_reviewers_of_one_job_run_at_the_same_time(tmp_path):
+    import time
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "max_rounds": 1, "review": True, "reviewers": ["lightning", "minimax", "codex"], "review_prompt": "docs/RP.md", "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir()
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    loaded = fl.load_job(root / "_loop" / "jobs" / "j.json")
+    reply = (FILE_MARK + "pieces/m.py\n" + FENCE + "python\nX = 2\n" + FENCE + "\n" + FILE_MARK + "pieces/test_m.py\n" + FENCE + "python\ndef test_x():\n    assert True\n" + FENCE + "\n")
+    started = []
+
+    def slow(name):
+        def reviewer(files, report):
+            started.append((name, time.monotonic()))
+            time.sleep(0.4)
+            report.write_text("## Verdict: READY\n", encoding="utf-8")
+            return {"verdict": "READY"}
+        return reviewer
+
+    t0 = time.monotonic()
+    result = fl.run_job(loaded, root, caller=lambda s_, u: (reply, {"status": 200, "finish": "stop"}),
+                        reviewer={n: slow(n) for n in ("lightning", "minimax", "codex")}, pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=[])
+    elapsed = time.monotonic() - t0
+    assert result["state"] == "passed"
+    assert elapsed < 1.0, elapsed                                              # three 0.4 s reviewers: about 0.4 s in parallel, 1.2 s in sequence
+    assert max(t for _, t in started) - min(t for _, t in started) < 0.3        # they really started together
+    assert [r["round"] for r in result["rounds"] if str(r["round"]).startswith("review")] == ["review_0_lightning", "review_0_minimax", "review_0_codex"]   # original order kept

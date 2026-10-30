@@ -31,8 +31,8 @@ JOB_SCHEMA = {
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
-        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex"]}, "default": ["lightning", "minimax", "codex"]},
-        "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "codex"]}, "default": ["nemotron", "nemotron", "codex"]},
+        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
+        "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron"]}, "default": ["nemotron", "nemotron", "nemotron"]},
     },
     "additionalProperties": False,
 }
@@ -77,9 +77,11 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review_prompt", "docs/REVIEW_PROMPT.md")
     job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
     job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
-    job.setdefault("reviewers", ["lightning", "minimax", "codex"])
-    job.setdefault("fixers", ["nemotron", "nemotron", "codex"])
+    job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
+    job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
 
+    if job.get("review", True) and not job["reviewers"]:
+        raise ValueError("reviewers cannot be empty while review is enabled")
     # Validate fixers field
     fixers = job.get("fixers")
     if not isinstance(fixers, list):
@@ -87,7 +89,7 @@ def load_job(path: str | Path) -> dict:
     if len(fixers) == 0:
         raise ValueError("fixers list cannot be empty")
     for f in fixers:
-        if f not in ("nemotron", "codex"):
+        if f != "nemotron":
             raise ValueError(f"unknown fixer name: {f}")
 
     root = path.parent.resolve()
@@ -169,10 +171,10 @@ def build_prompt(job: dict, root: Path, round_no: int, pytest_output: str | None
         if pytest_output:
             tail = pytest_output[-9000:] if len(pytest_output) > 9000 else pytest_output
             user_parts.append(f"PYTEST OUTPUT (last 9000 chars):\n{tail}\n")
-            user_parts.append("Fix exactly the problems shown above. Change nothing else. Return every file of the job in full (an unchanged file may be left out: it is then kept as it is).\n")
+            user_parts.append("Fix exactly the problems shown above. Change nothing else. Return every NON-TEST file of the job in full. The test files (" + ", ".join(job.get("tests", [])) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass.\n")
         if review_report:
             user_parts.append(f"REVIEW REPORT:\n{review_report}\n")
-            user_parts.append("Fix exactly the problems in the review. Change nothing else. Return every file of the job in full (an unchanged file may be left out: it is then kept as it is).\n")
+            user_parts.append("Fix exactly the problems in the review. Change nothing else. Return every NON-TEST file of the job in full. The test files (" + ", ".join(job.get("tests", [])) + ") are FROZEN: do NOT include them in your reply (a reply that changes a test is rejected); fix the module so the existing tests pass.\n")
     user = "\n".join(user_parts)
     return system, user
 
@@ -210,6 +212,27 @@ def _with_verdict_suffix(runner):
     def run(cmd, text, timeout_s):
         return runner(cmd, text + CODEX_SUFFIX, timeout_s)
     return run
+
+
+def _haiku_runner(cmd, text, timeout_s):
+    """Haiku at LOW effort as a reviewer (owner 2026-10-30): `claude -p`, file-based output; the report goes to the path that follows -o in the codex-style command."""
+    import shutil
+    import tempfile
+    out = Path(cmd[cmd.index("-o") + 1])
+    claude = shutil.which("claude") or "claude"
+    try:
+        with tempfile.TemporaryFile() as sink:
+            r = subprocess.run([claude, "-p", "--model", "haiku", "--effort", "low", "--tools", ""], input=text.encode("utf-8"),
+                               stdout=sink, stderr=subprocess.DEVNULL, timeout=timeout_s)
+            sink.seek(0)
+            body = sink.read().decode("utf-8", "replace")
+        if body.strip():
+            out.write_text(body, encoding="utf-8")
+        return r.returncode, body
+    except subprocess.TimeoutExpired:
+        return 1, "timeout"
+    except OSError as exc:
+        return 1, f"OSError: {exc}"
 
 
 def _default_reviewers_factory(root: Path, review_prompt: str | None = None, codex_runner=None) -> dict[str, Callable[[list[Path], Path], dict]]:
@@ -268,59 +291,16 @@ def _default_reviewers_factory(root: Path, review_prompt: str | None = None, cod
                 )
             return reviewer
         reviewers["codex"] = make_codex_reviewer()
+        def make_haiku_reviewer():
+            def reviewer(files: list[Path], report_path: Path) -> dict:
+                report_path.unlink(missing_ok=True)
+                return codex_review_for_loop.run_codex_review(
+                    prompt_file, files, report_path, root=root, model="haiku", effort="low",
+                    runner=_with_verdict_suffix(_haiku_runner),
+                )
+            return reviewer
+        reviewers["haiku"] = make_haiku_reviewer()
     return reviewers
-
-
-def codex_caller(
-    system: str,
-    user: str,
-    *,
-    status_dir: Path,
-    job_name: str,
-    round_no: int,
-    runner: Callable[[list[str], str, int], tuple[int, str]] | None = None,
-) -> tuple[str, dict]:
-    """
-    Run Codex as a fixer. Writes the combined prompt to stdin, reads the reply from the -o output file.
-    Returns (reply_text, info_dict) where info_dict has keys: status, wall_s, finish, error.
-    Never raises; on failure returns empty reply and status=0 with error text.
-    """
-    out_file = status_dir / f"codex_round_{round_no}.md"
-    cmd = [
-        "codex",
-        "exec",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "-m",
-        "gpt-6-luna",
-        "-c",
-        "model_reasoning_effort=medium",
-        "-o",
-        str(out_file),
-        "-",
-    ]
-    input_text = system + "\n\n" + user
-    start = time.time()
-    run_fn = runner or _default_codex_runner
-    try:
-        returncode, output = run_fn(cmd, input_text, 1800)
-    except Exception as e:
-        wall = time.time() - start
-        return "", {"status": 0, "wall_s": wall, "finish": "error", "error": f"runner exception: {e}"}
-    wall = time.time() - start
-
-    if returncode != 0:
-        return "", {"status": 0, "wall_s": wall, "finish": "error", "error": f"codex exited with {returncode}: {output.strip()}"}
-
-    if not out_file.exists() or out_file.stat().st_size == 0:
-        return "", {"status": 0, "wall_s": wall, "finish": "empty", "error": "codex produced no output file"}
-
-    reply_text = out_file.read_text(encoding="utf-8")
-    if not reply_text.strip():
-        return "", {"status": 0, "wall_s": wall, "finish": "empty", "error": "codex output file is empty"}
-
-    return reply_text, {"status": 200, "wall_s": wall, "finish": "stop", "error": None}
 
 
 def _default_codex_runner(cmd: list[str], input_text: str, timeout_s: int) -> tuple[int, str]:
@@ -353,7 +333,7 @@ def run_job(
     # Otherwise, build callers dict with defaults
     if caller is not None:
         # Legacy mode: single caller for all rounds
-        effective_callers = {"nemotron": caller, "codex": caller}
+        effective_callers = {"nemotron": caller}
     else:
         if callers is None:
             callers = {}
@@ -362,18 +342,12 @@ def run_job(
             effective_callers["nemotron"] = _default_caller_factory(root)
         else:
             effective_callers["nemotron"] = callers["nemotron"]
-        if "codex" not in callers:
-            # codex_caller needs status_dir and job_name, which we don't have yet;
-            # we'll wrap it later in the loop
-            effective_callers["codex"] = None  # placeholder
-        else:
-            effective_callers["codex"] = callers["codex"]
 
     if reviewer is None:
         reviewer = _default_reviewers_factory(root, job.get("review_prompt"))
     # Backward compatibility: if a single callable is passed, wrap it for the first reviewer
     if reviewer is not None and not isinstance(reviewer, dict):
-        reviewers_list = job.get("reviewers", ["lightning", "minimax", "codex"])
+        reviewers_list = job.get("reviewers", ["lightning", "minimax", "codex", "haiku"])
         first_reviewer = reviewers_list[0] if reviewers_list else "lightning"
         reviewer = {first_reviewer: reviewer}
     if pytest_runner is None:
@@ -397,12 +371,13 @@ def run_job(
     review_rounds = job.get("review_rounds", 4)
     review_files = job.get("review_files") if job.get("review_files") is not None else expected_files + [job["spec"]]
     review_prompt = job.get("review_prompt", "docs/REVIEW_PROMPT.md")
-    reviewers_list = job.get("reviewers", ["lightning", "minimax", "codex"])
-    fixers = job.get("fixers", ["nemotron", "nemotron", "codex"])
+    reviewers_list = job.get("reviewers", ["lightning", "minimax", "codex", "haiku"])
+    fixers = job.get("fixers", ["nemotron", "nemotron", "nemotron"])
 
     status_dir_job = status_dir / name
     status_dir_job.mkdir(parents=True, exist_ok=True)
 
+    last_good: dict[str, str] = {}
     original_contents: dict[str, str | None] = {}
     for rel in expected_files:
         original_contents[rel] = _read_file_safe(root, rel)
@@ -448,13 +423,6 @@ def run_job(
         # Select fixer for this round
         fixer_name = fixers[min(round_no, len(fixers) - 1)]
         round_caller = effective_callers.get(fixer_name)
-        if fixer_name == "codex" and round_caller is None:
-            # Create a bound codex_caller for this round
-            def make_codex_caller(rn: int):
-                def c(system: str, user: str) -> tuple[str, dict]:
-                    return codex_caller(system, user, status_dir=status_dir_job, job_name=name, round_no=rn)
-                return c
-            round_caller = make_codex_caller(round_no)
 
         try:
             reply_text, info = round_caller(system, user)
@@ -478,6 +446,10 @@ def run_job(
         else:
             reason = f"coder call failed: status={info.get('status')}, empty={not bool(reply_text.strip())}"
 
+        if reason is None:
+            refused_expected = sorted({r[0] if isinstance(r, (list, tuple)) else r for r in refused} & set(expected_files))
+            if refused_expected:                  # a refused block for a job file (for example a duplicate) makes the whole reply untrustworthy
+                reason = f"refused block for expected file(s): {refused_expected}"
         if reason is None and round_no > 0 and parsed_files:
             # P1-D31: in a fix round the coder often returns ONLY the file it changed ("change nothing else"); a job file that exists on disk and
             # was not returned is unchanged, so it is kept instead of rejecting the whole reply as `missing`.
@@ -510,6 +482,17 @@ def run_job(
                 else:
                     files_ok = True
 
+        tests_changed = [rel for rel, content in parsed_files.items()
+                         if files_ok and round_no > 0 and rel in tests and (root / rel).exists() and (root / rel).read_text(encoding="utf-8") != content]
+        if files_ok and round_no == 0:            # round 0: a test file that existed before the job may only be EXTENDED (old text kept, new tests appended)
+            rewritten = [rel for rel, content in parsed_files.items()
+                         if rel in tests and original_contents.get(rel) and not content.startswith(original_contents[rel].rstrip())]
+            if rewritten:
+                tests_changed = rewritten
+        if tests_changed:                         # tests are frozen after round 0: a wrong test is an escalation, never a quiet edit
+            files_ok = False
+            reason = f"the coder tried to change frozen or pre-existing tests (only appending is allowed in round 0): {sorted(tests_changed)}"
+            tests_changed = []
         if files_ok:
             for rel, content in parsed_files.items():
                 (root / rel).write_text(content, encoding="utf-8")
@@ -517,6 +500,7 @@ def run_job(
             tests_passed = passed
         else:
             passed = False
+            tests_passed = False                 # a failed round clears an earlier pass, so exhausting the rounds escalates
             output = reason or "files not ok"
 
         rounds_record.append({
@@ -526,6 +510,7 @@ def run_job(
             "files_ok": files_ok,
             "tests_passed": passed,
             "reason": reason,
+            "tests_changed": tests_changed if files_ok else [],
         })
         _write_status(round_no, coder_status, files_ok, passed, reason)
 
@@ -533,16 +518,35 @@ def run_job(
 
         if passed:
             tests_passed = True
+            last_good = {rel: (root / rel).read_text(encoding="utf-8") for rel in expected_files if (root / rel).is_file()}   # snapshot of the last version that passed
             last_pytest_output = None
             if review_enabled and review_pass_count < review_rounds:
                 review_files_paths = [root / rf for rf in review_files]
                 all_ready = True
                 any_fix_first = False
+                any_missing = False
                 new_pending_reports: list[tuple[str, str]] = []
+                # P1-D37: start ALL reviewers at once (Lightning, MiniMax and Codex use different keys / processes); a job now waits for the slowest
+                # one instead of the sum of the three. Results are processed below in the original order, so everything downstream is unchanged.
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _run_one_reviewer(name, _pass=review_pass_count):
+                    func = reviewer.get(name)
+                    if func is None:
+                        return None
+                    try:
+                        return func(review_files_paths, status_dir_job / f"review_{_pass}_{name}.md")
+                    except Exception as exc:
+                        return {"verdict": "NONE", "status": "error", "out": str(exc)}
+
+                with ThreadPoolExecutor(max_workers=max(1, len(reviewers_list))) as _pool:
+                    _futures = {name: _pool.submit(_run_one_reviewer, name) for name in reviewers_list}
+                    _review_results = {name: fut.result() for name, fut in _futures.items()}
                 for rname in reviewers_list:
                     rfunc = reviewer.get(rname)
                     if rfunc is None:
                         all_ready = False                      # a required reviewer that is unavailable is NOT a pass (P1-D24)
+                        any_missing = True
                         rounds_record.append({
                             "round": f"review_{review_pass_count}_{rname}",
                             "fixer": "review",
@@ -553,10 +557,7 @@ def run_job(
                         })
                         continue
                     report_path = status_dir_job / f"review_{review_pass_count}_{rname}.md"
-                    try:
-                        rev_result = rfunc(review_files_paths, report_path)
-                    except Exception as e:
-                        rev_result = {"verdict": "NONE", "status": "error", "out": str(e)}
+                    rev_result = _review_results.get(rname) or {"verdict": "NONE", "status": "error", "out": "no result"}
                     verdict = rev_result.get("verdict", "NONE")
                     rounds_record.append({
                         "round": f"review_{review_pass_count}_{rname}",
@@ -578,6 +579,7 @@ def run_job(
                         new_pending_reports.append((rname, report_text))
                     else:
                         all_ready = False
+                        any_missing = True
                 review_pass_count += 1
                 pending_review_reports = new_pending_reports
                 if all_ready:
@@ -599,6 +601,13 @@ def run_job(
             pending_review_reports = []
             continue
 
+    if not tests_passed and last_good:
+        # a later (review-driven) round broke tests that had passed: keep the last passing version instead of throwing everything away
+        for rel, content in last_good.items():
+            (root / rel).write_text(content, encoding="utf-8")
+        tests_passed = True
+        state = "review-open"
+        review_verdict = "FIX FIRST"
     if not tests_passed:
         state = "escalate"
         for rel, orig in original_contents.items():
@@ -627,6 +636,8 @@ def exit_code_for(state: str, job: dict) -> int:
     """0 = done; 3 = escalate; 5 = a REQUIRED review (review: true) produced no verdict, so a chain must stop (P1-D24); 1 = anything else (for example review-open)."""
     if state == "passed":
         return 0
+    if state == "review-missing":
+        return 5
     if state == "passed-no-review":
         return 5 if job.get("review") else 0
     if state == "escalate":

@@ -155,3 +155,11 @@ def test_a_refused_block_is_not_replaced_by_the_old_file():
     import fix_loop as fl_
     src = Path(fl_.__file__).read_text(encoding="utf-8")
     assert "refused_paths" in src and "rel not in refused_paths" in src
+
+
+def test_the_trial_tool_has_no_drive_letter_and_imports_no_project_package():
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "image_trials" / "nvidia_trial.py").read_text(encoding="utf-8")
+    import re as _re
+    assert not _re.search("(?<![A-Za-z])[A-Za-z]:[/" + chr(92) * 2 + "]", src), "absolute drive path in the code"
+    assert "from granthstudio" not in src and "import granthstudio" not in src
+    assert nt.DEFAULT_KEYS_DIR == Path(nt.ROOT.parent / "secrets" / "nvidia") or "NVIDIA_KEYS_DIR" in __import__("os").environ

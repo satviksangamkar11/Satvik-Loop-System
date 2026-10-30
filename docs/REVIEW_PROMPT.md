@@ -5,7 +5,7 @@ You review the files that follow. One of them is the SPEC (a `.md` file under `s
 List ONLY concrete defects, one per line, as `HIGH|MED|LOW - file:line - defect - minimal fix` (the same format as docs/AGENT_RULES.md). Check:
 - every bullet of the spec is implemented, including the edge cases and the error types it names;
 - the tests would FAIL if the behaviour were wrong (not vacuous, not asserting something the spec does not say);
-- nothing writes outside the folders the spec allows, no network or model call, no forbidden word, no absolute drive path in a module;
+- nothing writes outside the folders the spec allows, no network or model call (exceptions: the loop's own NVIDIA/Codex calls and the offline local speech transcription named in AGENT RULES), no forbidden word, no absolute drive path in a module;
 - a `raise` that sits inside a `try:` whose `except` catches that exception (it is SWALLOWED: the guard does nothing);
 - every side effect the spec demands (set an environment variable, write a file, call a function) is really done in the code, not only mentioned in a comment, and a test proves it;
 - PRODUCER -> CONSUMER: every key the module reads from another module's output exists in that producer's real output (check the producer's code), and the tests do not invent a shape;

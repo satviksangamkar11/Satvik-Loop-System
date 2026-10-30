@@ -142,6 +142,12 @@ class KeyLedger:
                 data = json.load(fh)["keys"]
             if not isinstance(data, dict):
                 raise ValueError("keys is not an object")
+            for entry in data.values():                     # every entry must be {"stamps": [numbers], "cool_until": number}
+                ok = (isinstance(entry, dict) and isinstance(entry.get("stamps", []), list)
+                      and all(isinstance(t, (int, float)) for t in entry.get("stamps", []))
+                      and isinstance(entry.get("cool_until", 0.0), (int, float)))
+                if not ok:
+                    raise ValueError("malformed ledger entry")
             return data, False
         except FileNotFoundError:
             return {}, False

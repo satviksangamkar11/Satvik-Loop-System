@@ -2,12 +2,12 @@
 
   python scripts/image_trials/nvidia_trial.py check-key
   python scripts/image_trials/nvidia_trial.py probe  --model flux2-klein-4b
-  python scripts/image_trials/nvidia_trial.py run    --model flux2-klein-4b --scenes 1,2,3 --out D:/kaggle_upload/trial_klein
+  python scripts/image_trials/nvidia_trial.py run    --model flux2-klein-4b --scenes 1,2,3 --out <output folder>
 
 KEYS (never printed, never written to a receipt, never committed): the environment first, then the owner's key folder
   NVIDIA_API_KEY            one key, or
   NVIDIA_API_KEYS           several keys separated by commas, then
-  every nvidia_api_key*.txt in the folder named by NVIDIA_KEYS_DIR (default D:/aai work/secrets/nvidia, outside any repository; one key per file, empty files skipped).
+  every nvidia_api_key*.txt in the folder named by NVIDIA_KEYS_DIR (default the secrets/nvidia folder next to the repo (or NVIDIA_KEYS_DIR), outside any repository; one key per file, empty files skipped).
 SPEED: all keys form one pool. The owner's limit is 10 requests per key per rolling 60 s: each request goes to the ready key with the fewest recent requests, scenes and variants run in
 parallel (one worker per key, at most 8), a key that answers 429 cools down for 60 s while the others keep working, a key answering 401/402/403 (invalid or out of credit) is retired
 for the run. The owner owns every account in the pool (decision D-012, personal prototyping).
@@ -35,8 +35,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
-from granthstudio.style import compose, load_style  # noqa: E402
+def compose(*args, **kwargs):                       # image-prompt composing belonged to the disabled image commands (P1-D35); no project package is imported
+    raise SystemExit("DISABLED (P1-D35): image prompt composing is not available in the Phase 1 loop copy")
+
+
+def load_style(*args, **kwargs):
+    raise SystemExit("DISABLED (P1-D35): image styles are not available in the Phase 1 loop copy")
 
 REFS = ROOT / "assets" / "pilot_refs" / "set_v1"
 HOST = "https://ai.api.nvidia.com/v1/genai"
@@ -56,7 +60,7 @@ def keys_from_env(environ: dict | None = None) -> list[str]:
     return [k for k in candidates if KEY_SYNTAX.fullmatch(k)]
 
 
-DEFAULT_KEYS_DIR = Path("D:/aai work/secrets/nvidia")
+DEFAULT_KEYS_DIR = Path(os.environ.get("NVIDIA_KEYS_DIR") or (ROOT.parent / "secrets" / "nvidia"))     # next to the repo folder; no drive letter in the code
 
 
 def keys_from_folder(folder: Path | None = None, environ: dict | None = None) -> list[str]:
@@ -314,7 +318,7 @@ def cmd_check_key(args, opener=None) -> int:
     raise SystemExit("DISABLED (P1-D35): no network command of this copy may run; the loop uses only the key pool, load_keys and scrub")
     keys = load_keys()
     if not keys:
-        print("no usable key: put one nvapi-... key per file nvidia_api_key*.txt in the key folder (D:/aai work/secrets/nvidia), or set NVIDIA_API_KEY / NVIDIA_API_KEYS")
+        print("no usable key: put one nvapi-... key per file nvidia_api_key*.txt in the key folder (the secrets/nvidia folder next to the repo (or NVIDIA_KEYS_DIR)), or set NVIDIA_API_KEY / NVIDIA_API_KEYS")
         return 2
     send = opener or (lambda request: _send(request, 30))
     print(f"{len(keys)} well-formed key(s) loaded (values are never shown)")
@@ -349,7 +353,7 @@ def cmd_probe(args, post=http_post, pool: KeyPool | None = None) -> int:
     raise SystemExit("DISABLED (P1-D35): the image and vision commands of this copy must never run in Phase 1 (no vision or image-generation calls); only the key pool, load_keys and scrub are used by the loop")
     keys = load_keys()
     if not keys:
-        print("no key: put the key files in D:/aai work/secrets/nvidia (see check-key) or set NVIDIA_API_KEY first")
+        print("no key: put the key files in the secrets/nvidia folder next to the repo (or NVIDIA_KEYS_DIR) (see check-key) or set NVIDIA_API_KEY first")
         return 2
     pool = pool or KeyPool(keys)
     model, refs, prompt, body = build(args.model, 1, args.seed)
@@ -364,7 +368,7 @@ def cmd_run(args, post=http_post, pool: KeyPool | None = None) -> int:
     from concurrent.futures import ThreadPoolExecutor
     keys = load_keys()
     if not keys and not args.dry_run:
-        print("no key: put the key files in D:/aai work/secrets/nvidia (see check-key) or set NVIDIA_API_KEY first")
+        print("no key: put the key files in the secrets/nvidia folder next to the repo (or NVIDIA_KEYS_DIR) (see check-key) or set NVIDIA_API_KEY first")
         return 2
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

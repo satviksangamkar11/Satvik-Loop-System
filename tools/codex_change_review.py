@@ -1,7 +1,7 @@
 """READ-ONLY Luna review of changes the supervisor applied (spec amendments, tool edits, rule/doc edits). Opinion only.
 usage: python tools/codex_change_review.py <label> <file> [<file> ...]
 Model gpt-6-luna, effort medium, read-only sandbox, prompt on stdin. Writes ONLY inside work/phase1/reviews/: change_<label>.review.md plus its .last.txt and .raw.txt (older copies of those two are deleted first)."""
-import shutil, subprocess, sys
+import os, shutil, subprocess, sys
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 label, files = sys.argv[1], [REPO / a for a in sys.argv[2:]]
@@ -17,7 +17,7 @@ for f in (last, raw): f.exists() and f.unlink()
 status = "ok"
 try:
     with raw.open("wb") as sink:
-        r = subprocess.run([codex, "exec", "-m", "gpt-6-luna", "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--skip-git-repo-check", "-o", str(last), "-"],
+        r = subprocess.run([codex, "exec", "-m", os.environ.get("CODEX_REVIEW_MODEL", "gpt-6-luna"), "-c", "model_reasoning_effort=medium", "--sandbox", "read-only", "--skip-git-repo-check", "-o", str(last), "-"],
                            input=prompt.encode("utf-8"), stdout=sink, stderr=sink, timeout=600, cwd=str(REPO))
     rc = r.returncode
 except subprocess.TimeoutExpired:
