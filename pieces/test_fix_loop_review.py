@@ -27,7 +27,7 @@ def make_root(tmp_path):
     return root
 
 
-def test_glm_reviewer_uses_the_jobs_prompt_and_its_own_token_limit(tmp_path, monkeypatch):
+def test_lightning_reviewer_uses_the_jobs_prompt_and_its_own_token_limit(tmp_path, monkeypatch):
     root = make_root(tmp_path)
     seen = {}
 
@@ -306,3 +306,17 @@ def test_a_test_file_with_a_syntax_error_is_not_frozen(tmp_path):
     assert "SYNTAX ERROR" in note and "(change only what is needed to make them valid): pieces/test_bad.py." in note
     assert "MUST be returned in full: pieces/test_new.py." in note                      # missing test: must be written
     assert fl._parses(tmp_path / "pieces" / "test_ok.py") and not fl._parses(tmp_path / "pieces" / "test_bad.py")
+
+
+def test_load_job_rejects_review_files_that_miss_a_job_file(tmp_path):
+    root = make_root(tmp_path)
+    job = {"name": "j", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"], "tests": ["pieces/test_m.py"], "reference": [],
+           "review_files": ["pieces/other.py"], "fixers": ["nemotron"] * 3}
+    (root / "_loop" / "jobs").mkdir()
+    path = root / "_loop" / "jobs" / "j.json"
+    path.write_text(json.dumps(job), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_files must include every job file"):
+        fl.load_job(path)
+    job["review_files"] = ["pieces/m.py", "pieces/test_m.py", "specs/s.md"]
+    path.write_text(json.dumps(job), encoding="utf-8")
+    assert fl.load_job(path)["review_files"] == job["review_files"]

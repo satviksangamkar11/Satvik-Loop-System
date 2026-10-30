@@ -61,6 +61,7 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 
 ## Safeguards
 
+- A job file whose `review_files` do not include its own files is refused at load time (a copied job file once made the reviewers judge the wrong files). `pieces/test_guards.py` also checks every real job file for consistency.
 - A review cannot return READY when its input was incomplete (missing, skipped or cut-off files) or when the model reply was cut off.
 - A required reviewer that is missing or silent can never count as a pass.
 - Only the Nemotron coder writes code. Codex and Haiku only review.
@@ -76,7 +77,7 @@ The launcher refuses any job whose fixers are not all `nemotron`. Per-job state 
 - `scripts/source/nemotron_code.py`, `draft_source.py`, `coder_run.py`: coder calls, streaming, parsing of `FILE:` blocks
 - `scripts/image_trials/nvidia_trial.py`: the key pool
 - `pieces/p1_claims.py`, `pieces/p1_escalate.py`: launcher, claims, ledger, escalation
-- `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the model)
+- `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the Codex model; `REVIEW_WITH=haiku` asks Haiku at low effort instead)
 - `docs/REVIEW_PROMPT.md`: the prompt every reviewer receives
 - `pieces/test_*.py`: the tests
 
@@ -91,6 +92,8 @@ python -m pytest pieces -p no:cacheprovider -q
 The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested live with four reviewers. A small job passed in 32 seconds.
 
 ## Known limits
+
+- The job fields `coder_model` and `reviewer_model` are accepted but not used yet: the coder and the Lightning reviewer are fixed in `fix_loop.py`. The coder runs with thinking on (owner rule).
 
 - A re-run on files that already exist cannot rewrite the existing tests (append only), so re-runs need new file names or a wiped state.
 - Haiku and Codex need their CLI logins. If one is signed out, its review is empty and the job ends with exit code 5.

@@ -16,7 +16,7 @@ ALLOW_MKDIR = {"p1_inventory.py": "write_inventory creates only the output folde
 
 def code_files(include_tests=False):
     out = []
-    for d, pattern in (("pieces", "p[123]_*.py"), ("tools", "*.py")):
+    for d, pattern in (("pieces", "p[1234]_*.py"), ("tools", "*.py")):
         for p in sorted((REPO / d).glob(pattern)):
             if p.name.startswith("test_") and not include_tests:
                 continue
@@ -109,3 +109,20 @@ def test_review_prompt_checks_the_recurring_mistake_classes():
 def test_agent_rules_list_the_known_coder_traps():
     text = (REPO / "docs" / "AGENT_RULES.md").read_text(encoding="utf-8")
     assert "KNOWN CODER TRAPS" in text
+
+
+def test_every_real_job_file_is_consistent():
+    """Learned 2026-10-30: job files copied from another job kept its review_files, so reviewers judged the wrong files."""
+    import json
+    repo = Path(__file__).resolve().parents[1]
+    jobs = sorted((repo / "_loop" / "jobs").glob("*.json"))
+    assert jobs, "no job files found: this guard would pass vacuously"
+    for path in jobs:
+        job = json.loads(path.read_text(encoding="utf-8"))
+        assert (repo / job["spec"]).is_file(), f"{path.name}: spec missing"
+        assert job["name"] == path.stem, f"{path.name}: name differs from the file name"
+        assert all(f == "nemotron" for f in job.get("fixers", ["nemotron"])), f"{path.name}: non-nemotron fixer"
+        assert set(job.get("reviewers", [])) <= {"lightning", "minimax", "codex", "haiku"}, f"{path.name}: unknown reviewer"
+        if job.get("review_files") is not None:
+            assert set(job["files"]) <= set(job["review_files"]), f"{path.name}: review_files lack its own files"
+        assert set(job["tests"]) <= set(job["files"]), f"{path.name}: a test is not a job file"

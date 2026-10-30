@@ -108,6 +108,9 @@ def load_job(path: str | Path) -> dict:
     if job["review_files"] is not None:
         for i, rf in enumerate(job["review_files"]):
             _validate_path(rf, root, f"review_files[{i}]")
+        missing_review = [x for x in job["files"] if x not in job["review_files"]]
+        if missing_review:                       # a job whose reviewers never see its own files can never be reviewed (found 2026-10-30: copied job file)
+            raise ValueError(f"review_files must include every job file; missing: {missing_review}")
     if job["review_prompt"] is not None:
         _validate_path(job["review_prompt"], root, "review_prompt")
     return job
