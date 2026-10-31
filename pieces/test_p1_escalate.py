@@ -114,4 +114,4 @@ def test_codex_prompt_gets_the_verdict_instruction():
 def test_all_three_reviewers_are_known_to_the_job_schema():
     import fix_loop as fl
     # owner 2026-10-31: qwen removed from the loop
-    assert set(fl.JOB_SCHEMA["properties"]["reviewers"]["items"]["enum"]) == {"lightning", "minimax", "codex", "haiku", "groq"} if hasattr(fl, "JOB_SCHEMA") else True
+    assert set(fl.JOB_SCHEMA["properties"]["reviewers"]["items"]["enum"]) == {"lightning", "minimax", "codex", "haiku", "groq", "ultra"} if hasattr(fl, "JOB_SCHEMA") else True

@@ -27,6 +27,8 @@ MODEL_PROFILES = {
     # MiniMax M3.1 Flash ignores every thinking-off switch (P8 probes: 267/384/194 reasoning tokens, any_variant_works false); its measured best setting
     # is reasoning_effort low with thinking permitted, so it gets that, a big output budget and a long time limit (owner 2026-10-30: let it take time).
     "minimaxai/minimax-m3.1-flash": {"reasoning_effort": "low"},
+    # owner 2026-10-31: Nemotron 3 Ultra as reviewer with thinking ON at high effort (it replaces Lightning when Lightning gives no verdict)
+    "nvidia/nemotron-3-ultra-550b-a55b": {"chat_template_kwargs": {"enable_thinking": True}, "reasoning_effort": "high"},
 }
 
 
@@ -336,7 +338,7 @@ def run_review(
         "reply": reply_text,
         "error": info.get("error", ""),
         "effort": effort,
-        "thinking": REVIEW_THINKING,
+        "thinking": bool(((MODEL_PROFILES.get(model) or {}).get("chat_template_kwargs") or {}).get("enable_thinking", REVIEW_THINKING)),   # the setting the request used (Ultra: on)
     }
 
     # Scrub all string values in the result dict

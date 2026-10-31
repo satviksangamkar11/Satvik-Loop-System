@@ -121,8 +121,8 @@ def test_every_real_job_file_is_consistent():
         job = json.loads(path.read_text(encoding="utf-8"))
         assert (repo / job["spec"]).is_file(), f"{path.name}: spec missing"
         assert job["name"] == path.stem, f"{path.name}: name differs from the file name"
-        assert all(f in ("nemotron", "haiku") for f in job.get("fixers", ["nemotron"])), f"{path.name}: unknown fixer"   # haiku: owner 2026-10-31
-        assert set(job.get("reviewers", [])) <= {"lightning", "minimax", "codex", "haiku", "groq"}, f"{path.name}: unknown reviewer"
+        assert all(f in ("nemotron", "haiku") for f in job.get("fixers", ["nemotron"])), f"{path.name}: unknown fixer"   # haiku: owner exception 2026-10-31
+        assert set(job.get("reviewers", [])) <= {"lightning", "minimax", "codex", "haiku", "groq", "ultra"}, f"{path.name}: unknown reviewer"
         if job.get("review_files") is not None:
             assert set(job["files"]) <= set(job["review_files"]), f"{path.name}: review_files lack its own files"
         assert set(job["tests"]) <= set(job["files"]), f"{path.name}: a test is not a job file"

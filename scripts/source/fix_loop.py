@@ -37,7 +37,7 @@ JOB_SCHEMA = {
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
-        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
+        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
         "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "haiku"]}, "default": ["nemotron", "nemotron", "nemotron"]},
     },
     "additionalProperties": False,
@@ -674,6 +674,23 @@ def _default_reviewers_factory(root: Path, review_prompt: str | None = None, cod
             )
         return reviewer
     reviewers["lightning"] = make_lightning_reviewer()
+
+    def make_ultra_reviewer():
+        def reviewer(files: list[Path], report_path: Path) -> dict:
+            report_path.unlink(missing_ok=True)
+            return review_run_mod.run_review(
+                model="nvidia/nemotron-3-ultra-550b-a55b",     # owner 2026-10-31: Nemotron 3 Ultra reviews with thinking ON (profile in review_run.MODEL_PROFILES)
+                prompt_file=prompt_file,
+                files=files,
+                out_path=report_path,
+                root=root,
+                max_tokens=64000,                             # thinking tokens come out of the same budget
+                idle_s=None,
+                caller=None,
+                effort="high",
+            )
+        return reviewer
+    reviewers["ultra"] = make_ultra_reviewer()
 
     def make_minimax_reviewer():
         def reviewer(files: list[Path], report_path: Path) -> dict:
