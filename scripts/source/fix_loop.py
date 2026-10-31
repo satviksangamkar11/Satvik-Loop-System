@@ -33,6 +33,7 @@ JOB_SCHEMA = {
         "review": {"type": "boolean", "default": True},
         "review_rounds": {"type": "integer", "minimum": 0, "maximum": 10, "default": 4},
         "review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
+        "groq_review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
@@ -79,6 +80,7 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review", True)
     job.setdefault("review_rounds", 4)
     job.setdefault("review_files", None)
+    job.setdefault("groq_review_files", None)
     job.setdefault("review_prompt", "docs/REVIEW_PROMPT.md")
     job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
     job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
@@ -123,6 +125,16 @@ def load_job(path: str | Path) -> dict:
         missing_review = [x for x in job["files"] if x not in job["review_files"]]
         if missing_review:                       # a job whose reviewers never see its own files can never be reviewed (found 2026-10-30: copied job file)
             raise ValueError(f"review_files must include every job file; missing: {missing_review}")
+    if job.get("groq_review_files") is not None:                 # owner 2026-10-31: the Groq free tier has an input budget (GROQ_MAX_INPUT_CHARS); a job may give Groq a smaller file set
+        gfiles = job["groq_review_files"]
+        for i, rf in enumerate(gfiles):
+            _validate_path(rf, root, f"groq_review_files[{i}]")
+        extra = [x for x in gfiles if job.get("review_files") is not None and x not in job["review_files"]]
+        if extra:
+            raise ValueError(f"groq_review_files must be a subset of review_files; not reviewed: {extra}")
+        missing_job = [x for x in job["files"] if x not in gfiles]
+        if missing_job:
+            raise ValueError(f"groq_review_files must include every job file; missing: {missing_job}")
     if job["review_prompt"] is not None:
         _validate_path(job["review_prompt"], root, "review_prompt")
     return job
@@ -1004,7 +1016,10 @@ def run_job(
                     if func is None:
                         return None
                     try:
-                        return func(review_files_paths, status_dir_job / f"review_{_pass}_{name}.md")
+                        files_for = review_files_paths
+                        if name == "groq" and job.get("groq_review_files") is not None:      # the Groq reviewer gets its own file set (free-tier budget)
+                            files_for = [root / rf for rf in job["groq_review_files"]]
+                        return func(files_for, status_dir_job / f"review_{_pass}_{name}.md")
                     except Exception as exc:
                         return {"verdict": "NONE", "status": "error", "out": str(exc)}
 
