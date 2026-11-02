@@ -400,6 +400,7 @@ class Production:
                  history=None, scrub_keys=(), repair_ask=None, job_dir=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
         self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
+        self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
         self.files, self.protected, self.acceptance_lock, self.originals = list(job["files"]), protected, acceptance_lock, originals
         self.parse_files, self.check_path, self.content_problem = parse_files, check_path, content_problem
         self.history, self.scrub_keys = history, tuple(scrub_keys)
@@ -559,9 +560,10 @@ class Production:
             message = messages.get(tid, "(no assertion message in the last run)")
             blocks.append(f"## {tid}\n- Assertion message: `{message}`\n- likely SPEC line (guessed by word overlap): {_spec_line(self.spec, tid, message)}\n")
         text = ("# CONTRACT CHECK\n\nDots and Xing both fail the same locked acceptance test, and their code differs. The spec and the locked "
-                "acceptance test disagree or the spec is unclear. The job is escalated.\n\n" + "\n".join(blocks))
+                "acceptance test disagree or the spec is unclear. The ladder goes on; the repair step may still run.\n\n" + "\n".join(blocks))
         self.job_dir.mkdir(parents=True, exist_ok=True)
         (self.job_dir / "CONTRACT_CHECK.md").write_text(_scrubbed(text, self.scrub_keys), encoding="utf-8")
+        self.contract_file = str(self.job_dir / "CONTRACT_CHECK.md")
 
     def _step(self, model, mode, note):
         self.steps.append({"model": model, "mode": mode, "note": note})
@@ -687,6 +689,8 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     status = {"name": name, "schema_version": 1, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
               "reason": outcome.reason, "failing_tests": sorted(outcome.failing), "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
+    if models is not None and models.contract_file:
+        status["contract_check"] = models.contract_file        # the contract evidence, whatever the end state
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved
     (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
     print(f"{name}: {state}")

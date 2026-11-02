@@ -94,18 +94,30 @@ def fake_claude(tmp_path, monkeypatch):
 
 
 @needs_docker
-def test_a_job_red_red_red_where_dots_and_xing_fail_the_same_locked_test_with_different_code_escalates_with_a_contract_check(tmp_path, fake_claude):
-    """Rule 3 (WP-H): Dots and Xing both fail the same locked acceptance test with different code, so the job ends escalate with
-    CONTRACT_CHECK.md before any Opus repair. The Opus repair is not reached for this failure."""
+def test_a_job_red_red_red_then_opus_repairs_it_to_green_with_glm_and_north_ready(tmp_path, fake_claude):
     root = make_prod_root(tmp_path)
     job = load(root, p1b_job())
     provider = ph.Provider(script_red_red_red())
+    fake_claude.reply(ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST)))
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0.05)), scrub_keys=[])
-    assert result["state"] == "escalate", result
-    assert provider.models() == [DOTS, DOTS, XING]
-    assert fake_claude.runs() == []
-    assert (root / "_loop" / "calc" / "CONTRACT_CHECK.md").is_file()
-    assert not (root / "pieces" / "calc.py").exists()          # the job file did not exist before the job, so the restore removes it
+
+    # the free calls: Dots writes and repairs, Xing writes fresh and repairs; then the reviewers: North first, GLM second (only after North says READY)
+    assert provider.models() == [DOTS, DOTS, XING, XING, NORTH, GLM]
+    # the Dots repair gets the failing tests from JUnit, never the raw pytest output
+    dots_repair_user = [request for model, request in provider.calls if model == DOTS][1]["messages"][1]["content"]
+    assert "FAILING TESTS" in dots_repair_user and "PYTEST OUTPUT" not in dots_repair_user
+    assert len(fake_claude.runs()) == 1                       # the Opus repair is the one fake claude run
+    assert result["state"] == "passed", result
+    assert result["review_verdict"] == "READY"
+    ev = result["evidence"]
+    assert ev["tested_hash"] == ev["final_hash"] == ev["reviewed_hash"]
+    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == GOOD_CODE
+    assert ev["budget"]["repair_calls"] == 1 and ev["budget"]["free_requests_used"] == 5   # Dots 2, Xing 2, North 1 (GLM is paid, not free)
+    assert ev["budget"]["review_usd_spent"] <= 0.05
+
+    lineage = json.loads((root / "_loop" / "calc" / "lineage.json").read_text(encoding="utf-8"))
+    assert lineage["pieces/calc.py"]["origin"] == XING and lineage["pieces/calc.py"]["last"] == ANTHROPIC
+    assert lineage["pieces/calc.py"]["chain"][-1] == "anthropic"
 
 
 @needs_docker
@@ -138,9 +150,9 @@ def test_with_opus_off_a_red_job_escalates_with_the_fixed_reason_and_no_non_dock
     provider = ph.Provider(script_red_red_red())
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "escalate", result
-    assert json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))["reason"].startswith("CONTRACT_CHECK")
+    assert json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))["reason"] == "Opus repair unavailable"
     assert started == [], "a non-docker process started: Opus is off by default"
-    assert provider.models() == [DOTS, DOTS, XING]
+    assert provider.models() == [DOTS, DOTS, XING, XING]
     assert not any(model == GLM for model, _ in provider.calls)
 
 
@@ -339,15 +351,20 @@ def wp_h_status(root):
     return json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
 
 
-def test_the_same_failing_set_three_runs_in_a_row_ends_needs_review_with_the_ids_and_originals_back(tmp_path):
+def test_the_same_failing_set_three_writer_runs_in_a_row_ends_needs_review_after_opus_has_had_its_two_repairs(tmp_path, fake_claude):
+    """A streak of three identical writer runs does not stop the ladder while a repair step is left: Opus runs (twice), and only then the job
+    ends needs_review with the failing ids in status.json and the originals back."""
     root = wp_h_root(tmp_path)
-    client = FakeClient([ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))] * 2
-                        + [ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+    fake_claude.reply(ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)))    # Opus returns a red candidate, twice
+    reply = ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))
+    client = FakeClient([reply, reply, reply, reply])                                                  # Dots write, Dots repair, Xing write, Xing repair
     result = wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
     assert result["state"] == "needs_review", result
     status = wp_h_status(root)
     assert status["state"] == "needs_review" and status["failing_tests"] == [ACC_ID]
-    assert client.calls == [DOTS, DOTS, XING]                  # no reviewer and no Opus call after the stop
+    assert status["schema_version"] == 1
+    assert len(fake_claude.runs()) == 2
+    assert client.calls == [DOTS, DOTS, XING, XING]
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE
     assert (root / "pieces" / "test_calc.py").read_text(encoding="utf-8") == ORIG_TEST
 
@@ -364,15 +381,20 @@ def test_a_quota_exhausted_adapter_error_ends_the_job_with_the_reason_and_makes_
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE
 
 
-def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_write_contract_check_and_escalate(tmp_path):
+def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_write_contract_check_and_the_ladder_goes_on(tmp_path):
+    """The contract file is written when Dots and Xing fail the same locked assertion with different code. The ladder does not stop: here
+    Opus is off, so the job ends escalate with the existing reason, and status.json points at the contract file."""
     root = wp_h_root(tmp_path)
     client = FakeClient([ph.file_reply(("pieces/calc.py", DOTS_CODE), ("pieces/test_calc.py", ORIG_TEST))] * 2
-                        + [ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+                        + [ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))] * 2)
     result = wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
     assert result["state"] == "escalate", result
-    assert wp_h_status(root)["reason"].startswith("CONTRACT_CHECK")
+    status = wp_h_status(root)
+    assert status["reason"] == "Opus repair unavailable"
+    assert status["contract_check"].endswith("CONTRACT_CHECK.md") and status["schema_version"] == 1
     text = (root / "_loop" / "calc" / "CONTRACT_CHECK.md").read_text(encoding="utf-8")
     assert ACC_ID in text and "assert 0 == 50" in text
     assert "SPEC 1: calculate_total(prices) returns the sum of the prices." in text
-    assert client.calls == [DOTS, DOTS, XING]
+    assert "likely SPEC line (guessed by word overlap)" in text
+    assert client.calls == [DOTS, DOTS, XING, XING]
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE

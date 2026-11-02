@@ -463,12 +463,13 @@ def _production_profile(profile):
 
 # ---- 7. needs_review, quota-exhausted, CONTRACT_CHECK (WP-H)
 
-def test_the_same_failing_set_in_three_test_runs_in_a_row_ends_needs_review_with_the_ids():
-    outcome, models = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [full()]},
-                          [red(("t1",)), red(("t1",)), red(("t1",))])
+def test_the_same_failing_set_in_three_writer_runs_in_a_row_ends_needs_review_once_no_repair_is_left():
+    outcome, models = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
+                           (ANTHROPIC, "repair"): [full(), full()]}, [red(("t1",))] * 6)
     assert outcome.status == "needs_review", outcome
     assert outcome.failing == ("t1",) and "t1" in outcome.reason
-    assert models.calls(XING, "repair") == [] and models.calls(ANTHROPIC) == [] and models.calls(GLM) == [] and models.calls(NORTH) == []
+    assert len(models.calls(ANTHROPIC, "repair")) == 2
+    assert models.calls(GLM) == [] and models.calls(NORTH) == []
 
 
 def test_a_failing_set_that_changes_between_runs_is_not_needs_review():
@@ -495,17 +496,19 @@ ACC = "tests/acceptance/test_calc_acceptance.py::test_sums_two_prices"
 JOB_ACC = dict(JOB, acceptance_tests=["tests/acceptance/test_calc_acceptance.py"])
 
 
-def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_end_with_a_contract_check_and_escalate():
-    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 2\n")]},
-                          [red((ACC,), systemic=True), red((ACC,))], job=JOB_ACC)
-    assert outcome.status == "escalate" and outcome.reason.startswith("CONTRACT_CHECK") and outcome.failing == (ACC,)
+def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_write_the_contract_file_and_the_ladder_goes_on():
+    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 2\n")], (XING, "repair"): [full("x = 3\n")],
+                           (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached", reason="Opus repair unavailable")]},
+                          [red((ACC,), systemic=True), red((ACC,)), red((ACC,))], job=JOB_ACC)
+    assert outcome.status == "escalate" and outcome.reason == "Opus repair unavailable", outcome
     ids, dots, xing = models.contract
-    assert ids == [ACC] and dots["pieces/calc.py"] == "x = 1\n" and xing["pieces/calc.py"] == "x = 2\n"
-    assert models.calls(XING, "repair") == [] and models.calls(ANTHROPIC) == []
+    assert ids == [ACC] and dots["pieces/calc.py"] == "x = 1\n" and xing["pieces/calc.py"] == "x = 3\n"
+    assert models.calls(XING, "repair") != []
 
 
-def test_the_same_locked_failure_with_the_same_code_is_not_a_contract_check():
-    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 1\n")], (XING, "repair"): [full("x = 1\n")]},
+def test_the_same_locked_failure_with_the_same_code_writes_no_contract_file():
+    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 1\n")], (XING, "repair"): [full("x = 1\n")],
+                           (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached", reason="Opus repair unavailable")]},
                           [red((ACC,), systemic=True), red((ACC,)), red((ACC,))], job=JOB_ACC)
     assert models.contract is None
-    assert outcome.status == "needs_review"
+    assert outcome.reason == "Opus repair unavailable"

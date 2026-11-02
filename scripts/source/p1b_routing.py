@@ -90,12 +90,6 @@ class QuotaStop(Exception):
     """The adapter raised QuotaExhausted: the day's free requests are used up. The job ends quota-exhausted; no further call is made."""
 
 
-class _Stop(Exception):
-    """Internal: a rule ended the ladder with this Outcome (needs_review, contract check)."""
-
-    def __init__(self, outcome):
-        super().__init__(outcome.reason)
-        self.outcome = outcome
 
 
 class Lineage:
@@ -326,8 +320,6 @@ def walk(job, models, lineage, clock=time.monotonic):
     provider-unavailable, budget-exceeded, quota-exhausted, needs_review, deadline."""
     try:
         return _ladder(job, models, lineage, clock)
-    except _Stop as exc:
-        return exc.outcome
     except BudgetStop as exc:
         return Outcome("budget-exceeded", str(exc))
     except QuotaStop as exc:
@@ -340,7 +332,8 @@ def _ladder(job, models, lineage, clock):
     wanted = frozenset(files)
     limit = job["deadline_min"] * 60
     failing, down = {}, set()
-    history, written = [], {}           # every test run's failing set, in order; each writer's last reply (for the contract check)
+    history, written = [], {}           # the free writers' test runs, in order; each writer's last reply (for the contract check)
+    flags = {"streak": None}            # the failing ids of a streak of STREAK identical writer runs, once one has happened
 
     def remaining():
         return limit - (clock() - started)
@@ -371,17 +364,22 @@ def _ladder(job, models, lineage, clock):
         models.write(reply)                      # validated files go to disk before the tests run
         result = models.tests(files)
         failing[model] = result.failing
-        history.append(result.failing)
-        if not result.green and model == _m("writer_b") and _m("writer_a") in failing:
-            shared = sorted(t for t in failing[_m("writer_a")] & failing[_m("writer_b")] if t.split("::")[0] in set(job.get("acceptance_tests") or []))
-            if shared and written[_m("writer_a")] != written[_m("writer_b")]:
-                models.contract_check(shared, written[_m("writer_a")], written[_m("writer_b")])
-                raise _Stop(Outcome("escalate", "CONTRACT_CHECK: Dots and Xing both fail a locked acceptance test with different code: "
-                                    + ", ".join(shared), tuple(shared)))
-        if not result.green and result.failing and len(history) >= STREAK and all(h == result.failing for h in history[-STREAK:]):
-            ids = tuple(sorted(result.failing))
-            raise _Stop(Outcome("needs_review", f"the same failing tests in {STREAK} test runs in a row: " + ", ".join(ids), ids))
+        if model in (_m("writer_a"), _m("writer_b")):           # only the free writers' runs count for the streak
+            history.append(result.failing)
+            if not result.green and result.failing and len(history) >= STREAK and all(h == result.failing for h in history[-STREAK:]):
+                flags["streak"] = tuple(sorted(result.failing))
+            if not result.green and model == _m("writer_b") and _m("writer_a") in failing:
+                shared = sorted(t for t in failing[_m("writer_a")] & failing[_m("writer_b")] if t.split("::")[0] in set(job.get("acceptance_tests") or []))
+                if shared and written[_m("writer_a")] != written[_m("writer_b")]:
+                    models.contract_check(shared, written[_m("writer_a")], written[_m("writer_b")])     # the file only: the ladder goes on
         return result
+
+    def stuck(reason):
+        """No repair step is left (or none can run): needs_review when a streak of identical writer runs happened, else the reason given."""
+        if flags["streak"]:
+            ids = flags["streak"]
+            return Outcome("needs_review", f"the same failing tests in {STREAK} test runs in a row: " + ", ".join(ids), ids)
+        return Outcome("escalate", reason)
 
     deadline = Outcome("deadline", "the unit deadline passed; stopped between rounds")
     if late():
@@ -438,10 +436,10 @@ def _ladder(job, models, lineage, clock):
         if late():
             return deadline
         if repairs == REPAIR_CALLS:
-            return Outcome("escalate", f"repair calls used up ({REPAIR_CALLS}) and still red")
+            return stuck(f"repair calls used up ({REPAIR_CALLS}) and still red")
         why = _gate(result, failing, remaining())
         if why:
-            return Outcome("escalate", f"repair gate: {why}")
+            return stuck(f"repair gate: {why}")
         repairs += 1
         try:
             result = attempt(ANTHROPIC, "repair", keep_origin=True)
