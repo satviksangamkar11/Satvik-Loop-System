@@ -836,12 +836,13 @@ def run_job(
 ) -> dict:
     production = job.get("profile") == "production"
     roster_profile = _p1b().oc.PROFILE                      # SATVIK_PROFILE: the roster the adapter loaded (owner 2026-11-02)
-    if production and roster_profile != "production":       # a production job runs only on the production roster: refused before any call or write
-        reason = f"profile-mismatch: job={job.get('profile')} roster={roster_profile}"
-        print(f"{job['name']}: {reason}")
-        return {"name": job["name"], "state": "profile-mismatch", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [],
-                "coder_calls": 0, "reviewer_calls": {}, "coder_budget": 0, "problems": [reason], "evidence": {},
-                "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    if production and roster_profile == "test":             # test roster: a production job runs only with the test budget (review_usd exactly 0); refused before any call or write
+        budget_problems = [p for p in _p0().production_job_problems(job, profile="test") if p.startswith("budget")]
+        if budget_problems:                                  # the existing budget rule and its reason, as load_job states them
+            print(f"{job['name']}: {budget_problems[0]}")
+            return {"name": job["name"], "state": "refused", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [],
+                    "coder_calls": 0, "reviewer_calls": {}, "coder_budget": 0, "problems": budget_problems, "evidence": {},
+                    "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     if production and pytest_runner is not None:
         raise ValueError("a production job runs pytest only in the sandbox; pytest_runner cannot be replaced (pass sandbox= in tests)")
     if production and (caller is not None or callers is not None or reviewer is not None):
