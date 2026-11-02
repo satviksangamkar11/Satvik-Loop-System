@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -162,11 +163,20 @@ class DockerSandbox:
             return RunResult(125, f"SANDBOX: docker could not start: {exc}", None, False)
 
     def _kill(self, name):
-        for args in (["kill", name], ["rm", "-f", name]):
+        # ponytail: a container still being created (state Created) can survive one kill+rm; repeat until none is listed, 20 tries at most
+        for _ in range(20):
+            for args in (["kill", name], ["rm", "-f", name]):
+                try:
+                    self._docker(args, timeout=30)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             try:
-                self._docker(args, timeout=30)
+                left = self._docker(["ps", "-a", "-q", "--filter", f"name={name}"], timeout=30).stdout.strip()
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                return
+            if not left:
+                return
+            time.sleep(0.5)
 
 
 def _docker_cli_env() -> dict:
