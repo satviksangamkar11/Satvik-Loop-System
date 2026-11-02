@@ -78,3 +78,14 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
   `normal_repo_path` and `is_protected_control_file` are kept, and `production_job_problems(job, profile=None)` carries the budget rule
   next to the protected-file check.
 - `pieces/test_p0_gates*.py` matches no file on this branch; the package F tests are in `pieces/test_p0_protected_files.py`, which was run.
+
+## Superseded (2026-11-02, guard change merged as PR #18)
+
+The `profile-mismatch` guard described above was replaced. A job's `"profile": "production"` names the production pipeline, while
+`SATVIK_PROFILE` names the roster, so the two must not be compared. `fix_loop.run_job` now refuses a production job on the `test` roster
+only when its budget breaks the test rule (review_usd must be exactly 0), using the budget rule's own reason, before any call or write.
+Under the `test` roster a production job with review_usd 0 runs on the free roster, and the pilot no longer needs
+`SATVIK_PROFILE=production`. The production roster path is unchanged. Tests: `pieces/test_roster_config.py`
+(`test_run_job_runs_a_production_job_under_the_test_roster_with_review_usd_zero_and_no_paid_call`,
+`test_run_job_refuses_a_production_job_with_review_usd_0_05_under_the_test_roster_with_the_budget_reason`,
+`test_run_job_under_the_production_roster_is_unchanged_for_a_production_job`).
