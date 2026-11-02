@@ -218,32 +218,56 @@ def test_under_the_production_profile_the_budget_review_usd_must_be_exactly_0_05
     assert not any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0.05), profile="production"))
 
 
-# ---- 8. run_job refuses a production job whose profile is not the active roster profile (owner 2026-11-02)
+# ---- 8. run_job's guard for a production job (owner 2026-11-02): under the test roster the budget must be review_usd exactly 0; under the production roster nothing changes
 
-def _production_job(root, name):
+import sandbox_runner as sr  # noqa: E402
+SANDBOX_PROBLEMS = sr.DockerSandbox(image=sr.DEFAULT_IMAGE, include=["pieces", "tests"]).selftest()
+needs_docker = pytest.mark.skipif(bool(SANDBOX_PROBLEMS), reason="the real sandbox is not available here: " + "; ".join(SANDBOX_PROBLEMS)[:200])
+
+
+def _production_job(root, name, review_usd=0.05):
     return {"name": name, "profile": "production", "visibility": "public", "spec": "specs/missing.md", "files": ["pieces/m.py"],
             "tests": ["pieces/test_m.py"], "reference": [], "fixers": ["writer_a"], "reviewers": "by_lineage", "review": True,
-            "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}, "deadline_min": 60}
+            "budget": {"free_requests": 40, "review_usd": review_usd, "paid_usd": 0}, "deadline_min": 60}
 
 
-def test_run_job_refuses_a_production_job_when_the_roster_profile_is_test_before_any_call_or_write(tmp_path, profile):
+@needs_docker
+def test_run_job_runs_a_production_job_under_the_test_roster_with_review_usd_zero_and_no_paid_call(tmp_path, profile, monkeypatch):
+    import prod_harness as ph
+    from test_p0_acceptance import make_prod_root, prod_job, GOOD_CODE, GOOD_TEST
+    from test_fix_loop_review import fl
+    root = make_prod_root(tmp_path)
+    profile("test")
+    free = {role: spec["model"] for role, spec in oc.load_profile("test").items() if not spec["paid"]}
+    # the fake transport names a provider in every reply; a free roster model has no pin, so the fake's name lookup needs one here (free slot: no effect on the request)
+    monkeypatch.setitem(oc.roster_state()["PINS"], free["reviewer_a"], {"name": "Fake", "slug": "fake"})
+    job = prod_job(budget={"free_requests": 40, "review_usd": 0, "paid_usd": 0})
+    provider = ph.Provider({free["writer_a"]: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+                            free["reviewer_a"]: [ph.READY], free["reviewer_b"]: [ph.READY]})
+    result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0)), scrub_keys=[])
+    assert result["state"] == "passed", result
+    assert provider.models() and set(provider.models()) <= set(free.values())   # every model call went to a free roster model
+    assert not any(spec["paid"] for spec in oc.load_profile("test").values())
+
+
+def test_run_job_refuses_a_production_job_with_review_usd_0_05_under_the_test_roster_with_the_budget_reason(tmp_path, profile):
     from test_fix_loop_review import fl, make_root
     root = make_root(tmp_path)
-    profile("test")                                              # the active roster profile (SATVIK_PROFILE) is test
-    result = fl.run_job(_production_job(root, "mm"), root, status_dir=root / "_loop", scrub_keys=[])
-    assert result["state"] == "profile-mismatch"
-    assert result["problems"] == ["profile-mismatch: job=production roster=test"]
+    profile("test")
+    result = fl.run_job(_production_job(root, "budget", review_usd=0.05), root, status_dir=root / "_loop", scrub_keys=[])
+    assert result["state"] == "refused"
+    assert result["problems"] == ["budget.review_usd must be exactly 0.0 under the test profile"]
     assert result["coder_calls"] == 0
-    assert not (root / "_loop" / "mm").exists()                # no folder, no status.json, nothing written
+    assert not (root / "_loop" / "budget").exists()                # no folder, no status.json, nothing written
 
 
-def test_run_job_runs_a_production_job_when_the_roster_profile_matches(tmp_path, profile):
+def test_run_job_under_the_production_roster_is_unchanged_for_a_production_job(tmp_path, profile):
     from test_fix_loop_review import fl, make_root
     root = make_root(tmp_path)
-    profile("production")                                        # the roster profile matches the job
-    result = fl.run_job(_production_job(root, "ok"), root, status_dir=root / "_loop", scrub_keys=[])
+    profile("production")
+    result = fl.run_job(_production_job(root, "ok", review_usd=0.05), root, status_dir=root / "_loop", scrub_keys=[])
     assert result["state"] == "invalid-spec"                   # the guard let it through: the next check (spec) decided, no model call
-    assert result["state"] != "profile-mismatch"
+    assert result["coder_calls"] == 0
 
 
 # ---- 9. the production runner writes schema_version 1 into status.json (owner 2026-11-02)
