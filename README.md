@@ -216,6 +216,23 @@ and `reviewer` are refused for production, and a static test checks that the P1b
 - **Not done.** The FIX FIRST repair loop; the frozen-test rule of the legacy loop is not applied to the P1b ladder (the locked acceptance tests
   are the protection); no live run.
 
+## Opus planner (P1c, 2026-11-02)
+
+`scripts/source/plan_job.py` plans one job with a single Opus call. Nothing calls it live yet: the tests use `pieces/fake_claude.py`.
+
+- **One call per job.** `plan/INTENT.json` is written before the call; the raw answer goes straight to `plan/raw_response.json`. A restart with a
+  saved answer parses it and makes no call. An intent with no saved answer is `planner-uncertain`; it is never retried automatically. A timed-out
+  call is `planner-uncertain` too.
+- **The call.** `claude -p --model opus --effort medium --output-format json --tools "" --mcp-config <empty file> --strict-mcp-config`, from an
+  empty temporary folder, prompt on stdin, `ANTHROPIC_API_KEY` removed from its environment, never `--bare`. These flag names come from the
+  Revision 3 spec and have not been checked against the installed `claude` CLI; that check belongs to the owner's go for the first live call.
+- **Refused.** Any MCP server or plugin reported by the session; more than 30 files sent; an answer that fails the production rules
+  (`check_production_job`, `production_job_problems`, the job schema); a spec line without a `KNOWN:` or `ASSUMED:` tag; acceptance files that are
+  not exactly the job's acceptance tests; a missing negative control source; a unit over 800 lines per file or 1,500 in total.
+- **Output.** `plan/PLAN.md`, `plan/SPEC.md`, `plan/job.json` (read-only, its SHA-256 is returned), `plan/expected_lines.json`, and the acceptance and
+  control files under `plan/files/`. The result lists the ASSUMED lines.
+- **Not done.** The loop does not start from a planned job yet; the owner's approval of ASSUMED lines is not a gate in code yet; no live run.
+
 ## OpenRouter adapter (P1a, 2026-11-02)
 
 `scripts/source/openrouter_call.py` is the only path to OpenRouter. A production job calls it through `p1b_production.py` (see the P1b section).
