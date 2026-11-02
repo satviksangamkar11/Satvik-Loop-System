@@ -486,3 +486,51 @@ def test_a_review_with_fix_first_and_no_valid_evidence_is_a_failed_call_too(tmp_
     record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
     assert record["model"] == NORTH and record["call"] == "review" and record["status"] == 200
     assert "FIX FIRST without valid evidence" in record["message"]
+
+
+FILLER_MARK = "FILLER_LINE_FOR_SIZE_TEST"
+FILLER = ("# " + FILLER_MARK + NL) * 300             # a large passing test file that a repair does not need
+
+
+class PromptClient(FakeClient):
+    """FakeClient that also keeps the user text of every call, in order."""
+
+    def __init__(self, queue):
+        super().__init__(queue)
+        self.users = []
+
+    def call(self, role, system, user, kind):
+        self.users.append(user)
+        return super().call(role, system, user, kind)
+
+
+def test_a_repair_prompt_is_smaller_than_the_fresh_write_prompt_for_the_same_job(tmp_path):
+    root = wp_h_root(tmp_path)
+    (root / "pieces" / "test_extra.py").write_text(FILLER, encoding="utf-8")
+    job = load(root, p1b_job(files=["pieces/calc.py", "pieces/test_calc.py", "pieces/test_extra.py"],
+                             tests=["pieces/test_calc.py", "pieces/test_extra.py"]))
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+    client = PromptClient(["fresh reply", "repair reply", "findings reply"])
+    models = pm.Production(job, root, client, FakeSandbox({}), protected=[], acceptance_lock=None, originals={},
+                           parse_files=lambda text: ({}, []), check_path=lambda rel: None, content_problem=lambda rel, content: None,
+                           history=history, job_dir=root / "_loop" / "calc")
+    failing = ('<testsuites><testsuite>'
+               '<testcase classname="pieces.test_calc" name="test_sums" file="pieces/test_calc.py">'
+               '<failure message="AssertionError: assert 0 == 50">x</failure></testcase>'
+               '<testcase classname="pieces.test_extra" name="test_pass" file="pieces/test_extra.py"/>'
+               '</testsuite></testsuites>')
+
+    models.call(DOTS, "write", job["files"])                  # the fresh write: every job file
+    models.last_junit = failing                               # the last run: test_calc.py failed, test_extra.py passed
+    models.call(DOTS, "repair", job["files"])                 # a red-test repair: the failing test file, the code, and the digest only
+    models.stage_fix(["pieces/calc.py:1 | SPEC 1: Adds two prices. | returns 0"])
+    models.call(DOTS, "repair", job["files"])                 # a FIX FIRST repair: the file the finding names only
+    fresh, repair, findings = client.users
+
+    assert len(repair) < len(fresh)
+    assert FILLER_MARK in fresh and FILLER_MARK not in repair
+    assert "pieces/test_calc.py:" in repair and "FAILING TESTS" in repair and "assert 0 == 50" in repair
+    assert "pieces/test_extra.py:" not in repair
+    assert len(findings) < len(fresh) and FILLER_MARK not in findings and "pieces/test_calc.py:" not in findings
+    assert "pieces/calc.py:" in findings and "REVIEW FINDINGS" in findings

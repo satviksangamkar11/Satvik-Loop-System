@@ -444,7 +444,7 @@ class Production:
         if model == p1b.ANTHROPIC:
             return self._repair_step()
         if mode in ("write", "repair"):
-            text = self._ask(model, WRITER_SYSTEM, self._writer_user(), kind="writer", mode=mode)
+            text = self._ask(model, WRITER_SYSTEM, self._writer_user(mode), kind="writer", mode=mode)
             reply = self._usable(model, mode, text)
             self._step(model, mode, f"{len(reply)} file(s) returned")
             return reply
@@ -505,7 +505,7 @@ class Production:
         reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model."""
         self.repair_calls += 1
         number = self.repair_calls
-        prompt = WRITER_SYSTEM + "\n\n" + self._writer_user()
+        prompt = WRITER_SYSTEM + "\n\n" + self._writer_user("repair")
 
         def keep_raw(raw):
             if self.history is not None:
@@ -538,9 +538,13 @@ class Production:
                     raise p1b.BadReply(f"{rel}: {problem}")
         return ok
 
-    def _writer_user(self):
+    def _writer_user(self, mode="write"):
+        """The writer's request. A fresh write shows every job file. A repair shows only the files it needs: the files the FIX FIRST findings
+        name, or, after a red test run, the failing test files and the code (the failing-test digest goes with them). Every job file is shown
+        when no failing test file can be named."""
+        shown = self._repair_files() if mode == "repair" else list(self.files)
         parts = [f"SPEC:\n{self.spec}", "EXPECTED FILES:"]
-        for rel in self.files:
+        for rel in shown:
             path = self.root / rel
             parts.append(f"{rel}:\n{path.read_text(encoding='utf-8')}" if path.is_file() else f"{rel}: (new file)")
         if self.fix_findings:                       # a FIX FIRST repair: the findings only (never the review text, never a test run of another round)
@@ -549,7 +553,30 @@ class Production:
         elif self.last_junit is not None:
             parts.append(FAILING_HEAD + failing_summary(self.last_junit))
             parts.append("Fix exactly the problems shown above. Change nothing else.")
+        if shown != list(self.files):
+            parts.append("The job files not shown above are unchanged by this repair.")
         return "\n\n".join(parts)
+
+    def _repair_files(self):
+        """The job files a repair shows: the files the staged findings name; otherwise the failing test files and every code file."""
+        if self.fix_findings:
+            named = {p1b._path_of(note) for note in self.fix_findings}
+            return [rel for rel in self.files if rel in named] or list(self.files)
+        failing = self._failing_files()
+        if not failing:
+            return list(self.files)
+        tests = set(self.job["tests"])
+        return [rel for rel in self.files if rel not in tests or rel in failing]
+
+    def _failing_files(self):
+        """The job files that hold a failing test in the last run (from its JUnit file)."""
+        if not self.last_junit:
+            return set()
+        try:
+            details = gates._case_details(self.last_junit)
+        except ET.ParseError:
+            return set()
+        return {file for file, _tid, outcome, _kind in details if outcome != "passed" and file in self.files}
 
     def _review_package(self, reask=False):
         """The one review request for this call: the nine-section package, with the re-ask note when this is the re-ask."""
