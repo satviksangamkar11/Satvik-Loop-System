@@ -36,7 +36,7 @@ def p1b_job(**over):
            "files": ["pieces/calc.py", "pieces/test_calc.py"], "tests": ["pieces/test_calc.py"], "reference": [],
            "fixers": ["writer_a", "writer_b"], "reviewers": "by_lineage",
            "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60,
-           "review": True, "review_prompt": "docs/RP.md",
+           "review": True,
            "acceptance_tests": ["tests/acceptance/test_calc_acceptance.py"],
            "negative_controls": [
                {"name": "returns None", "replace": {"pieces/calc.py": "tests/controls/calc_returns_none.py"},
@@ -162,3 +162,51 @@ def test_the_production_runner_names_no_legacy_model_family():
         text = (REPO / "scripts" / "source" / name).read_text(encoding="utf-8").lower()
         for word in ("nemotron", "codex", "haiku", "groq", "sonnet"):
             assert word not in text, f"{name} names {word}"
+
+
+def test_a_production_job_gets_no_legacy_review_prompt(tmp_path):
+    """docs/REVIEW_PROMPT.md is the legacy HIGH/MED/LOW prompt; a production job must not inherit it as its review prompt."""
+    job = p1b_job()
+    job.pop("review_prompt", None)
+    (tmp_path / "_loop" / "jobs").mkdir(parents=True)
+    assert load(tmp_path, job)["review_prompt"] is None
+
+
+@needs_docker
+def test_a_named_review_prompt_never_reaches_a_production_reviewer(tmp_path):
+    """A production job that names the legacy docs/REVIEW_PROMPT.md is ignored: its text reaches no review request."""
+    root = make_prod_root(tmp_path)
+    (root / "docs").mkdir(exist_ok=True)
+    (root / "docs" / "REVIEW_PROMPT.md").write_text("LEGACY-MARKER-PROMPT do not send", encoding="utf-8")
+    job = load(root, p1b_job(review_prompt="docs/REVIEW_PROMPT.md"))
+    provider = ph.Provider(script_for_dots_xing_glm())
+    fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
+    assert provider.calls, "the reviewers were called"
+    assert not any("LEGACY-MARKER-PROMPT" in json.dumps(request) for _, request in provider.calls)
+
+
+LEAK = "LEAKMARKER42XYZ"       # a key the adapter itself does not know: only the runner's scrub can hide it
+
+
+class NorthRateLimited(ph.Provider):
+    """The reviewer North answers HTTP 429 with a key echoed in its error text: the status must not carry it."""
+
+    def __call__(self, method, url, headers, body, timeout):
+        if method == "POST" and url.endswith("/chat/completions") and json.loads(body)["model"] == NORTH:
+            self.http.append((method, url, headers))
+            self.calls.append((NORTH, json.loads(body)))
+            return 429, {}, json.dumps({"error": {"message": "upstream shared pool, echoed key " + LEAK}}).encode()
+        return super().__call__(method, url, headers, body, timeout)
+
+
+@needs_docker
+def test_a_key_in_a_reviewer_error_is_redacted_in_status_json_and_in_the_result(tmp_path):
+    root = make_prod_root(tmp_path)
+    job = load(root, p1b_job())
+    provider = NorthRateLimited(script_for_dots_xing_glm())
+    result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[LEAK])
+    assert result["state"] == "provider-unavailable", result
+    status_text = (root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8")
+    assert "shared pool" in status_text
+    assert LEAK not in status_text and "[REDACTED]" in status_text
+    assert LEAK not in json.dumps(result)

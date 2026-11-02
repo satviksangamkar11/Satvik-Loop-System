@@ -466,6 +466,13 @@ def _after_job(job, job_path, repo, code, escalate, loop_log):
         pass
 
 
+def fixers_allowed(fixers):
+    """A launcher job uses one family of fixers: the legacy nemotron/haiku, or the P1b roles writer_a/writer_b (never a model ID, never codex)."""
+    if not isinstance(fixers, list) or not fixers or not all(isinstance(f, str) for f in fixers):
+        return False
+    return set(fixers) <= {"nemotron", "haiku"} or set(fixers) <= {"writer_a", "writer_b"}
+
+
 def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, escalate=None, loop_log=True) -> int:
     repo = Path(repo)
     job_path = Path(job_path)
@@ -473,8 +480,8 @@ def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, esc
         job_path = repo / job_path
     job = json.loads(job_path.read_text(encoding="utf-8"))
     fixers = job.get("fixers")
-    if not isinstance(fixers, list) or not fixers or any(f not in ("nemotron", "haiku") for f in fixers):
-        raise ValueError("job fixers must be nemotron or haiku (owner exception 2026-10-31)")
+    if not fixers_allowed(fixers):
+        raise ValueError("job fixers must be nemotron or haiku (owner exception 2026-10-31), or the P1b roles writer_a and writer_b")
     paths = [job_path, repo / "_loop" / str(job.get("name", ""))] + [repo / f for f in list(job.get("files", [])) + list(job.get("tests", []))]
     env = os.environ if environ is None else environ
     script = str(loop_script or repo / "scripts" / "source" / "fix_loop.py")

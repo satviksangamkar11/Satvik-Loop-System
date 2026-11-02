@@ -238,6 +238,17 @@ def _scrubbed(text, scrub_keys):
     return text
 
 
+def _scrubbed_obj(value, scrub_keys):
+    """The same scrub for a whole JSON-shaped value (keys and strings, at every depth): status.json and the returned result use it."""
+    if isinstance(value, str):
+        return _scrubbed(value, scrub_keys)
+    if isinstance(value, dict):
+        return {_scrubbed(str(k), scrub_keys): _scrubbed_obj(v, scrub_keys) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrubbed_obj(v, scrub_keys) for v in value]
+    return value
+
+
 def build_package(root, job, originals, junit, scrub_keys=(), limit=None):
     """(text, info): the nine-section review package for one review call. info = {"files": {path: lines} for every file shown,
     "spec_count": n, "kept": [context files], "omitted": [context files left out by name]}. Raises p1b.Blocked when the mandatory sections
@@ -353,8 +364,7 @@ class Production:
         self.history, self.scrub_keys = history, tuple(scrub_keys)
         self.test_targets = sorted(set(job["tests"]) | set(job["acceptance_tests"]) | set(job.get("regression") or []))
         self.spec = (self.root / job["spec"]).read_text(encoding="utf-8")
-        review_prompt = job.get("review_prompt")
-        self.review_text = (self.root / review_prompt).read_text(encoding="utf-8") if review_prompt and (self.root / review_prompt).is_file() else ""
+        self.review_text = ""           # the production review prompt is built in: a job's review_prompt is never read (the legacy docs/REVIEW_PROMPT.md is never used)
         self.steps = []                 # every model call and test run, in order
         self.last_output = ""           # the output a writer may see next: cleared by restore(), so a fresh writer never gets an earlier run's output
         self.evidence_output = ""       # the output of the last test run, kept for the diagnostic
@@ -550,7 +560,9 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     status = {"name": name, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
               "reason": outcome.reason, "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
+    status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved
     (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
     print(f"{name}: {state}")
-    return {"name": name, "state": state, "round": len(steps), "tests_passed": tests_passed, "review_verdict": verdict, "rounds": steps,
-            "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "coder_budget": None, "evidence": evidence, "updated": status["updated"]}
+    return _scrubbed_obj({"name": name, "state": state, "round": len(steps), "tests_passed": tests_passed, "review_verdict": verdict, "rounds": steps,
+                          "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "coder_budget": None, "evidence": evidence,
+                          "updated": status["updated"]}, scrub_keys)

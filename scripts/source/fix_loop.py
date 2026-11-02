@@ -96,7 +96,7 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review_rounds", 4)
     job.setdefault("review_files", None)
     job.setdefault("groq_review_files", None)
-    job.setdefault("review_prompt", "docs/REVIEW_PROMPT.md")
+    job.setdefault("review_prompt", None if job.get("profile") == "production" else "docs/REVIEW_PROMPT.md")   # production: its own prompt only (never the legacy file)
     job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
     job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
     if job["coder_model"] != "nvidia/nemotron-3-ultra-550b-a55b" or job["reviewer_model"] != "nvidia/nemotron-3.5-lightning-30b-a3b":

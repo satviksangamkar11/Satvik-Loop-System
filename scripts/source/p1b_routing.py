@@ -198,6 +198,11 @@ def _gate(result, failing, models):
     return None
 
 
+def _why(errors, reviewer):
+    """The reason a reviewer's slot failed: its upstream error, or that its reply had no verdict line."""
+    return f"reviewer {reviewer} error: {errors[reviewer]}" if reviewer in errors else f"reviewer {reviewer} gave no verdict line"
+
+
 def _review_one(models, reviewer, files):
     """(kind, text). READY. FIX: a FIX FIRST with valid evidence. UNSUPPORTED: a FIX FIRST without valid evidence, even after one re-ask; it
     stays open, and neither a backup nor a later READY overrides it. INVALID: the call failed or the reply has no verdict line, so the backup
@@ -227,12 +232,13 @@ def _review(files, models, lineage, down):
     except oc.ProviderUnavailable as exc:
         return Outcome("provider-unavailable", str(exc))
     used = set(panel) | set(down)
-    ready = []
+    ready, errors = [], {}
     for reviewer in panel:
         try:
             kind, text = _review_one(models, reviewer, files)
-        except ModelFailed:
+        except ModelFailed as exc:
             kind, text = "INVALID", ""
+            errors[reviewer] = str(exc)
         except Blocked as exc:                    # the package is too large: no reviewer call was made for it
             return Outcome("blocked", str(exc))
         if kind == "READY":
@@ -244,18 +250,19 @@ def _review(files, models, lineage, down):
         try:                                      # INVALID: the call failed or the reply had no verdict line
             backup = _gemma_for(used)
         except oc.ProviderUnavailable as exc:
-            return Outcome("provider-unavailable", str(exc))
+            return Outcome("provider-unavailable", f"{exc} ({_why(errors, reviewer)})")
         used.add(backup)
         try:
             kind, text = _review_one(models, backup, files)
-        except ModelFailed:
+        except ModelFailed as exc:
             kind, text = "INVALID", ""
+            errors[backup] = str(exc)
         except Blocked as exc:
             return Outcome("blocked", str(exc))
         if kind in ("FIX", "UNSUPPORTED"):
             return Outcome("review-fix", f"{backup}: {text.strip()}")
         if kind != "READY":
-            return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY with evidence")
+            return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY with evidence ({_why(errors, reviewer)}; {_why(errors, backup)})")
         ready.append(f"{backup} (backup for {reviewer})")
     return Outcome("passed", "READY from: " + ", ".join(ready))
 

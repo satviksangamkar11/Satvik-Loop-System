@@ -351,3 +351,18 @@ def test_the_routing_module_names_no_legacy_model_family():
     source = (REPO / "scripts" / "source" / "p1b_routing.py").read_text(encoding="utf-8").lower()
     for word in ("codex", "haiku", "nvidia", "sonnet", "nemotron"):
         assert word not in source
+
+
+# ---- pre-pilot fix 2026-11-02: the upstream error of a failed reviewer reaches the job's reason
+
+def test_a_failed_reviewer_keeps_its_upstream_error_in_the_outcome_reason():
+    outcome, _ = run({(DOTS, "write"): [full()], (XING, "review"): [p1b.ModelFailed("HTTP 429 shared pool")]}, [green()])
+    assert outcome.status == "provider-unavailable"
+    assert "HTTP 429 shared pool" in outcome.reason
+
+
+def test_a_failed_reviewer_and_a_failed_backup_both_keep_their_errors(monkeypatch):
+    outcome, _ = run({(DOTS, "write"): [full()], (XING, "review"): [p1b.ModelFailed("HTTP 429 A")], (GEMMA31, "review"): [p1b.ModelFailed("HTTP 429 B")]},
+                     [green()], enable_gemma=True, monkeypatch=monkeypatch)
+    assert outcome.status == "provider-unavailable"
+    assert "HTTP 429 A" in outcome.reason and "HTTP 429 B" in outcome.reason
