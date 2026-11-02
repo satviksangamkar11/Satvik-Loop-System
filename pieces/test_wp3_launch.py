@@ -113,6 +113,29 @@ def test_a_started_job_holds_a_lease_claims_its_paths_and_is_recorded_running(tm
     assert row["state"] == "running" and row["gen"] == job["gen"]
 
 
+def test_counter_queue_wait_counts_a_job_that_waits_for_a_claim_or_a_slot(tmp_path):
+    env = make_launcher(tmp_path)
+    a = env.launcher.start("alpha", ["x.py"])
+    waits = []
+
+    def release_on_first_wait(seconds):                       # the first job finishes while the second one waits for its claim
+        waits.append(seconds)
+        if len(waits) == 1:
+            env.launcher.finish(a["job_id"], a["gen"], "stopped")
+    env.launcher.wait_s, env.launcher.sleep = 5.0, release_on_first_wait
+    b = env.launcher.start("beta", ["x.py"])
+    assert b["ok"] and waits == [env.launcher.poll_s]
+    assert "queue-wait = 1" in launch.counter_lines(env.home)
+    gen = env.api.lease.acquire("holder")                     # a gate slot held by a live job: a second taker waits, then times out
+    held = env.api.gate.slot("gatetest", gen, timeout_s=0, capacity=1)
+    held.__enter__()
+    with pytest.raises(TimeoutError):
+        with env.api.gate.slot("gatetest", gen, timeout_s=0.2, capacity=1):
+            pass
+    held.__exit__(None, None, None)
+    assert "queue-wait = 2" in launch.counter_lines(env.home)
+
+
 def test_a_second_job_cannot_claim_a_path_the_first_holds(tmp_path):
     env = make_launcher(tmp_path)
     a = env.launcher.start("alpha", ["x.py"])

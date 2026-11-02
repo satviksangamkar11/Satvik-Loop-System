@@ -489,6 +489,7 @@ class Gate:
         token = secrets.token_hex(8)
         path = Path(root) / "gates.json"
         end = time.monotonic() + timeout_s
+        waited = False
         while True:
             with _locked(root):
                 table = _load(path, {})
@@ -502,6 +503,9 @@ class Gate:
                 _save(path, table)
             if time.monotonic() >= end:
                 raise TimeoutError(f"no free slot for {name} within {timeout_s}s")
+            if not waited:                                     # once per job that waits for a slot (a refusal at timeout 0 does not wait)
+                waited = True
+                Registry(self._home).bump("queue-wait")
             time.sleep(0.05)
         try:
             yield

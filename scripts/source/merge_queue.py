@@ -79,6 +79,8 @@ class MergeQueue:
     def _merge(self, job_id, gen, merge_gen):
         wt = self.api.home / "wt" / job_id
         for attempt in range(MAX_ATTEMPTS):
+            if attempt:                                        # main moved after the last try: this is a rebase-and-retest
+                self.api.registry.bump("merge-retry")
             self.api.lease.beat(MERGE_KEY, merge_gen)
             self.api.lease.beat(job_id, gen)
             base = self._fetch_main()
