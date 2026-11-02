@@ -812,3 +812,108 @@ def test_403_is_a_model_refusal_not_an_account_block_and_the_other_roles_still_w
     assert built.call("writer_b", "system", "user", kind="writer")[1]["model"] == XING
     with pytest.raises(oc.ProviderUnavailable, match="dropped"):
         built.call("writer_a", "system", "user", kind="writer")
+
+
+# ---- 5. reviewer upstream 429 window (patch 2026-11-02): reviewers only, 15/30/60/120/180 s, Retry-After, 600 s review timeout
+
+def upstream_429(headers=None):
+    return fail(429, "Provider returned error", headers, metadata={"raw": "rate-limited upstream"})
+
+
+def test_reviewer_upstream_429_three_times_then_ready_passes_with_three_logged_retries(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429(), upstream_429(), upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    text, _ = built.call("reviewer", "system", "user", kind="reviewer")
+    assert text.endswith("## Verdict: READY")
+    assert clock.slept == [15.0, 30.0, 60.0]
+    assert [r["wait_s"] for r in built.retry_log] == [15.0, 30.0, 60.0]
+    assert [r["attempt"] for r in built.retry_log] == [2, 3, 4]
+    assert all(r["model"] == NORTH and "rate-limited upstream" in r["error"] for r in built.retry_log)
+    assert built.breaker.streak.get(NORTH, 0) == 0
+
+
+def test_reviewer_upstream_429_on_every_call_ends_the_window_and_drops_the_model(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", *[upstream_429() for _ in range(6)])
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="window is used up") as caught:
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 6 and clock.slept == [15.0, 30.0, 60.0, 120.0, 180.0]
+    assert "rate-limited upstream" in str(caught.value)
+    assert built.breaker.open(NORTH)
+
+
+def test_retry_after_on_the_first_retry_sets_the_wait(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429({"retry-after": "90"}), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    built.call("reviewer", "system", "user", kind="reviewer")
+    assert clock.slept == [90.0] and built.retry_log[0]["wait_s"] == 90.0
+
+
+def test_daily_limit_429_on_a_reviewer_stops_at_once(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", fail(429, "Rate limit exceeded: free-models-per-day"), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.QuotaExhausted):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 1 and clock.slept == []
+
+
+def test_only_two_free_requests_left_in_the_job_allow_two_retries_then_the_slot_fails(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", *[upstream_429() for _ in range(5)])
+    built, clock = client(tmp_path, fake, budget=oc.JobBudget(free_requests=3, paid_usd=0))
+    with pytest.raises(oc.ProviderUnavailable, match="free requests"):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 3 and clock.slept == [15.0, 30.0]
+    assert len(built.retry_log) == 2
+
+
+def test_a_retry_is_not_sent_when_the_daily_count_has_no_room(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    built.ledger.daily_cap = 1
+    with pytest.raises(oc.QuotaExhausted):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 1 and clock.slept == []
+
+
+def test_a_retry_that_would_start_after_the_unit_deadline_is_not_sent(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    built.set_job_deadline(10)
+    with pytest.raises(oc.ProviderUnavailable, match="unit deadline"):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 1 and clock.slept == []
+
+
+def test_a_next_wait_past_the_600_second_review_timeout_ends_the_retries(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429({"retry-after": "580"}), upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="review timeout"):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 2 and clock.slept == [580.0]
+
+
+def test_a_reviewer_server_error_still_counts_toward_the_two_error_rule(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", fail(503, "busy"), fail(503, "busy"), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="dropped"):
+        built.call("reviewer", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 2 and clock.slept == [oc.BACKOFF_S[0], oc.BACKOFF_S[1]]
+
+
+def test_a_writer_upstream_429_keeps_the_old_schedule(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429(), upstream_429(), ok(WRITER_OK))
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="dropped"):
+        built.call("writer_a", "system", "user", kind="writer")
+    assert oc.BACKOFF_S == (2, 8, 30)
+    assert clock.slept == [2, 8] and len(fake.posts()) == 2

@@ -503,6 +503,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys)
     lineage = p1b.Lineage()
     try:
+        client.set_job_deadline(job["deadline_min"] * 60)     # the unit deadline: no retry (openrouter_call) starts after it
         outcome = p1b.walk(job, models, lineage)
         lineage.save(status_dir_job / "lineage.json")
         if outcome.status == "passed":
@@ -514,6 +515,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     except Exception as exc:                        # any other failure: the job does not pass, its files are restored (see _finish)
         outcome = p1b.Outcome("exception", f"{type(exc).__name__}: {exc}")
     evidence["review_hashes"] = list(models.reviewed_hashes)
+    evidence["openrouter_retries"] = list(client.retry_log)   # every retry of the job: model, attempt, wait, error (scrubbed in _finish)
     return _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, models.evidence_output, originals)
 
 

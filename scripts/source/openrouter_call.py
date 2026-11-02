@@ -42,6 +42,8 @@ MAX_RETRIES = 3                     # HTTP retries after the first attempt
 BACKOFF_S = (2, 8, 30)              # plus up to 1 s of jitter
 MINUTE_WAIT_DEFAULT_S = 5.0
 MAX_WAIT_S = 120.0                  # a longer wait than this ends the call instead of sleeping
+REVIEWER_429_WAITS_S = (15, 30, 60, 120, 180)   # an upstream 429 on a reviewer call: these waits, plus up to 1 s of jitter (Retry-After when longer)
+REVIEW_TIMEOUT_S = 600              # the review timeout: the reviewer's 429 window must end before it, counted from the call's start
 BREAKER_LIMIT = 2                   # consecutive provider errors drop a model for the job
 TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
 MAX_TOKENS_CAP = 72000              # the largest max_tokens any retry asks for
@@ -287,6 +289,14 @@ class FreeLedger:
         finally:
             self._lock.release()
 
+    def has_room(self):
+        """True when one more free request fits today's count. Reads only: nothing is reserved."""
+        self._acquire()
+        try:
+            return self._remaining(self._read(self.clock())) > 0
+        finally:
+            self._lock.release()
+
 
 class JobBudget:
     """Per-job ceilings. Every free attempt counts. A paid attempt's estimate is reserved before it is sent and is kept as spent when the
@@ -390,9 +400,43 @@ class OpenRouter:
         self.approved_private = frozenset(approved_private)
         self._endpoints = {}
         self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 500 chars of its message
+        self.retry_log = []                 # every retry: model, the attempt it starts, the wait in seconds, the error (scrubbed); the job's status keeps it
+        self.deadline_at = None             # the unit deadline on this client's clock; no retry may start after it (set_job_deadline)
+
+    def set_job_deadline(self, seconds):
+        """The unit deadline, `seconds` from now. p1b_production sets it just before the unit's walk starts."""
+        self.deadline_at = self.clock() + seconds
 
     def _err(self, cls, message):
         return cls(redact(message, self._secrets))
+
+    def _log_retry(self, model, attempt, seconds, text):
+        self.retry_log.append({"model": model, "attempt": attempt, "wait_s": round(float(seconds), 3),
+                               "error": redact(str(text), self._secrets)[:300]})
+
+    def _check_retry_fits(self, model, message):
+        """Before a reviewer's 429 retry: the job's free-request count and the account's daily count must leave room for one more request."""
+        if self.budget.free_used >= self.budget.free_requests:
+            raise self._err(ProviderUnavailable, f"{model}: the job's free requests are used up; the retry is not sent; last 429: {message[:300]}")
+        if not self.ledger.has_room():
+            raise self._err(QuotaExhausted, f"{model}: free requests for today are used up; the retry is not sent; last 429: {message[:300]}")
+
+    def _reviewer_window_wait(self, model, started, used, floor, message, attempt):
+        """One upstream 429 on a reviewer call: wait the next step of REVIEWER_429_WAITS_S (plus jitter, or Retry-After when longer), then retry.
+        The window is used up after its last step, or when the next wait would pass REVIEW_TIMEOUT_S from the call's start; the model is then
+        dropped for the job. A stop for the unit deadline, or for the job's free-request or daily count, raises without dropping the model."""
+        if used >= len(REVIEWER_429_WAITS_S):
+            self.breaker.drop(model)
+            raise self._err(ProviderUnavailable, f"{model}: still rate-limited upstream (429) after {used} retries; the window is used up; last 429: {message[:300]}")
+        seconds = max(REVIEWER_429_WAITS_S[used] + self.rand(), floor or 0.0)
+        if self.clock() - started + seconds > REVIEW_TIMEOUT_S:
+            self.breaker.drop(model)
+            raise self._err(ProviderUnavailable, f"{model}: the next wait ({seconds:.0f} s) would pass the {REVIEW_TIMEOUT_S} s review timeout; the window is used up; last 429: {message[:300]}")
+        if self.deadline_at is not None and self.clock() + seconds > self.deadline_at:
+            raise self._err(ProviderUnavailable, f"{model}: the next retry would start after the unit deadline; last 429: {message[:300]}")
+        self._check_retry_fits(model, message)
+        self._log_retry(model, attempt, seconds, message)
+        self.sleep(seconds)
 
     def _note(self, model, status, message):
         """Keeps one failed attempt. The message is redacted and cut to its first 500 characters."""
@@ -490,7 +534,7 @@ class OpenRouter:
         started = self.clock()
         tokens = max_tokens if max_tokens is not None else limits["max_tokens"]
         timeout = timeout_s if timeout_s is not None else limits["timeout_s"]
-        attempts, retries, truncations = 0, 0, 0
+        attempts, retries, truncations, window = 0, 0, 0, 0     # window: upstream 429 retries a reviewer call has used (REVIEWER_429_WAITS_S)
         while True:
             if attempts and "retry_timeout_s" in limits:
                 timeout = limits["retry_timeout_s"]
@@ -505,7 +549,7 @@ class OpenRouter:
                 self._note(model, None, f"{type(exc).__name__}: {exc}")
                 self.breaker.failed(model)
                 self._settle(slot, model, reserved, None)
-                self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"{type(exc).__name__}: {exc}")
+                self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"{type(exc).__name__}: {exc}", attempts + 1)
                 retries += 1
                 continue
             status, data, message = parse_response(status, raw)
@@ -543,11 +587,15 @@ class OpenRouter:
                     self.ledger.set_snapshot(0)
                     raise self._err(QuotaExhausted, f"{model}: daily free limit reached: {message[:200]}")
                 if limit == "minute":
-                    self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute")
+                    self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute", attempts + 1)
+                    retries += 1
+                elif kind == "reviewer":                # reviewer upstream 429: its own window; these do not count toward the breaker
+                    self._reviewer_window_wait(model, started, window, retry_after(headers), message, attempts + 1)
+                    window += 1
                 else:
                     self.breaker.failed(model)
-                    self._wait_before_retry(model, retries, self._backoff_s(retries, retry_after(headers)), "provider rate limited upstream")
-                retries += 1
+                    self._wait_before_retry(model, retries, self._backoff_s(retries, retry_after(headers)), "provider rate limited upstream", attempts + 1)
+                    retries += 1
                 continue
             if status == 403:
                 self._note(model, 403, message)
@@ -559,7 +607,7 @@ class OpenRouter:
             if status >= 500:
                 self._note(model, status, message)
                 self.breaker.failed(model)
-                self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"HTTP {status}")
+                self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"HTTP {status}", attempts + 1)
                 retries += 1
                 continue
             self._note(model, status, message)
@@ -610,11 +658,12 @@ class OpenRouter:
     def _backoff_s(self, retries, floor):
         return max(BACKOFF_S[min(retries, len(BACKOFF_S) - 1)] + self.rand(), floor or 0.0)
 
-    def _wait_before_retry(self, model, retries, seconds, why):
+    def _wait_before_retry(self, model, retries, seconds, why, attempt):
         if retries >= MAX_RETRIES:
             raise self._err(ProviderUnavailable, f"{model}: {why}; gave up after {retries + 1} attempts")
         if seconds > MAX_WAIT_S:
             raise self._err(ProviderUnavailable, f"{model}: {why}; asked to wait {seconds:.0f} s, which is longer than {MAX_WAIT_S:.0f} s")
+        self._log_retry(model, attempt, seconds, why)
         self.sleep(seconds)
 
     def _info(self, model, data, spent, attempts, tokens, started):
