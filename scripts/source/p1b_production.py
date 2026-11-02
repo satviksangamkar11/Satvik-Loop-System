@@ -26,7 +26,9 @@ import p0_gates as gates
 import p1b_routing as p1b
 import sandbox_runner as sr
 
-ROLE_BY_MODEL = {p1b.DOTS: "writer_a", p1b.XING: "writer_b", p1b.NORTH: "reviewer_b", p1b.GLM: "reviewer_a"}
+def role_by_model():
+    """The roster model -> role map for the active profile, read at call time."""
+    return {p1b._m("writer_a"): "writer_a", p1b._m("writer_b"): "writer_b", p1b._m("reviewer_b"): "reviewer_b", p1b._m("reviewer_a"): "reviewer_a"}
 PACKAGE_LIMIT = 100000              # characters: the whole review request (the owner's prompt limit for one reviewer call)
 EXCLUDED_DIRS = set(gates.NEVER_INCLUDED) | set(sr.EXCLUDED_NAMES)
 EXCLUDED_SUFFIXES = tuple(sr.EXCLUDED_SUFFIXES)
@@ -433,7 +435,7 @@ class Production:
 
     def _ask(self, model, system, user, kind):
         try:
-            text, _info = self.client.call(ROLE_BY_MODEL[model], system, user, kind=kind)
+            text, _info = self.client.call(role_by_model()[model], system, user, kind=kind)
         except oc.ReviewBudgetExceeded as exc:     # the GLM review would pass the job's review ceiling: nothing was sent
             raise p1b.BudgetStop(str(exc)) from exc
         except oc.OpenRouterError as exc:          # refused, dropped, quota, budget, account: this model is down for this job

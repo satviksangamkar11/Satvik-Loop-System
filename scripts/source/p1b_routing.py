@@ -21,7 +21,19 @@ from pathlib import Path
 
 import openrouter_call as oc
 
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+def _m(role):
+    """The roster model for a role, read from the active profile at call time."""
+    return oc.roster_state()["ROLES"][role]
+
+
+_ROLE_NAMES = {"DOTS": "writer_a", "XING": "writer_b", "NORTH": "reviewer_b", "GLM": "reviewer_a"}
+
+
+def __getattr__(name):
+    """DOTS, XING, NORTH and GLM are read from the active profile's roster at each access (PEP 562)."""
+    if name in _ROLE_NAMES:
+        return _m(_ROLE_NAMES[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 ANTHROPIC = "anthropic"             # the repair step's name in the lineage and the steps; its call lives in the isolated repair module
 REPAIR_TIMEOUT_S = 900              # the repair step's call timeout (the repair module's TIMEOUT_S): a repair starts only when this much of the unit deadline is left
 DEADLINES_MIN = (60, 120)
@@ -150,7 +162,8 @@ def trim_tail(text, limit=TRIM_CHARS):
     return text[-limit:] if len(text) > limit else text
 
 
-def backup_writer(origin, excluded=(), writers=(DOTS, XING)):
+def backup_writer(origin, excluded=(), writers=None):
+    writers = (_m("writer_a"), _m("writer_b")) if writers is None else writers
     """The free writer that did not write the code and is not excluded (down, or already on this panel)."""
     for writer in writers:
         if writer != origin and writer not in excluded:
@@ -208,9 +221,9 @@ def _gate(result, failing, seconds_left):
     holds a full repair call."""
     if not result.failing:
         return "no confirmed failing test"
-    if DOTS not in failing or XING not in failing:
+    if _m("writer_a") not in failing or _m("writer_b") not in failing:
         return "Dots and Xing were not both tried"
-    if not (failing[DOTS] & failing[XING]):
+    if not (failing[_m("writer_a")] & failing[_m("writer_b")]):
         return "Dots and Xing did not fail on the same test"
     if seconds_left < REPAIR_TIMEOUT_S:
         return f"the deadline does not fit a repair call ({seconds_left:.0f} s left, {REPAIR_TIMEOUT_S} s needed)"
@@ -338,9 +351,9 @@ def walk(job, models, lineage, clock=time.monotonic):
         return deadline
 
     try:
-        result = attempt(DOTS, "write")
+        result = attempt(_m("writer_a"), "write")
     except ModelFailed:
-        down.add(DOTS)
+        down.add(_m("writer_a"))
         result = None
     except BadReply:
         result = None
@@ -349,9 +362,9 @@ def walk(job, models, lineage, clock=time.monotonic):
         if late():
             return deadline
         try:
-            result = attempt(DOTS, "repair")
+            result = attempt(_m("writer_a"), "repair")
         except ModelFailed:
-            down.add(DOTS)
+            down.add(_m("writer_a"))
             result = None
         except BadReply:
             result = None
@@ -361,7 +374,7 @@ def walk(job, models, lineage, clock=time.monotonic):
         if late():
             return deadline
         models.restore()
-        for writer in (XING, NORTH):             # North writes only when Xing is down
+        for writer in (_m("writer_b"), _m("reviewer_b")):             # North writes only when Xing is down
             try:
                 result = attempt(writer, "write", full=True)
                 fresh_writer = writer
@@ -373,11 +386,11 @@ def walk(job, models, lineage, clock=time.monotonic):
         else:
             return Outcome("provider-unavailable", "Xing and North both failed the fresh write")
 
-    if not result.green and fresh_writer == XING:
+    if not result.green and fresh_writer == _m("writer_b"):
         if late():
             return deadline
         try:
-            result = attempt(XING, "repair")
+            result = attempt(_m("writer_b"), "repair")
         except ModelFailed:
             return Outcome("escalate", "Xing repair is unavailable")
         except BadReply as exc:

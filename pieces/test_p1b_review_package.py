@@ -26,7 +26,7 @@ from test_p0_acceptance import make_prod_root, prod_job, GOOD_TEST  # noqa: E402
 from test_pre_pilot_review import ORIGINAL_CODE, load, with_original, status_of  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+DOTS = XING = NORTH = GLM = None      # set per test by the profile fixture below (the roster is read per test, never at import)
 PLANTED = "def calculate_total(prices):" + NL + "    if prices == [20, 30]:" + NL + "        return 50" + NL + "    return sum(prices)" + NL
 WARN_CODE = "def calculate_total(prices):" + NL + "    if sum(prices) == 50:" + NL + "        return 50" + NL + "    return sum(prices)" + NL
 CLEAN_CODE = "def calculate_total(prices):" + NL + "    return sum(prices)" + NL
@@ -333,3 +333,13 @@ def test_reviewer_rate_limited_on_every_call_is_provider_unavailable_with_the_or
     status = json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
     assert "rate-limited upstream" in status["reason"]
     assert len(status["evidence"]["openrouter_retries"]) == 5
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster (the paid GLM reviewer lives there). Set per test, never at import: the role
+    names below are read from the roster here, after the profile is set."""
+    global DOTS, XING, NORTH, GLM
+    profile("production")
+    roles = oc.roster_state()["ROLES"]
+    DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]
