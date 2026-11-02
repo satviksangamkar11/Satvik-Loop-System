@@ -1,15 +1,15 @@
-"""P1b routing (2026-11-02, Revision 3): the production escalation ladder, per-file lineage, reviewer panels by lineage, the FIX FIRST evidence
-rule, the GLM gate, job-size and settings checks, and the unit deadline. Pure logic: models are injected through a small interface, so every
-rule runs with scripted fake models and no network.
+"""P1b routing (final roster, 2026-11-02): the production ladder, per-file lineage, the review panel (GLM first, then North; the free writer that
+did not write the code takes North's place when North wrote it or is down), the FIX FIRST evidence rule, the repair-step gate, job-size and
+settings checks, and the unit deadline. Pure logic: models are injected through a small interface, so every rule runs with scripted fake models
+and no network.
 
 Injected `models` interface:
   call(model_id, mode, files) -> dict {path: text} for mode write/repair; str for mode review/review-reask. Raises ModelFailed when the
-      provider is down, BadReply when the reply cannot be used. Only the adapter's roster IDs are used (oc.ROLES), and a paid ID is only ever
-      given to the repair step.
+      provider is down or the repair step is unavailable (its `reason` names the escalation), BadReply when the reply cannot be used, and
+      BudgetStop when a GLM review would pass the review ceiling. GLM only ever reviews; the repair step is called with the name ANTHROPIC.
   write(reply) -> puts a validated reply's files on disk (walk calls it after take() accepts the reply, before tests).
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
-  paid_fits() -> True when the next GLM call's reserved worst case still fits the $0.15 job ceiling.
   package -> {"files": {path: lines}, "spec_count": n}: the review package of the last review call (evidence_ok checks a FIX FIRST against it).
 
 Only the roster's exact IDs appear here. The owner's roster is read from openrouter_call, never copied, so there is one place to change it."""
@@ -21,12 +21,14 @@ from pathlib import Path
 
 import openrouter_call as oc
 
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer"], oc.ROLES["repair"]
-GEMMA = "GEMMA"                     # placeholder in a panel row: the first enabled Gemma backup, chosen at review time
+DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+ANTHROPIC = "anthropic"             # the repair step's name in the lineage and the steps; its call lives in the isolated repair module
+REPAIR_TIMEOUT_S = 1800             # the repair step's call timeout: a repair starts only when this much of the unit deadline is left
 DEADLINES_MIN = (60, 120)
 UNIT_LINES, FILE_LINES = 1500, 800
-FREE_REQUESTS, PAID_USD = 40, 0.15
-GLM_ROUNDS = 2
+FREE_REQUESTS, REVIEW_USD = 40, 0.05
+PRODUCTION_BUDGET = {"free_requests": FREE_REQUESTS, "review_usd": REVIEW_USD, "paid_usd": 0}
+REPAIR_CALLS = 2                    # per job: at most two repair-step calls, and a third is never attempted
 TRIM_CHARS = 32000                  # pytest output fed back to a writer: about 8K tokens
 LOCALIZED_TESTS, LOCALIZED_FILES = 3, 2
 
@@ -39,7 +41,11 @@ VERDICT = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 
 
 class ModelFailed(Exception):
-    """A provider refused or stayed down for this call."""
+    """A provider refused or stayed down for this call. `reason` is the escalation reason a repair-step failure carries (None otherwise)."""
+
+    def __init__(self, message="", reason=None):
+        super().__init__(message)
+        self.reason = reason
 
 
 class JobRefused(ValueError):
@@ -58,14 +64,19 @@ class BadReply(Exception):
     """A reply that cannot be used: outside the job's files, or missing one on a fresh write."""
 
 
+class BudgetStop(Exception):
+    """A GLM review would pass the job's review ceiling: nothing was sent. The job ends budget-exceeded."""
+
+
 class Lineage:
-    """Per job file: the model ID that last wrote it, and the writer it came from (the origin differs only after a GLM repair)."""
+    """Per job file: the writer that last wrote it, the origin (the writer of the last fresh write), and the chain of writers since that fresh
+    write ("anthropic" for a repair step)."""
 
     def __init__(self):
         self._rows = {}
 
-    def set(self, path, last, origin):
-        self._rows[path] = {"last": last, "origin": origin}
+    def set(self, path, last, origin, chain=None):
+        self._rows[path] = {"last": last, "origin": origin, "chain": list(chain) if chain is not None else [origin]}
 
     def get(self, path):
         return self._rows.get(path)
@@ -89,11 +100,8 @@ def check_production_job(job):
     if job.get("reviewers") != "by_lineage":
         raise JobRefused('reviewers must be "by_lineage"')
     budget = job.get("budget")
-    if not isinstance(budget, dict) or set(budget) != {"free_requests", "paid_usd"} or budget["free_requests"] != FREE_REQUESTS:
-        raise JobRefused(f"budget must be free_requests {FREE_REQUESTS} and paid_usd 0 (no paid call) or {PAID_USD}")
-    paid = budget["paid_usd"]
-    if isinstance(paid, bool) or paid not in (0, PAID_USD):   # the owner's two values: 0 (free pilot, no paid call) or the $0.15 ceiling
-        raise JobRefused(f"budget must be free_requests {FREE_REQUESTS} and paid_usd 0 (no paid call) or {PAID_USD}")
+    if not isinstance(budget, dict) or budget != PRODUCTION_BUDGET or any(isinstance(v, bool) for v in budget.values()):
+        raise JobRefused(f"budget must be exactly {PRODUCTION_BUDGET}")
     if job.get("deadline_min") not in DEADLINES_MIN:
         raise JobRefused(f"deadline_min must be one of {DEADLINES_MIN}")
 
@@ -131,76 +139,65 @@ def trim_tail(text, limit=TRIM_CHARS):
     return text[-limit:] if len(text) > limit else text
 
 
-def _gemma_for(exclude=()):
-    if not oc.REVIEWER_BACKUP_ENABLED:
-        raise oc.ProviderUnavailable("Gemma reviewer backup is disabled: no reviewer for this slot (provider-unavailable)")
-    for model in oc.REVIEWER_BACKUP:
-        if model not in exclude:
-            return model
-    raise oc.ProviderUnavailable("no Gemma backup is left for this slot (provider-unavailable)")
+def backup_writer(origin, excluded=()):
+    """The free writer that did not write the code and is not excluded (down, or already on this panel)."""
+    for writer in (DOTS, XING):
+        if writer != origin and writer not in excluded:
+            return writer
+    raise oc.ProviderUnavailable("no second independent reviewer is available (provider-unavailable)")
 
 
-def panel_for(author, origin=None, unavailable=()):
-    """The reviewers for code last written by `author` (lineage table, Revision 3). Identity decides: the author is never on its panel."""
+def panel_for(origin, unavailable=()):
+    """The reviewers for a job's code whose fresh writer was `origin`: GLM, then North. North is replaced by the backup writer (the free writer
+    that did not write the code) when North wrote the code or is down. The writer is never on its own panel."""
+    if origin not in (DOTS, XING, NORTH):
+        raise Blocked(f"no reviewer row for code whose origin is {origin}")
     down = set(unavailable)
-    if author == GLM and origin == DOTS:
-        base = [XING, NORTH]
-    elif author == GLM and origin == XING:
-        base = [DOTS, NORTH]
-    elif author == DOTS:
-        base = [XING, NORTH]
-    elif author == XING:
-        base = [NORTH, GEMMA] if DOTS in down else [DOTS, NORTH]
-    elif author == NORTH:
-        base = [DOTS, GEMMA]
-    else:
-        raise Blocked(f"no reviewer row for code last written by {author}")
-    panel = []
-    for slot in base:
-        if slot == GEMMA or slot in down:
-            model = _gemma_for(down | set(panel))
-        else:
-            model = slot
-        panel.append(model)
-    if author in panel or len(set(panel)) != len(panel):
-        raise Blocked(f"panel for {author} is not independent: {panel}")
+    second = backup_writer(origin, down) if (origin == NORTH or NORTH in down) else NORTH
+    panel = [GLM, second]
+    if origin in panel or len(set(panel)) != len(panel):
+        raise Blocked(f"panel for {origin} is not independent: {panel}")
     return panel
 
 
-def panel_for_files(lineage, files, unavailable=()):
+def _origin(lineage, files):
     rows = []
     for path in files:
         row = lineage.get(path)
         if row is None:
             raise Blocked(f"no lineage recorded for {path}")
         rows.append(row)
-    lasts = {row["last"] for row in rows}
-    if len(lasts) != 1:
-        raise Blocked(f"mixed lineage: the job files were last written by {sorted(lasts)}; blocked")
     origins = {row["origin"] for row in rows}
-    return panel_for(lasts.pop(), origin=origins.pop() if len(origins) == 1 else None, unavailable=unavailable)
+    if len(origins) != 1:
+        raise Blocked(f"mixed lineage: the job files have origins {sorted(origins)}; blocked")
+    return origins.pop()
+
+
+def panel_for_files(lineage, files, unavailable=()):
+    return panel_for(_origin(lineage, files), unavailable=unavailable)
 
 
 def _localized(result):
     return not result.systemic and len(result.failing) <= LOCALIZED_TESTS and len(result.failing_files) <= LOCALIZED_FILES
 
 
-def _gate(result, failing, models):
-    """GLM only for a confirmed defect that both free writers failed on, and only if the reserved worst case fits the job ceiling."""
+def _gate(result, failing, seconds_left):
+    """The repair step runs only for a confirmed defect that both free writers failed on the same test, and only when the unit deadline still
+    holds a full repair call."""
     if not result.failing:
         return "no confirmed failing test"
     if DOTS not in failing or XING not in failing:
         return "Dots and Xing were not both tried"
     if not (failing[DOTS] & failing[XING]):
         return "Dots and Xing did not fail on the same test"
-    if not models.paid_fits():
-        return "the budget does not fit: the next call would pass the job's paid ceiling"
+    if seconds_left < REPAIR_TIMEOUT_S:
+        return f"the deadline does not fit a repair call ({seconds_left:.0f} s left, {REPAIR_TIMEOUT_S} s needed)"
     return None
 
 
 def _why(errors, reviewer):
     """The reason a reviewer's slot failed: its upstream error, or that its reply had no verdict line."""
-    return f"reviewer {reviewer} error: {errors[reviewer]}" if reviewer in errors else f"reviewer {reviewer} gave no verdict line"
+    return f"reviewer {reviewer} error: {errors[reviewer]}" if errors.get(reviewer) else f"reviewer {reviewer} gave no verdict line"
 
 
 def _review_one(models, reviewer, files):
@@ -224,60 +221,72 @@ def _review_one(models, reviewer, files):
     return "UNSUPPORTED", again if again.strip() else text
 
 
+def _verdict(models, reviewer, files):
+    """(kind, text, error) for one reviewer call. A failed call is INVALID with its upstream error; BudgetStop and Blocked propagate."""
+    try:
+        kind, text = _review_one(models, reviewer, files)
+    except ModelFailed as exc:
+        return "INVALID", "", str(exc)
+    return kind, text, ""
+
+
 def _review(files, models, lineage, down):
     try:
-        panel = panel_for_files(lineage, files, unavailable=down)
+        origin = _origin(lineage, files)
+        panel = panel_for(origin, unavailable=down)
     except Blocked as exc:
         return Outcome("blocked", str(exc))
     except oc.ProviderUnavailable as exc:
         return Outcome("provider-unavailable", str(exc))
     used = set(panel) | set(down)
     ready, errors = [], {}
-    for reviewer in panel:
-        try:
-            kind, text = _review_one(models, reviewer, files)
-        except ModelFailed as exc:
-            kind, text = "INVALID", ""
-            errors[reviewer] = str(exc)
-        except Blocked as exc:                    # the package is too large: no reviewer call was made for it
-            return Outcome("blocked", str(exc))
-        if kind == "READY":
-            ready.append(reviewer)
-            continue
-        if kind in ("FIX", "UNSUPPORTED"):
-            why = "" if kind == "FIX" else "FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): "
-            return Outcome("review-fix", f"{reviewer}: {why}{text.strip()}")
-        try:                                      # INVALID: the call failed or the reply had no verdict line
-            backup = _gemma_for(used)
-        except oc.ProviderUnavailable as exc:
-            return Outcome("provider-unavailable", f"{exc} ({_why(errors, reviewer)})")
-        used.add(backup)
-        try:
-            kind, text = _review_one(models, backup, files)
-        except ModelFailed as exc:
-            kind, text = "INVALID", ""
-            errors[backup] = str(exc)
-        except Blocked as exc:
-            return Outcome("blocked", str(exc))
-        if kind in ("FIX", "UNSUPPORTED"):
-            return Outcome("review-fix", f"{backup}: {text.strip()}")
-        if kind != "READY":
-            return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY with evidence ({_why(errors, reviewer)}; {_why(errors, backup)})")
-        ready.append(f"{backup} (backup for {reviewer})")
+    try:
+        for slot in panel:                              # GLM first, then North (or the backup)
+            kind, text, error = _verdict(models, slot, files)
+            if kind == "READY":
+                ready.append(slot)
+                continue
+            if kind == "FIX":
+                return Outcome("review-fix", f"{slot}: {text.strip()}")
+            if kind == "UNSUPPORTED":
+                return Outcome("review-fix", f"{slot}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
+            errors[slot] = error
+            if slot == GLM:                             # GLM must answer READY: there is no substitute for it
+                return Outcome("provider-unavailable", f"GLM review did not return READY ({_why(errors, GLM)})")
+            try:
+                backup = backup_writer(origin, used)
+            except oc.ProviderUnavailable as exc:
+                return Outcome("provider-unavailable", f"{exc} ({_why(errors, slot)})")
+            used.add(backup)
+            kind, text, error = _verdict(models, backup, files)
+            if kind == "READY":
+                ready.append(f"{backup} (backup for {slot})")
+                continue
+            if kind == "FIX":
+                return Outcome("review-fix", f"{backup}: {text.strip()}")
+            if kind == "UNSUPPORTED":
+                return Outcome("review-fix", f"{backup}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
+            errors[backup] = error
+            return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY ({_why(errors, slot)}; {_why(errors, backup)})")
+    except Blocked as exc:                              # the package is too large: no reviewer call was made for it
+        return Outcome("blocked", str(exc))
     return Outcome("passed", "READY from: " + ", ".join(ready))
 
 
 def walk(job, models, lineage, clock=time.monotonic):
     """The production ladder for one unit. Returns Outcome(status, reason). Statuses: passed, review-fix, escalate, blocked,
-    provider-unavailable, deadline."""
+    provider-unavailable, budget-exceeded, deadline."""
     started = clock()
     files = list(job["files"])
     wanted = frozenset(files)
     limit = job["deadline_min"] * 60
     failing, down = {}, set()
 
+    def remaining():
+        return limit - (clock() - started)
+
     def late():
-        return clock() - started > limit
+        return remaining() < 0
 
     def take(reply, model, full, keep_origin):
         if not isinstance(reply, dict) or not reply:
@@ -289,8 +298,10 @@ def walk(job, models, lineage, clock=time.monotonic):
             raise BadReply(f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
         for path in reply:
             previous = lineage.get(path)
-            origin = previous["origin"] if (keep_origin and previous) else model
-            lineage.set(path, model, origin)
+            keep = bool(keep_origin and previous)
+            origin = previous["origin"] if keep else model
+            chain = (list(previous["chain"]) if keep else []) + [model]
+            lineage.set(path, model, origin, chain)
 
     def attempt(model, mode, full=False, keep_origin=False):
         reply = models.call(model, mode, files)
@@ -328,7 +339,7 @@ def walk(job, models, lineage, clock=time.monotonic):
         if late():
             return deadline
         models.restore()
-        for writer in (XING, NORTH):
+        for writer in (XING, NORTH):             # North writes only when Xing is down
             try:
                 result = attempt(writer, "write", full=True)
                 fresh_writer = writer
@@ -338,7 +349,7 @@ def walk(job, models, lineage, clock=time.monotonic):
             except BadReply as exc:
                 return Outcome("escalate", str(exc))
         else:
-            return Outcome("provider-unavailable", "Xing and North Mini Code both failed the fresh write")
+            return Outcome("provider-unavailable", "Xing and North both failed the fresh write")
 
     if not result.green and fresh_writer == XING:
         if late():
@@ -350,21 +361,24 @@ def walk(job, models, lineage, clock=time.monotonic):
         except BadReply as exc:
             return Outcome("escalate", str(exc))
 
-    rounds = 0
+    repairs = 0
     while not result.green:
         if late():
             return deadline
-        if rounds == GLM_ROUNDS:
-            return Outcome("escalate", f"GLM rounds used up ({GLM_ROUNDS}) and still red")
-        why = _gate(result, failing, models)
+        if repairs == REPAIR_CALLS:
+            return Outcome("escalate", f"repair calls used up ({REPAIR_CALLS}) and still red")
+        why = _gate(result, failing, remaining())
         if why:
-            return Outcome("escalate", f"GLM gate: {why}")
-        rounds += 1
+            return Outcome("escalate", f"repair gate: {why}")
+        repairs += 1
         try:
-            result = attempt(GLM, "repair", keep_origin=True)
-        except ModelFailed:
-            return Outcome("escalate", "GLM repair is unavailable")
+            result = attempt(ANTHROPIC, "repair", keep_origin=True)
+        except ModelFailed as exc:
+            return Outcome("escalate", exc.reason or "repair unavailable")
         except BadReply as exc:
             return Outcome("escalate", str(exc))
 
-    return _review(files, models, lineage, down)
+    try:
+        return _review(files, models, lineage, down)
+    except BudgetStop as exc:
+        return Outcome("budget-exceeded", str(exc))

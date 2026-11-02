@@ -115,15 +115,17 @@ def client(tmp_path, fake, clock=None, keys=KEYS, **options):
 # ---- 1. roster and request shape
 
 def test_roles_are_exactly_the_owner_roster():
-    assert oc.ROLES == {"writer_a": DOTS, "writer_b": XING, "reviewer": NORTH, "repair": GLM_PAID}
+    assert oc.ROLES == {"writer_a": DOTS, "writer_b": XING, "reviewer_a": GLM_PAID, "reviewer_b": NORTH}
     assert oc.REVIEWER_BACKUP == (GEMMA31, GEMMA26)
     assert oc.REVIEWER_BACKUP_ENABLED is False
 
 
-def test_exact_ids_are_free_only_and_the_paid_id_is_repair_only():
+def test_exact_ids_are_free_only_and_the_paid_id_is_the_reviewer_a_role_only():
     assert oc.ALLOWED == {DOTS, XING, NORTH, GEMMA31, GEMMA26}
     assert oc.PAID == {GLM_PAID}
     assert all(model.endswith(":free") for model in oc.ALLOWED)
+    with pytest.raises(oc.ModelRefused):
+        oc.resolve(GLM_PAID)
 
 
 @pytest.mark.parametrize("name", list(REMOVED))
@@ -218,7 +220,7 @@ def test_reviewer_reply_must_end_with_a_real_verdict(tmp_path, text):
     fake.on("/chat/completions", ok(text))
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.ReplyRejected, match="Verdict"):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
 
 
 @pytest.mark.parametrize("verdict", ["READY", "FIX FIRST"])
@@ -226,7 +228,7 @@ def test_reviewer_accepts_ready_or_fix_first(tmp_path, verdict):
     fake = Fake()
     fake.on("/chat/completions", ok(f"Notes.\n## Verdict: {verdict}"))
     built, _ = client(tmp_path, fake)
-    assert built.call("reviewer", "system", "user", kind="reviewer")[0].endswith(verdict)
+    assert built.call("reviewer_b", "system", "user", kind="reviewer")[0].endswith(verdict)
 
 
 def test_truncated_reply_is_retried_once_at_the_retry_limit(tmp_path):
@@ -336,7 +338,7 @@ def test_timeout_is_passed_to_the_transport(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", ok("hi"))
     built, _ = client(tmp_path, fake)
-    built.call("reviewer", "system", "user", kind="text")
+    built.call("reviewer_b", "system", "user", kind="text")
     assert fake.posts()[0]["timeout"] == 600
 
 
@@ -443,7 +445,7 @@ def test_job_free_ceiling_is_enforced_before_the_ledger(tmp_path):
     assert len(fake.posts()) == 2
 
 
-# ---- 6. repair model: paid key, endpoint pricing, budget before sending
+# ---- 6. GLM reviewer (paid key): Z.AI pin, review ceiling reserved before sending, never a writer
 
 def paid_fake(reply):
     fake = Fake()
@@ -452,90 +454,103 @@ def paid_fake(reply):
     return fake
 
 
-def test_repair_is_pinned_to_z_ai_even_when_a_cheaper_endpoint_exists(tmp_path):
-    fake = paid_fake(ok("hi", usage={"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.00005}))
+def test_glm_is_pinned_to_z_ai_even_when_a_cheaper_endpoint_exists(tmp_path):
+    fake = paid_fake(ok(REVIEW_OK, usage={"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.00005}))
     built, _ = client(tmp_path, fake)
-    _, info = built.call("repair", "system", "user", max_tokens=500)
+    _, info = built.call("reviewer_a", "system", "user", kind="reviewer")
     post = fake.posts()[0]
     assert post["headers"]["Authorization"] == "Bearer " + PAID_KEY
     assert post["body"]["model"] == GLM_PAID
     assert post["body"]["provider"] == {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": False}
     assert info["endpoint"] == "z-ai" and info["provider"] == "Z.AI" and info["cost_usd"] == 0.00005
-    assert built.budget.paid_spent == pytest.approx(0.00005) and built.budget.paid_reserved == pytest.approx(0.0)
+    assert built.budget.review_spent == pytest.approx(0.00005) and built.budget.review_reserved == pytest.approx(0.0)
 
 
-def test_repair_budget_is_reserved_before_the_request_is_sent(tmp_path):
+def test_glm_is_never_given_a_writer_or_a_text_call_and_nothing_is_sent(tmp_path):
+    fake = paid_fake(ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ModelRefused):
+        built.call("reviewer_a", "system", "user", kind="writer")
+    with pytest.raises(oc.ModelRefused):
+        built.call("reviewer_a", "system", "user", kind="text")
+    assert fake.calls == []
+
+
+def test_glm_review_budget_is_reserved_before_the_request_is_sent(tmp_path):
     seen = {}
 
     def check(request):
-        seen["reserved"] = built.budget.paid_reserved
-        return ok("hi")(request)
+        seen["reserved"] = built.budget.review_reserved
+        return ok(REVIEW_OK)(request)
 
     fake = paid_fake(check)
     built, _ = client(tmp_path, fake)
-    built.call("repair", "system", "user", max_tokens=500)
-    expected = oc.estimate_cost("system", "user", 500, ZAI_PRICE)
-    assert seen["reserved"] == pytest.approx(expected)
+    built.call("reviewer_a", "system", "user", kind="reviewer")
+    # 10 characters of prompt -> ceil(10 / 3) = 4 prompt tokens, plus the 16,000-token output allowance
+    assert seen["reserved"] == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
+    assert oc.review_reservation("system", "user", 16000) == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
 
 
-def test_cost_falls_back_to_tokens_at_the_endpoint_price(tmp_path):
-    fake = paid_fake(ok("hi", usage={"prompt_tokens": 100, "completion_tokens": 20}))
+def test_cost_falls_back_to_tokens_at_the_spec_prices(tmp_path):
+    fake = paid_fake(ok(REVIEW_OK, usage={"prompt_tokens": 100, "completion_tokens": 20}))
     built, _ = client(tmp_path, fake)
-    built.call("repair", "system", "user")
-    assert built.budget.paid_spent == pytest.approx(100 * ZAI_PRICE["prompt"] + 20 * ZAI_PRICE["completion"])
+    built.call("reviewer_a", "system", "user", kind="reviewer")
+    assert built.budget.review_spent == pytest.approx(100 * 0.15e-6 + 20 * 0.50e-6)
 
 
-def test_a_failed_paid_attempt_keeps_its_estimate_as_spent(tmp_path):
+def test_a_failed_glm_attempt_keeps_its_reservation_as_spent(tmp_path):
     fake = paid_fake(fail(503, "busy"))
-    fake.on("/chat/completions", ok("hi", usage={"prompt_tokens": 1, "completion_tokens": 1}))
+    fake.on("/chat/completions", ok(REVIEW_OK, usage={"prompt_tokens": 1, "completion_tokens": 1}))
     built, _ = client(tmp_path, fake)
-    built.call("repair", "system", "user", max_tokens=500)
-    first = oc.estimate_cost("system", "user", 500, ZAI_PRICE)
-    assert built.budget.paid_spent == pytest.approx(first + 1 * ZAI_PRICE["prompt"] + 1 * ZAI_PRICE["completion"])
+    built.call("reviewer_a", "system", "user", kind="reviewer")
+    first = oc.review_reservation("system", "user", 16000)
+    assert built.budget.review_spent == pytest.approx(first + 1 * 0.15e-6 + 1 * 0.50e-6)
 
 
-def test_paid_estimate_over_the_job_ceiling_sends_nothing(tmp_path):
-    fake = paid_fake(ok("hi"))
-    built, _ = client(tmp_path, fake, budget=oc.JobBudget(paid_usd=0.00001))
-    with pytest.raises(oc.BudgetExceeded):
-        built.call("repair", "system", "user", max_tokens=4000)
+def test_glm_call_over_the_review_ceiling_sends_nothing(tmp_path):
+    fake = paid_fake(ok(REVIEW_OK))
+    built, _ = client(tmp_path, fake, budget=oc.JobBudget(review_usd=0.00001))
+    with pytest.raises(oc.ReviewBudgetExceeded):
+        built.call("reviewer_a", "system", "user", kind="reviewer")
     assert fake.posts() == []
 
 
-def test_zero_paid_budget_authorizes_no_paid_call(tmp_path):
-    fake = paid_fake(ok("hi"))
-    built, _ = client(tmp_path, fake, budget=oc.JobBudget(paid_usd=0.0))
-    with pytest.raises(oc.BudgetExceeded):
-        built.call("repair", "system", "user", max_tokens=10)
+def test_zero_review_budget_authorizes_no_glm_call(tmp_path):
+    fake = paid_fake(ok(REVIEW_OK))
+    built, _ = client(tmp_path, fake, budget=oc.JobBudget(review_usd=0.0))
+    with pytest.raises(oc.ReviewBudgetExceeded):
+        built.call("reviewer_a", "system", "user", kind="reviewer")
     assert fake.posts() == []
 
 
-def test_repair_without_a_z_ai_endpoint_is_refused(tmp_path):
+def test_the_call_that_would_pass_the_five_cent_ceiling_is_refused_before_sending(tmp_path):
+    spend = {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.009}     # each real call costs $0.009
+    fake = paid_fake(ok(REVIEW_OK, usage=spend))
+    fake.on("/chat/completions", *[ok(REVIEW_OK, usage=spend)] * 4)           # five calls: $0.045 spent
+    built, _ = client(tmp_path, fake)
+    for _ in range(5):
+        built.call("reviewer_a", "system", "user", kind="reviewer")
+    with pytest.raises(oc.ReviewBudgetExceeded):                             # $0.045 + the next worst case ($0.008) passes $0.05
+        built.call("reviewer_a", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 5
+
+
+def test_glm_without_a_z_ai_endpoint_is_refused(tmp_path):
     fake = Fake()
     fake.on("/endpoints", (200, {}, json.dumps({"data": {"endpoints": [ENDPOINTS["data"]["endpoints"][0]]}}).encode()))
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="Z.AI"):
-        built.call("repair", "system", "user")
+        built.call("reviewer_a", "system", "user", kind="reviewer")
     assert fake.posts() == []
 
 
-def test_repair_endpoint_read_failure_sends_nothing(tmp_path):
+def test_glm_endpoint_read_failure_sends_nothing(tmp_path):
     fake = Fake()
-    fake.on("/endpoints", fail(500, "down"))
+    fake.on("/endpoints", (503, {}, b"down"))
     built, _ = client(tmp_path, fake)
-    with pytest.raises(oc.ProviderUnavailable, match="unavailable"):
-        built.call("repair", "system", "user")
+    with pytest.raises(oc.ProviderUnavailable):
+        built.call("reviewer_a", "system", "user", kind="reviewer")
     assert fake.posts() == []
-
-
-def test_paid_id_through_the_free_key_is_refused_and_free_roles_never_use_the_paid_key(tmp_path):
-    fake = Fake()
-    built, _ = client(tmp_path, fake, keys={"paid": PAID_KEY})
-    with pytest.raises(oc.ModelRefused, match="no free key"):
-        built.call("writer_a", "system", "user")
-    with pytest.raises(oc.ModelRefused, match="no paid key"):
-        client(tmp_path, fake, keys={"free": FREE_KEY})[0].call("repair", "system", "user")
-    assert fake.calls == []
 
 
 # ---- 7. 402, auth, redaction, privacy
@@ -574,7 +589,7 @@ def test_redact_removes_known_keys_and_key_shapes():
     assert text == "a [REDACTED] b [REDACTED] c [REDACTED]"
 
 
-@pytest.mark.parametrize("role", ["writer_a", "writer_b", "reviewer", "repair"])
+@pytest.mark.parametrize("role", ["writer_a", "writer_b", "reviewer_a", "reviewer_b"])
 def test_private_code_is_blocked_for_every_roster_role(tmp_path, role):
     fake = Fake()
     built, _ = client(tmp_path, fake)
@@ -602,7 +617,7 @@ def test_keys_come_from_the_environment_or_the_secrets_folder(tmp_path):
     assert oc.load_keys(secrets_dir=tmp_path, environ={"OPENROUTER_FREE_KEY": "env-wins"})["free"] == "env-wins"
 
 
-def test_probe_makes_one_free_call_per_probe_model_and_never_calls_repair(tmp_path):
+def test_probe_makes_one_free_call_per_probe_model_and_never_calls_glm(tmp_path):
     fake = Fake()
     fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
     fake.on("/chat/completions", ok("OK"), ok("OK"), ok("OK"), ok("OK"), ok("OK"))
@@ -612,7 +627,7 @@ def test_probe_makes_one_free_call_per_probe_model_and_never_calls_repair(tmp_pa
     posts = fake.posts()
     assert [p["body"]["model"] for p in posts] == [DOTS, XING, NORTH, GEMMA31, GEMMA26]
     assert all(p["headers"]["Authorization"] == "Bearer " + FREE_KEY for p in posts)
-    assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer", GEMMA31, GEMMA26}
+    assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer_b", GEMMA31, GEMMA26}
     assert all(p["ok"] for p in summary["probes"].values())
     assert FREE_KEY not in out.read_text(encoding="utf-8") and PAID_KEY not in out.read_text(encoding="utf-8")
 
@@ -632,17 +647,17 @@ def test_reviewer_defaults_are_the_owner_limits(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", ok(REVIEW_OK))
     built, _ = client(tmp_path, fake)
-    built.call("reviewer", "system", "user", kind="reviewer")
+    built.call("reviewer_b", "system", "user", kind="reviewer")
     post = fake.posts()[0]
     assert post["body"]["max_tokens"] == 16000 and post["timeout"] == 600
 
 
-def test_repair_defaults_are_the_owner_limits(tmp_path):
-    fake = paid_fake(ok(WRITER_OK))
+def test_glm_defaults_are_the_reviewer_limits(tmp_path):
+    fake = paid_fake(ok(REVIEW_OK))
     built, _ = client(tmp_path, fake)
-    built.call("repair", "system", "user", kind="writer")
+    built.call("reviewer_a", "system", "user", kind="reviewer")
     post = fake.posts()[0]
-    assert post["body"]["max_tokens"] == 40000 and post["timeout"] == 1200
+    assert post["body"]["max_tokens"] == 16000 and post["timeout"] == 600
 
 
 def test_retry_after_truncation_uses_the_retry_limits(tmp_path):
@@ -660,7 +675,7 @@ def test_every_request_carries_the_reasoning_cap(tmp_path):
     fake.on("/chat/completions", ok(WRITER_OK), ok(REVIEW_OK))
     built, _ = client(tmp_path, fake)
     built.call("writer_a", "system", "user", kind="writer")
-    built.call("reviewer", "system", "user", kind="reviewer")
+    built.call("reviewer_b", "system", "user", kind="reviewer")
     assert all(p["body"]["reasoning"] == {"max_tokens": 8000} for p in fake.posts())
 
 
@@ -697,65 +712,54 @@ def test_reply_from_another_provider_is_unavailable_and_its_spend_counts(tmp_pat
     fake = paid_fake(ok("hi", provider="Relace", usage={"prompt_tokens": 100, "completion_tokens": 20}))
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="provider"):
-        built.call("repair", "system", "user", max_tokens=500)
-    assert built.budget.paid_spent == pytest.approx(100 * ZAI_PRICE["prompt"] + 20 * ZAI_PRICE["completion"])
-    assert built.budget.paid_reserved == pytest.approx(0.0) and built.breaker.streak[GLM_PAID] == 1
+        built.call("reviewer_a", "system", "user", kind="reviewer", max_tokens=500)
+    assert built.budget.review_spent == pytest.approx(100 * ZAI_PRICE["prompt"] + 20 * ZAI_PRICE["completion"])
+    assert built.budget.review_reserved == pytest.approx(0.0) and built.breaker.streak[GLM_PAID] == 1
 
 
 def test_wrong_provider_reply_is_never_returned_as_an_answer(tmp_path):
     fake = paid_fake(ok("hi", provider="Relace"))
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable):
-        built.call("repair", "system", "user", max_tokens=500)
+        built.call("reviewer_a", "system", "user", kind="reviewer", max_tokens=500)
     assert len(fake.posts()) == 1
 
 
-# ---- 11. P1a.4: paid accounting, rounds, attempts, ceiling
+# ---- 11. final roster: the GLM review ceiling, every failed attempt counted, no repair rounds
 
-def test_job_paid_ceiling_is_fifteen_cents():
-    assert oc.JOB_PAID_USD == 0.15 and oc.JobBudget().paid_usd == 0.15
-
-
-def test_repair_allows_two_logical_rounds_per_job(tmp_path):
-    fake = paid_fake(ok(WRITER_OK))
-    fake.on("/chat/completions", ok(WRITER_OK))
-    built, _ = client(tmp_path, fake)
-    built.call("repair", "system", "user", kind="writer")
-    built.call("repair", "system", "user", kind="writer")
-    with pytest.raises(oc.BudgetExceeded, match="rounds"):
-        built.call("repair", "system", "user", kind="writer")
-    assert len(fake.posts()) == 2
+def test_review_ceiling_is_five_cents_and_there_is_no_repair_round_or_paid_usd_budget():
+    assert oc.JOB_REVIEW_USD == 0.05 and oc.JobBudget().review_usd == 0.05
+    assert not hasattr(oc, "PAID_ROUNDS") and not hasattr(oc, "PAID_ATTEMPTS") and not hasattr(oc, "JOB_PAID_USD")
 
 
-def test_fifth_physical_paid_attempt_is_refused_and_retries_count(tmp_path):
+def test_failed_glm_attempts_all_count_toward_the_review_ceiling(tmp_path):
     limit = fail(429, "Rate limit exceeded: free-models-per-min", {"retry-after": "1"})
     fake = paid_fake(limit)
     fake.on("/chat/completions", limit, limit, limit)
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="gave up after 4 attempts"):
-        built.call("repair", "system", "user")
+        built.call("reviewer_a", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 4
-    with pytest.raises(oc.BudgetExceeded, match="attempts"):
-        built.call("repair", "system", "user")
-    assert len(fake.posts()) == 4
+    assert built.budget.review_spent == pytest.approx(4 * oc.review_reservation("system", "user", 16000))
+    assert built.budget.review_reserved == pytest.approx(0.0)
 
 
 def test_reservation_over_the_ceiling_is_refused_before_sending(tmp_path):
-    fake = paid_fake(ok(WRITER_OK))
+    fake = paid_fake(ok(REVIEW_OK))
     built, _ = client(tmp_path, fake)
-    with pytest.raises(oc.BudgetExceeded):
-        built.call("repair", "system", "x" * 4_000_000, kind="writer")
+    with pytest.raises(oc.ReviewBudgetExceeded):
+        built.call("reviewer_a", "system", "x" * 4_000_000, kind="reviewer")
     assert fake.posts() == []
 
 
 # ---- 12. P1a.5: key separation
 
-def test_free_roles_use_the_free_key_and_repair_uses_the_paid_key_when_both_are_loaded(tmp_path):
+def test_free_roles_use_the_free_key_and_glm_uses_the_paid_key_when_both_are_loaded(tmp_path):
     fake = paid_fake(ok(WRITER_OK))
-    fake.on("/chat/completions", ok(WRITER_OK))
+    fake.on("/chat/completions", ok(REVIEW_OK))
     built, _ = client(tmp_path, fake)
     built.call("writer_a", "system", "user", kind="writer")
-    built.call("repair", "system", "user", kind="writer")
+    built.call("reviewer_a", "system", "user", kind="reviewer")
     assert [p["headers"]["Authorization"] for p in fake.posts()] == ["Bearer " + FREE_KEY, "Bearer " + PAID_KEY]
 
 
@@ -824,7 +828,7 @@ def test_reviewer_upstream_429_three_times_then_ready_passes_with_three_logged_r
     fake = Fake()
     fake.on("/chat/completions", upstream_429(), upstream_429(), upstream_429(), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
-    text, _ = built.call("reviewer", "system", "user", kind="reviewer")
+    text, _ = built.call("reviewer_b", "system", "user", kind="reviewer")
     assert text.endswith("## Verdict: READY")
     assert clock.slept == [15.0, 30.0, 60.0]
     assert [r["wait_s"] for r in built.retry_log] == [15.0, 30.0, 60.0]
@@ -838,7 +842,7 @@ def test_reviewer_upstream_429_on_every_call_ends_the_window_and_drops_the_model
     fake.on("/chat/completions", *[upstream_429() for _ in range(6)])
     built, clock = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="window is used up") as caught:
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 6 and clock.slept == [15.0, 30.0, 60.0, 120.0, 180.0]
     assert "rate-limited upstream" in str(caught.value)
     assert built.breaker.open(NORTH)
@@ -848,7 +852,7 @@ def test_retry_after_on_the_first_retry_sets_the_wait(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", upstream_429({"retry-after": "90"}), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
-    built.call("reviewer", "system", "user", kind="reviewer")
+    built.call("reviewer_b", "system", "user", kind="reviewer")
     assert clock.slept == [90.0] and built.retry_log[0]["wait_s"] == 90.0
 
 
@@ -857,16 +861,16 @@ def test_daily_limit_429_on_a_reviewer_stops_at_once(tmp_path):
     fake.on("/chat/completions", fail(429, "Rate limit exceeded: free-models-per-day"), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
     with pytest.raises(oc.QuotaExhausted):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 1 and clock.slept == []
 
 
 def test_only_two_free_requests_left_in_the_job_allow_two_retries_then_the_slot_fails(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", *[upstream_429() for _ in range(5)])
-    built, clock = client(tmp_path, fake, budget=oc.JobBudget(free_requests=3, paid_usd=0))
+    built, clock = client(tmp_path, fake, budget=oc.JobBudget(free_requests=3, review_usd=0))
     with pytest.raises(oc.ProviderUnavailable, match="free requests"):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 3 and clock.slept == [15.0, 30.0]
     assert len(built.retry_log) == 2
 
@@ -877,7 +881,7 @@ def test_a_retry_is_not_sent_when_the_daily_count_has_no_room(tmp_path):
     built, clock = client(tmp_path, fake)
     built.ledger.daily_cap = 1
     with pytest.raises(oc.QuotaExhausted):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 1 and clock.slept == []
 
 
@@ -887,7 +891,7 @@ def test_a_retry_that_would_start_after_the_unit_deadline_is_not_sent(tmp_path):
     built, clock = client(tmp_path, fake)
     built.set_job_deadline(10)
     with pytest.raises(oc.ProviderUnavailable, match="unit deadline"):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 1 and clock.slept == []
 
 
@@ -896,7 +900,7 @@ def test_a_next_wait_past_the_600_second_review_timeout_ends_the_retries(tmp_pat
     fake.on("/chat/completions", upstream_429({"retry-after": "580"}), upstream_429(), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="review timeout"):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 2 and clock.slept == [580.0]
 
 
@@ -905,7 +909,7 @@ def test_a_reviewer_server_error_still_counts_toward_the_two_error_rule(tmp_path
     fake.on("/chat/completions", fail(503, "busy"), fail(503, "busy"), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="dropped"):
-        built.call("reviewer", "system", "user", kind="reviewer")
+        built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 2 and clock.slept == [oc.BACKOFF_S[0], oc.BACKOFF_S[1]]
 
 

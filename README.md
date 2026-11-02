@@ -109,7 +109,7 @@ The launcher accepts only `nemotron` or `haiku` as fixers; any other name is ref
 - `scripts/image_trials/nvidia_trial.py`: the key pool
 - `pieces/p1_claims.py`, `pieces/p1_escalate.py`: launcher, claims, ledger, escalation
 - `scripts/source/p1b_routing.py` and `scripts/source/p1b_production.py`: the production ladder and its runner (P1b; see the P1b section)
-- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (owner roster, free ledger, Z.AI-pinned repair budget, probe)
+- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (owner roster, free ledger, Z.AI-pinned GLM review budget, probe)
 - `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the Codex model; `REVIEW_WITH=haiku` asks Haiku at low effort instead)
 - `docs/REVIEW_PROMPT.md`: the prompt every reviewer receives
 - `pieces/test_*.py`: the tests
@@ -199,20 +199,24 @@ calibration). The legacy loop (nemotron, codex, haiku, groq, minimax, lightning)
 and `reviewer` are refused for production, and a static test checks that the P1b modules name no legacy model family.
 
 - **Job shape.** `fixers` are the role names `writer_a` and `writer_b`; `reviewers` is the string `by_lineage`; `visibility` is `public`;
-  `budget` is `{free_requests: 40, paid_usd: 0}` (a free pilot: no paid call) or `{free_requests: 40, paid_usd: 0.15}`; `deadline_min` is 60 or 120; `files` at most 800 lines each and 1,500 in total
+  `budget` must be exactly `{free_requests: 40, review_usd: 0.05, paid_usd: 0}` (`p1b_routing.check_production_job`; any other value is refused,
+  including the old `{free_requests: 40, paid_usd: 0.15}`); `deadline_min` is 60 or 120; `files` at most 800 lines each and 1,500 in total
   (`check_job_size`, checked before the sandbox runs). The legacy fields (`reviewers` as a list, `min_valid_reviews`) are refused for production.
-- **Ladder.** Dots writes; a localized red (at most 3 failing tests in at most 2 files, not systemic) gets one Dots repair; otherwise the files
-  are restored and Xing writes fresh (every job file required), with one Xing repair if still red; then the GLM gate: at most 2 GLM rounds,
-  only for a defect both free writers failed on the same test, and only while the budget fits.
-- **Reviewers.** The lineage panel from `p1b_routing.panel_for`: code last written by Dots is reviewed by Xing and North; by Xing, by Dots and
-  North; after a GLM repair the origin decides. Each file keeps `{last, origin}` in `_loop/<job>/lineage.json`.
+- **Ladder.** Dots writes; a localized red (at most 3 failing tests in at most 2 files, not systemic) gets one Dots repair. Otherwise the files
+  are restored and a fresh write goes to Xing (every job file required), then to North only if Xing is down; a red fresh Xing write gets one
+  Xing repair. Then the repair step: at most 2 repair calls (`REPAIR_CALLS`), each one isolated Opus call (see the final roster section), only
+  when the gate passes (the same failing tests, and the job deadline fits a repair call: `REPAIR_TIMEOUT_S` 1800 s). While the repair step is
+  off (the default) the job escalates with "Opus repair unavailable" and no call is made.
+- **Reviewers.** The panel from `p1b_routing.panel_for`: GLM first, then North. If North is down, the free writer that did not write the code
+  takes that slot (`backup_writer`). A GLM failure in review ends the job `provider-unavailable`; there is no substitute reviewer. Each file
+  keeps `{last, origin}` in `_loop/<job>/lineage.json`.
 - **Tests decide.** A green run is the job's tests plus the locked acceptance tests passing in the sandbox, with the locked files unchanged. The
   files that passed are hashed; the review hashes and the final hash must equal that hash, or the state is `integrity-mismatch`.
 - **States.** `passed`, `review-open` (a reviewer's FIX FIRST with evidence; the FIX FIRST repair loop is not built yet, so the report is kept in
   `REVIEW_FIX.md`), `escalate`, `blocked`, `provider-unavailable`, `deadline`, `acceptance-tampered`, `integrity-mismatch`, `job-too-large`.
   Anything that did not pass is restored to the originals, the authorized candidate files are kept under `candidate/`, and the reason is
   written to `ESCALATE.md` (or `EXCEPTION.md` for an unexpected error). See the pre-pilot section below.
-- **Tests.** `pieces/test_p1b_production_run.py` runs the Dots, Xing, GLM order end to end through the real Docker sandbox with scripted
+- **Tests.** `pieces/test_p1b_production_run.py` runs Dots, Xing, a repair through a fake claude, then the GLM and North review end to end through the real Docker sandbox with scripted
   models (`pieces/prod_harness.py`); it skips with the reason when the sandbox is not available. Nothing calls the network or the paid model.
 - **Not done.** The FIX FIRST repair loop; the frozen-test rule of the legacy loop is not applied to the P1b ladder (the locked acceptance tests
   are the protection); no live run.
@@ -230,8 +234,8 @@ Five fixes from the pre-pilot bug review. Each was written as a failing test fir
   `run_job` finds `running` with the originals saved and restores them before any model call (`fix_loop._prepare_job_folder`). The abandoned
   candidate is not used: the restart's first writer sees the originals only. (A kill cannot be handled inside the process; this recovery is what
   covers SIGKILL.)
-- **`paid_usd` 0 is accepted** (the free pilot). The validator accepts exactly 0 or 0.15. `client_for(root, job)` passes the job's budget to the
-  `JobBudget`, so a 0 budget makes no GLM request, not even the price lookup.
+- **Budget (final roster, 2026-11-02).** The production budget is exactly `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`, passed to the
+  `JobBudget` by `client_for(root, job)`. The old `paid_usd` 0.15 form is refused. The GLM reviews stop at `review_usd`.
 - **One key for both roles.** With only one key file or variable, the free and the paid roles use it. The paid allowlist (`resolve`) and the
   dollar budget still apply; an unlisted paid model is refused before any request.
 - **Suite.** Three `test_guards` checks read files that belong to the Reverse-Video project and are absent from this repository (`p3_audio_evidence.py`,
@@ -282,11 +286,11 @@ and `pieces/test_p1b_routing.py`.
 `scripts/source/openrouter_call.py` is the only path to OpenRouter. A production job calls it through `p1b_production.py` (see the P1b section).
 Every reply is checked before it counts, and no failure falls back to another model or key.
 
-- **Roster (owner, 2026-11-02).** Roles: `writer_a` = `dots-studio/dots-3-note-preview:free`, `writer_b` = `xingchen-agi/xing4.0-29b-a4b:free`,
-  `reviewer` = `cohere/north-mini-code:free`, `repair` = `z-ai/glm-5.3-flash` (the only paid ID). The reviewer backup
+- **Roster (final, owner 2026-11-02).** Roles: `writer_a` = `dots-studio/dots-3-note-preview:free` (Dots), `writer_b` = `xingchen-agi/xing4.0-29b-a4b:free` (Xing), `reviewer_a` = `z-ai/glm-5.3-flash` (GLM, the only paid ID, reviewer only), `reviewer_b` = `cohere/north-mini-code:free` (North). The old `reviewer` and `repair` roles are gone. The reviewer backup
   (`google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it:free`) is disabled: only the probe may call those IDs. Refused before any request:
-  `openrouter/free`, a `models` list, a bare paid ID, a free ID without `:free`, a disabled backup role, any other ID.
-- **Limits.** Writer and repair: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
+  `openrouter/free`, a `models` list, a bare paid ID, a free ID without `:free`, a GLM request under any role but `reviewer_a`, a disabled
+  backup role, any other ID.
+- **Limits.** Writers: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
   sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
   Xing sends temperature 0.8, top_p 0.95, repetition_penalty 1.05.
 - **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
@@ -294,10 +298,7 @@ Every reply is checked before it counts, and no failure falls back to another mo
   JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
   and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
   per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
-- **Repair (paid).** The paid key only. Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint
-  and prices are in `docs/p1a_glm_endpoint.json`. The cheapest-endpoint choice is removed. A reply from any other provider is unavailable and its
-  spend still counts. Limits per job: 2 logical repair rounds, 4 physical paid attempts (retries included), $0.15 ceiling. Each attempt reserves
-  its estimate before it is sent; a missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
+- **Paid reviewer (GLM).** The paid key only, reviewer role only (`reviewer_a`). Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint and prices are in `docs/p1a_glm_endpoint.json`. A reply from any other provider is unavailable and its spend still counts. The job's paid ceiling is `review_usd` 0.05. Each call reserves its worst case before it is sent (`ceil(chars/3) x 0.15e-6 + max_tokens x 0.50e-6`); a call that would pass the ceiling is refused with nothing sent, and the reservation is settled to the reported cost. A missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
 - **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a `FILE:` block; a reviewer needs a
   final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at the retry limit (writer and repair: 72000).
 - **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
@@ -317,7 +318,7 @@ Every reply is checked before it counts, and no failure falls back to another mo
 - **Raw errors.** Every failed attempt is kept in `failed_attempts`: model, HTTP status (`null` for a network error) and the first 500 characters
   of its message. A dropped model's error repeats the last two raw failures. The probe writes them in full for each model.
 - **Probe.** `python scripts/source/openrouter_call.py probe --out <file> [--models a,b]` makes one live free call each to writer_a, writer_b,
-  reviewer and the two Gemma backups (or only the named ones), and records the key state before and after. It never calls the repair model.
+  reviewer_b (North) and the two Gemma backups (or only the named ones), and records the key state before and after. It never calls GLM or Opus.
   It spends free requests, so run it by hand and only after the owner's go.
 - **Results (2026-11-02).** `docs/p1a_roster_probe.json`: writer_a, writer_b and reviewer answered at $0. `docs/p1a_gemma_rerun.json`: both Gemma
   backups returned HTTP 429 "upstream shared pool" (Google AI Studio, "temporarily rate-limited upstream"), the expected result, now recorded
@@ -326,3 +327,24 @@ Every reply is checked before it counts, and no failure falls back to another mo
   `SECRET`, `PASSWORD`, ...), except `GPG_KEY`, which the base image sets. One rule, `sandbox_runner.CREDENTIAL_RULE`, is used on the host and in
   the container (`pieces/test_sandbox_credential_names.py`).
 - **Ignored paths.** `.gitignore` keeps `secrets/`, `_loop/` and `.env` out of git.
+
+## Final roster patch (2026-11-02)
+
+Owner's final patch, branch `p1-final-roster`: GLM as reviewer only, an isolated Opus repair step, then the pilot. Every test uses fakes.
+
+- **Roster.** Dots writes (`writer_a`), Xing writes (`writer_b`), GLM reviews only (`reviewer_a`, paid), North reviews (`reviewer_b`).
+- **Repair step (Opus).** `scripts/source/opus_repair.py` runs one isolated call per repair: `claude -p --model opus --effort medium --output-format json --tools ""`
+  with an empty MCP config, from an empty folder, with no Anthropic key and no OpenRouter variable in its environment. It is OFF by default
+  (`OPUS_ENABLED = False`): while off no process starts and the job escalates with "Opus repair unavailable". Tests use `pieces/fake_claude.py`
+  or an injected runner; no test runs the real CLI, and the owner has not switched the step on.
+- **Budget.** `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`. Each GLM call is checked against its reservation before it is sent.
+- **Evidence.** `status.json` carries `evidence.budget`: free requests used, review dollars spent, repair calls, and whether the repair step was on.
+  Each repair reply is saved raw, scrubbed, as `repair_step_NN_raw.json` in the job's history folder.
+- **Not done and open issues.**
+  - The pilot (`pilot-loop-status`, step 6) was not run: its spec, acceptance test and negative control are not in the repo.
+  - `scripts/source/plan_job.py` (the planner, left unchanged) still writes the budget `{free_requests: 40, paid_usd: 0.15}` in its prompt; a plan
+    with that budget is refused by `check_production_job`. Owner decision needed.
+  - The gate needs the job deadline to fit a 1800 s repair call, so in 60-minute units the repair step rarely runs.
+  - The planner's Opus runner was not shared with `opus_repair.py`: `plan_job.py` keeps the OpenRouter variables in its environment and was not touched.
+  - Flint and Inkling are not in the code; there was nothing to disable.
+  - No live run of any path.

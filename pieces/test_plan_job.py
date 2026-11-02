@@ -23,7 +23,7 @@ def good_answer(**over):
     job = {"name": "calc", "profile": "production", "visibility": "public", "spec": "specs/calc.md",
            "files": ["pieces/calc.py", "pieces/test_calc.py"], "tests": ["pieces/test_calc.py"], "reference": [],
            "review": True, "reviewers": "by_lineage", "review_prompt": "docs/RP.md", "fixers": ["writer_a", "writer_b"],
-           "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60,
+           "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}, "deadline_min": 60,
            "acceptance_tests": [ACCEPT],
            "negative_controls": [{"name": "returns None", "replace": {"pieces/calc.py": CONTROL}, "must_fail": [ACCEPT + "::test_sums_two_prices"]}]}
     answer = {"plan_md": "# Plan" + chr(10) + "Sum the prices.",

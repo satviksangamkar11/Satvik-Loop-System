@@ -1,8 +1,8 @@
 """Pre-pilot bug review (2026-11-02). Each test was written to FAIL on the code as it stood, then the fix made it pass.
 No Docker and no network: FakeSandbox decides the tests (every test passes only when pieces/calc.py is GOOD_CODE) and the scripted OpenRouter
 transport (prod_harness) answers every model call. Covered: a fresh writer never sees the previous attempt's pytest output; every non-PASS state
-puts the originals back and keeps the authorized candidate; a worker killed after one candidate write is recovered on the next launch; paid_usd 0
-is accepted and makes no paid call; one key serves both roles and an unlisted paid model is refused."""
+puts the originals back and keeps the authorized candidate; a worker killed after one candidate write is recovered on the next launch; the owner's budget is exact;
+with the repair step off no GLM request is made; one key serves both roles and an unlisted paid model is refused."""
 import json
 import os
 import subprocess
@@ -17,13 +17,14 @@ sys.path.insert(0, str(REPO / "pieces"))
 import fix_loop as fl  # noqa: E402
 import openrouter_call as oc  # noqa: E402
 import p0_gates as gates  # noqa: E402
+import opus_repair  # noqa: E402
 import p1b_production as pp  # noqa: E402
 import prod_harness as ph  # noqa: E402
 import sandbox_runner as sr  # noqa: E402
 from test_p0_acceptance import make_prod_root, prod_job, CONSTANT_CODE, CONSTANT_TEST, GOOD_CODE, GOOD_TEST  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer"], oc.ROLES["repair"]
+DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
 ORIGINAL_CODE = "def calculate_total(prices):" + NL + "    return 0" + NL       # the job file before the run: the originals
 XING_CODE = "def calculate_total(prices):" + NL + "    return sum(prices[:-1])" + NL
 XING_TEST = "from pieces.calc import calculate_total" + NL + "def test_calculate_total():" + NL + "    assert calculate_total([20, 30]) == 20" + NL
@@ -106,15 +107,33 @@ def xing_reply():
     return ph.file_reply(("pieces/calc.py", XING_CODE), ("pieces/test_calc.py", XING_TEST))
 
 
+@pytest.fixture
+def opus(monkeypatch):
+    """The repair step, scripted: each repair call pops the next reply text from this list. opus_repair.ask is replaced, so no process starts."""
+    replies = []
+
+    def scripted_ask(prompt, *, raw_sink=None, **_unused):
+        if not replies:
+            raise opus_repair.RepairFailed("no scripted repair reply left")
+        text = replies.pop(0)
+        if raw_sink is not None:
+            raw_sink(json.dumps({"result": text}))
+        return text
+
+    monkeypatch.setattr(opus_repair, "ask", scripted_ask)
+    return replies
+
+
 # ---------------------------------------------------------------- 1. a fresh writer never sees the previous attempt's pytest output
 
-def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path):
+def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path, opus):
+    opus.append(good_reply())                                  # the repair step (scripted Opus) turns Xing's second red into green
     root = with_original(make_prod_root(tmp_path))
     job = load(root, prod_job())
     provider = ph.Provider({
         DOTS: [constant_reply(), ph.READY],                    # Dots writes the constant: red on every test
-        XING: [xing_reply(), xing_reply(), ph.READY],          # Xing fresh (red), Xing repair (red), then a review
-        GLM: [good_reply()],
+        XING: [xing_reply(), xing_reply()],                    # Xing fresh (red), Xing repair (red)
+        GLM: [ph.READY],                                       # the review panel: GLM, then North
         NORTH: [ph.READY],
     })
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
@@ -137,7 +156,7 @@ def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path):
 def test_review_open_restores_the_originals_and_keeps_the_candidate_for_inspection(tmp_path):
     root = with_original(make_prod_root(tmp_path))
     job = load(root, prod_job())
-    provider = ph.Provider({DOTS: [good_reply()], XING: [FIX_FIRST]})   # Dots green; Xing's FIX FIRST has file:line and SPEC
+    provider = ph.Provider({DOTS: [good_reply()], GLM: [FIX_FIRST]})   # Dots green; GLM's FIX FIRST has file:line and SPEC
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "review-open", result
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
@@ -157,7 +176,7 @@ def test_integrity_mismatch_restores_the_originals_and_keeps_the_candidate(tmp_p
         (root / "pieces" / "calc.py").write_text(CONSTANT_CODE, encoding="utf-8")
         return ph.READY
 
-    provider = ph.Provider({DOTS: [good_reply()], XING: [reviewer_edits_the_candidate], NORTH: [ph.READY]})
+    provider = ph.Provider({DOTS: [good_reply()], GLM: [reviewer_edits_the_candidate], NORTH: [ph.READY]})
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "integrity-mismatch", result
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
@@ -209,36 +228,34 @@ def test_a_worker_killed_after_one_candidate_write_is_restored_by_the_next_launc
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == GOOD_CODE    # the abandoned candidate is on disk
     assert status_of(root)["state"] == "running"
 
-    provider = ph.Provider({DOTS: [good_reply()], XING: [ph.READY], NORTH: [ph.READY]})
+    provider = ph.Provider({DOTS: [good_reply()], GLM: [ph.READY], NORTH: [ph.READY]})
     result = fl.run_job(fl.load_job(job_path), root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     first = prompt_of(provider, DOTS, 0)
     assert ORIGINAL_CODE in first and GOOD_CODE not in first    # the restart began from the original, not the abandoned candidate
     assert result["state"] == "passed", result
 
 
-# ---------------------------------------------------------------- 4. paid_usd 0: accepted, passed to the budget, no paid call
+# ---------------------------------------------------------------- 4. the owner's budget is exact; with the repair step off, a red job makes no GLM request
 
-def test_zero_paid_budget_is_accepted_and_no_glm_request_is_made(tmp_path):
+def test_the_production_budget_is_the_owner_values_and_is_passed_to_the_client(tmp_path):
+    root = make_prod_root(tmp_path)
+    client = pp.client_for(root, {"budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}}, keys={"free": ONE_KEY})
+    assert client.budget.review_usd == 0.05 and client.budget.free_requests == 40
+
+
+def test_a_red_job_with_the_repair_step_off_makes_no_glm_request_of_any_kind(tmp_path):
     root = with_original(make_prod_root(tmp_path))
-    job = load(root, prod_job(budget={"free_requests": 40, "paid_usd": 0}))
+    job = load(root, prod_job())
     provider = ph.Provider({
         DOTS: [constant_reply()],                               # both free writers go red on the same tests
         XING: [xing_reply(), xing_reply()],
     })
-    client = ph.client(tmp_path, provider, budget=oc.JobBudget(free_requests=40, paid_usd=0))
+    client = ph.client(tmp_path, provider, budget=oc.JobBudget(free_requests=40, review_usd=0.05))
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=client, scrub_keys=[])
     assert result["state"] == "escalate", result
-    assert "budget does not fit" in status_of(root)["reason"]
+    assert status_of(root)["reason"] == "Opus repair unavailable"
     assert GLM not in provider.models()
     assert not any("glm" in url for _method, url, _headers in provider.http)   # no GLM request of any kind, not even the price lookup
-
-
-def test_client_for_passes_the_job_budget_exactly(tmp_path):
-    root = make_prod_root(tmp_path)
-    client = pp.client_for(root, {"budget": {"free_requests": 40, "paid_usd": 0}}, keys={"free": ONE_KEY})
-    assert client.budget.paid_usd == 0 and client.budget.free_requests == 40
-    client = pp.client_for(root, {"budget": {"free_requests": 40, "paid_usd": 0.15}}, keys={"free": ONE_KEY})
-    assert client.budget.paid_usd == 0.15
 
 
 # ---------------------------------------------------------------- 5. one key for both roles; an unlisted paid model is refused
@@ -250,11 +267,11 @@ def test_one_key_file_serves_the_free_and_the_paid_roles_with_the_same_credentia
     keys = oc.load_keys(secrets_dir=secrets, environ={})
     assert keys == {"free": ONE_KEY, "paid": ONE_KEY}
 
-    provider = ph.Provider({DOTS: ["ok"], GLM: ["ok"]})
+    provider = ph.Provider({DOTS: ["ok"], GLM: [ph.READY]})
     client = oc.OpenRouter(keys, tmp_path / "ledger", transport=provider, sleep=lambda seconds: None, rand=lambda: 0.0)
     client.begin_job()
     client.call("writer_a", "sys", "user", kind="text")         # free roster model
-    client.call("repair", "sys", "user", kind="text")           # paid roster model (z-ai)
+    client.call("reviewer_a", "sys", "user", kind="reviewer")   # paid roster model (z-ai): reviews only
     posts = [headers for method, url, headers in provider.http if method == "POST"]
     assert len(posts) == 2
     assert all(headers["Authorization"] == "Bearer " + ONE_KEY for headers in posts)

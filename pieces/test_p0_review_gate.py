@@ -111,7 +111,7 @@ def _prod_job(root, **extra):
     """A production job in the P1b shape (2026-11-02) with one change given by `extra`."""
     job = {"name": "j", "profile": "production", "visibility": "public", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"],
            "tests": ["pieces/test_m.py"], "reference": [], "review": True, "reviewers": "by_lineage", "review_prompt": "docs/RP.md",
-           "fixers": ["writer_a", "writer_b"], "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60, **extra}
+           "fixers": ["writer_a", "writer_b"], "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}, "deadline_min": 60, **extra}
     (root / "_loop" / "jobs").mkdir(exist_ok=True)
     (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
     return fl.load_job(root / "_loop" / "jobs" / "j.json")

@@ -43,9 +43,9 @@ JOB_SCHEMA = {
         "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "haiku", "writer_a", "writer_b"]}, "default": ["nemotron", "nemotron", "nemotron"]},
         # P0 2026-11-02: production jobs (locked acceptance tests, sandboxed pytest, strict review). A job without `profile` is legacy.
         "profile": {"type": "string", "enum": ["production", "legacy"]},
-        # P1b 2026-11-02 (production only): public visibility, the owner's budget and the unit deadline
+        # P1b 2026-11-02 (production only): public visibility, the owner's budget (exactly free 40, review 0.05, paid 0; checked in p1b_routing) and the unit deadline
         "visibility": {"type": "string", "enum": ["public", "private"]},
-        "budget": {"type": "object", "properties": {"free_requests": {"type": "integer"}, "paid_usd": {"type": "number"}}, "additionalProperties": False},
+        "budget": {"type": "object", "properties": {"free_requests": {"type": "integer"}, "review_usd": {"type": "number"}, "paid_usd": {"type": "number"}}, "additionalProperties": False},
         "acceptance_tests": {"type": "array", "items": {"type": "string"}, "default": []},
         "acceptance_baseline_fail": {"type": "array", "items": {"type": "string"}, "default": []},
         "negative_controls": {"type": "array", "default": [], "items": {

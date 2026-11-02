@@ -1,6 +1,6 @@
-"""P1b wiring (2026-11-02): one production job through fix_loop.run_job, with the real Docker sandbox and fake OpenRouter models for writer_a
-(Dots), writer_b (Xing), reviewer (North) and repair (GLM). Every model call goes through openrouter_call by role; the locked acceptance tests
-decide; reviewers are chosen by lineage. No network and no paid call: the transport is scripted (prod_harness).
+"""P1b wiring (final roster, 2026-11-02): one production job through fix_loop.run_job, with the real Docker sandbox and fake OpenRouter models
+for writer_a (Dots), writer_b (Xing), reviewer_a (GLM, reviews only) and reviewer_b (North). The Opus repair runs only through a fake `claude`
+(pieces/fake_claude.py), and only where a test switches it on; by default it is off and no process starts. No network and no paid call.
 
 The real sandbox needs Docker and the sandbox image. Without them the end-to-end tests are skipped with the reason (never a silent pass)."""
 import json
@@ -13,16 +13,21 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
 import fix_loop as fl  # noqa: E402
+import opus_repair as opus  # noqa: E402
 import openrouter_call as oc  # noqa: E402
+import p1b_routing as p1b  # noqa: E402
 import sandbox_runner as sr  # noqa: E402
 import prod_harness as ph  # noqa: E402
 from test_p0_acceptance import make_prod_root, CONSTANT_CODE, CONSTANT_TEST, GOOD_CODE, GOOD_TEST  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer"], oc.ROLES["repair"]
+DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+ANTHROPIC = p1b.ANTHROPIC
+FAKE_CLAUDE = REPO / "pieces" / "fake_claude.py"
 # Xing's wrong code: its own test agrees with it (passes), the locked acceptance tests fail on the same two tests Dots fails.
 XING_CODE = "def calculate_total(prices):" + NL + "    return sum(prices[:-1])" + NL
 XING_TEST = "from pieces.calc import calculate_total" + NL + "def test_calculate_total():" + NL + "    assert calculate_total([20, 30]) == 20" + NL
+BUDGET = {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}
 
 
 SANDBOX_PROBLEMS = sr.DockerSandbox(image=sr.DEFAULT_IMAGE, include=["pieces", "tests"]).selftest()
@@ -35,7 +40,7 @@ def p1b_job(**over):
     job = {"name": "calc", "profile": "production", "visibility": "public", "spec": "specs/s.md",
            "files": ["pieces/calc.py", "pieces/test_calc.py"], "tests": ["pieces/test_calc.py"], "reference": [],
            "fixers": ["writer_a", "writer_b"], "reviewers": "by_lineage",
-           "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60,
+           "budget": dict(BUDGET), "deadline_min": 60,
            "review": True,
            "acceptance_tests": ["tests/acceptance/test_calc_acceptance.py"],
            "negative_controls": [
@@ -53,65 +58,102 @@ def load(root, job):
     return fl.load_job(path)
 
 
-def script_for_dots_xing_glm():
-    """Dots writes the constant (its own test agrees) and repairs it the same way; Xing writes its wrong sum and repairs it the same way; GLM
-    writes the correct code; then Dots and North review READY."""
+def script_red_red_red():
+    """Dots writes the constant (its own test agrees) and repairs it the same way; Xing writes its wrong sum and repairs it the same way; the
+    Opus repair (fake claude) supplies the correct code; then GLM and North review READY."""
     return {
         DOTS: [ph.file_reply(("pieces/calc.py", CONSTANT_CODE), ("pieces/test_calc.py", CONSTANT_TEST)),
-               ph.file_reply(("pieces/calc.py", CONSTANT_CODE), ("pieces/test_calc.py", CONSTANT_TEST)),
-               ph.READY],
+               ph.file_reply(("pieces/calc.py", CONSTANT_CODE), ("pieces/test_calc.py", CONSTANT_TEST))],
         XING: [ph.file_reply(("pieces/calc.py", XING_CODE), ("pieces/test_calc.py", XING_TEST)),
                ph.file_reply(("pieces/calc.py", XING_CODE), ("pieces/test_calc.py", XING_TEST))],
-        GLM: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+        GLM: [ph.READY],
         NORTH: [ph.READY],
     }
 
 
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """Switches the Opus repair on, with the fake claude as the executable; `reply(text)` sets the FILE text it returns."""
+    log, output = tmp_path / "fake_claude.log", tmp_path / "fake_claude_out.json"
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    monkeypatch.setenv("FAKE_CLAUDE_OUTPUT", str(output))
+    monkeypatch.setattr(opus, "CLAUDE_CMD", [sys.executable, str(FAKE_CLAUDE)])
+    monkeypatch.setattr(opus, "OPUS_ENABLED", True)
+
+    class Fake:
+        def reply(self, text):
+            output.write_text(json.dumps({"type": "result", "is_error": False, "result": text}), encoding="utf-8")
+
+        def runs(self):
+            return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    return Fake()
+
+
 @needs_docker
-def test_production_job_runs_dots_then_xing_fresh_then_glm_with_lineage_reviews_and_locked_tests(tmp_path):
-    # real Docker sandbox (sandbox=None: run_job builds DockerSandbox), fake models through the real adapter
+def test_a_job_red_red_red_then_opus_repairs_it_to_green_with_glm_and_north_ready(tmp_path, fake_claude):
     root = make_prod_root(tmp_path)
     job = load(root, p1b_job())
-    provider = ph.Provider(script_for_dots_xing_glm())
-    result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
+    provider = ph.Provider(script_red_red_red())
+    fake_claude.reply(ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST)))
+    result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0.05)), scrub_keys=[])
 
-    # the order of model calls: Dots writes and repairs, Xing writes fresh and repairs, GLM repairs once, then the lineage reviewers
-    # (GLM repaired Xing's code, so its panel is Dots and North)
-    assert provider.models() == [DOTS, DOTS, XING, XING, GLM, DOTS, NORTH]
+    # the free calls: Dots writes and repairs, Xing writes fresh and repairs; then the reviewers: GLM first, North second
+    assert provider.models() == [DOTS, DOTS, XING, XING, GLM, NORTH]
+    assert len(fake_claude.runs()) == 1                       # the Opus repair is the one fake claude run
     assert result["state"] == "passed", result
     assert result["review_verdict"] == "READY"
-
-    # the locked acceptance tests decided: the GLM reply is the only one that passed them
     ev = result["evidence"]
-    assert ev["calibration"] == "passed"
-    assert "tests/acceptance/test_calc_acceptance.py" in ev["acceptance_lock"]
     assert ev["tested_hash"] == ev["final_hash"] == ev["reviewed_hash"]
-
-    # the delivered files are the GLM version, byte for byte
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == GOOD_CODE
+    assert ev["budget"]["repair_calls"] == 1 and ev["budget"]["free_requests_used"] == 5   # Dots 2, Xing 2, North 1 (GLM is paid, not free)
+    assert ev["budget"]["review_usd_spent"] <= 0.05
 
-    # the lineage is saved per file: last writer GLM, and the origin is the fresh writer Xing
     lineage = json.loads((root / "_loop" / "calc" / "lineage.json").read_text(encoding="utf-8"))
-    assert lineage["pieces/calc.py"] == {"last": GLM, "origin": XING}
-    assert lineage["pieces/test_calc.py"] == {"last": GLM, "origin": XING}
+    assert lineage["pieces/calc.py"]["origin"] == XING and lineage["pieces/calc.py"]["last"] == ANTHROPIC
+    assert lineage["pieces/calc.py"]["chain"][-1] == "anthropic"
 
 
 @needs_docker
-def test_the_repair_call_is_pinned_to_z_ai_with_no_fallbacks(tmp_path):
+def test_the_review_call_to_glm_is_pinned_to_z_ai_with_no_fallbacks(tmp_path):
     root = make_prod_root(tmp_path)
     job = load(root, p1b_job())
-    provider = ph.Provider(script_for_dots_xing_glm())
+    provider = ph.Provider({DOTS: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+                            GLM: [ph.READY], NORTH: [ph.READY]})
     fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     glm_bodies = [request for model, request in provider.calls if model == GLM]
-    assert glm_bodies, "the repair call was made"
+    assert glm_bodies, "GLM was asked to review"
     for request in glm_bodies:
         assert request["provider"] == {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": False}
 
 
 @needs_docker
+def test_with_opus_off_a_red_job_escalates_with_the_fixed_reason_and_no_non_docker_process_starts(tmp_path, monkeypatch):
+    root = make_prod_root(tmp_path)
+    job = load(root, p1b_job())
+    started = []
+    real_run = subprocess.run
+
+    def watch(args, *rest, **kwargs):
+        first = args[0] if isinstance(args, (list, tuple)) and args else str(args)
+        if not Path(str(first)).name.lower().startswith("docker"):
+            started.append(first)
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", watch)
+    provider = ph.Provider(script_red_red_red())
+    result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
+    assert result["state"] == "escalate", result
+    assert json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))["reason"] == "Opus repair unavailable"
+    assert started == [], "a non-docker process started: Opus is off by default"
+    assert provider.models() == [DOTS, DOTS, XING, XING]
+    assert not any(model == GLM for model, _ in provider.calls)
+
+
+@needs_docker
 def test_a_production_job_can_never_reach_a_legacy_model(tmp_path, monkeypatch):
     """Nemotron, Codex, Haiku, Groq and Sonnet are the legacy path. A production run must not call any of them: the legacy factories are
-    replaced by functions that fail, every subprocess other than docker fails, and every model named to the transport is a P1b roster model."""
+    replaced by functions that fail, and every subprocess other than docker fails."""
     root = make_prod_root(tmp_path)
     job = load(root, p1b_job())
     legacy = ["_default_caller_factory", "_haiku_cli_caller_factory", "_default_reviewers_factory", "_default_codex_runner", "_groq_runner",
@@ -132,13 +174,13 @@ def test_a_production_job_can_never_reach_a_legacy_model(tmp_path, monkeypatch):
         raise AssertionError(f"a production job started a non-docker process: {first}")
 
     monkeypatch.setattr(subprocess, "Popen", only_docker)
-    # Dots writes correct code, so the reviewers are its lineage panel: Xing and North
+    # Dots writes correct code, so the reviewers are GLM and North
     provider = ph.Provider({DOTS: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-                            XING: [ph.READY], NORTH: [ph.READY]})
+                            GLM: [ph.READY], NORTH: [ph.READY]})
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "passed", result
-    assert provider.models() == [DOTS, XING, NORTH]
-    assert set(provider.models()) <= {DOTS, XING, NORTH, GLM} | set(oc.REVIEWER_BACKUP)
+    assert provider.models() == [DOTS, GLM, NORTH]
+    assert set(provider.models()) <= {DOTS, XING, NORTH, GLM}
 
 
 def test_a_production_run_refuses_legacy_callers_and_legacy_fixers(tmp_path):
@@ -150,6 +192,12 @@ def test_a_production_run_refuses_legacy_callers_and_legacy_fixers(tmp_path):
         fl.load_job(_write(root, p1b_job(name="calc_bad", fixers=["nemotron"])))
 
 
+def test_a_production_job_with_any_other_budget_is_refused_at_load(tmp_path):
+    root = make_prod_root(tmp_path)
+    with pytest.raises(ValueError):
+        fl.load_job(_write(root, p1b_job(name="calc_budget", budget={"free_requests": 40, "review_usd": 0.15, "paid_usd": 0})))
+
+
 def _write(root, job):
     path = root / "_loop" / "jobs" / (job["name"] + ".json")
     path.write_text(json.dumps(job), encoding="utf-8")
@@ -157,8 +205,8 @@ def _write(root, job):
 
 
 def test_the_production_runner_names_no_legacy_model_family():
-    """Static: the P1b runner and routing modules contain no legacy model family name (Nemotron, Codex, Haiku, Groq, Sonnet)."""
-    for name in ("p1b_production.py", "p1b_routing.py"):
+    """Static: the P1b runner, routing and adapter modules contain no legacy model family name (Nemotron, Codex, Haiku, Groq, Sonnet)."""
+    for name in ("p1b_production.py", "p1b_routing.py", "openrouter_call.py"):
         text = (REPO / "scripts" / "source" / name).read_text(encoding="utf-8").lower()
         for word in ("nemotron", "codex", "haiku", "groq", "sonnet"):
             assert word not in text, f"{name} names {word}"
@@ -179,7 +227,8 @@ def test_a_named_review_prompt_never_reaches_a_production_reviewer(tmp_path):
     (root / "docs").mkdir(exist_ok=True)
     (root / "docs" / "REVIEW_PROMPT.md").write_text("LEGACY-MARKER-PROMPT do not send", encoding="utf-8")
     job = load(root, p1b_job(review_prompt="docs/REVIEW_PROMPT.md"))
-    provider = ph.Provider(script_for_dots_xing_glm())
+    provider = ph.Provider({DOTS: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+                            GLM: [ph.READY], NORTH: [ph.READY]})
     fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert provider.calls, "the reviewers were called"
     assert not any("LEGACY-MARKER-PROMPT" in json.dumps(request) for _, request in provider.calls)
@@ -188,13 +237,13 @@ def test_a_named_review_prompt_never_reaches_a_production_reviewer(tmp_path):
 LEAK = "LEAKMARKER42XYZ"       # a key the adapter itself does not know: only the runner's scrub can hide it
 
 
-class NorthRateLimited(ph.Provider):
-    """The reviewer North answers HTTP 429 with a key echoed in its error text: the status must not carry it."""
+class ReviewersRateLimited(ph.Provider):
+    """North and Xing (the backup) answer HTTP 429 with a key echoed in the error text: the status must not carry it."""
 
     def __call__(self, method, url, headers, body, timeout):
-        if method == "POST" and url.endswith("/chat/completions") and json.loads(body)["model"] == NORTH:
+        if method == "POST" and url.endswith("/chat/completions") and json.loads(body)["model"] in (NORTH, XING):
             self.http.append((method, url, headers))
-            self.calls.append((NORTH, json.loads(body)))
+            self.calls.append((json.loads(body)["model"], json.loads(body)))
             return 429, {}, json.dumps({"error": {"message": "upstream shared pool, echoed key " + LEAK}}).encode()
         return super().__call__(method, url, headers, body, timeout)
 
@@ -203,7 +252,8 @@ class NorthRateLimited(ph.Provider):
 def test_a_key_in_a_reviewer_error_is_redacted_in_status_json_and_in_the_result(tmp_path):
     root = make_prod_root(tmp_path)
     job = load(root, p1b_job())
-    provider = NorthRateLimited(script_for_dots_xing_glm())
+    provider = ReviewersRateLimited({DOTS: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+                                     GLM: [ph.READY]})
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[LEAK])
     assert result["state"] == "provider-unavailable", result
     status_text = (root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8")
