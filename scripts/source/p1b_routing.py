@@ -10,6 +10,7 @@ Injected `models` interface:
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
   paid_fits() -> True when the next GLM call's reserved worst case still fits the $0.15 job ceiling.
+  package -> {"files": {path: lines}, "spec_count": n}: the review package of the last review call (evidence_ok checks a FIX FIRST against it).
 
 Only the roster's exact IDs appear here. The owner's roster is read from openrouter_call, never copied, so there is one place to change it."""
 import json
@@ -31,8 +32,9 @@ LOCALIZED_TESTS, LOCALIZED_FILES = 3, 2
 
 Result = namedtuple("Result", "green failing failing_files systemic")
 Outcome = namedtuple("Outcome", "status reason")
-FILE_LINE = re.compile(r"[\w./\\-]+\.\w+:\d+")
-SPEC_CLAUSE = re.compile(r"\bSPEC\b[^\n]*?\d+(?:\.\d+)*")
+FILE_LINE = re.compile(r"([\w./\\-]+\.\w+):(\d+)")
+CITE = re.compile(r"\b(SPEC|CHECK) (\d+)\b")
+CHECKS = 5                          # CHECK 1 to 5 in the review package
 VERDICT = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 
 
@@ -106,9 +108,17 @@ def check_job_size(lines):
         raise JobTooLarge(f"the unit has {total} editable lines; the limit is {UNIT_LINES} per unit (the planner splits it)")
 
 
-def evidence_ok(text):
-    """A FIX FIRST counts only with a file:line and a SPEC clause."""
-    return bool(FILE_LINE.search(text)) and bool(SPEC_CLAUSE.search(text))
+def _path(raw):
+    return raw.replace("\\", "/").removeprefix("./")
+
+
+def evidence_ok(text, package):
+    """A FIX FIRST counts only with BOTH: a file:line naming a file in the package, with a line no greater than that file's length, and a
+    SPEC n (n within the spec's requirement count) or CHECK n (n from 1 to 5). `package` is {"files": {path: lines}, "spec_count": n}."""
+    files, spec_count = package["files"], package["spec_count"]
+    file_ok = any(_path(path) in files and 1 <= int(line) <= files[_path(path)] for path, line in FILE_LINE.findall(text))
+    cite_ok = any(1 <= int(num) <= (spec_count if kind == "SPEC" else CHECKS) for kind, num in CITE.findall(text))
+    return file_ok and cite_ok
 
 
 def verdict_of(text):
@@ -189,19 +199,24 @@ def _gate(result, failing, models):
 
 
 def _review_one(models, reviewer, files):
+    """(kind, text). READY. FIX: a FIX FIRST with valid evidence. UNSUPPORTED: a FIX FIRST without valid evidence, even after one re-ask; it
+    stays open, and neither a backup nor a later READY overrides it. INVALID: the call failed or the reply has no verdict line, so the backup
+    takes the slot (no re-ask). `models.package` is the package the review was given (the runner sets it on each review call)."""
     text = models.call(reviewer, "review", files)
     verdict = verdict_of(text)
     if verdict == "READY":
         return "READY", text
-    if verdict == "FIX FIRST" and evidence_ok(text):
+    if verdict is None:
+        return "INVALID", text
+    if evidence_ok(text, models.package):
         return "FIX", text
-    again = models.call(reviewer, "review-reask", files)
-    verdict = verdict_of(again)
-    if verdict == "READY":
-        return "READY", again
-    if verdict == "FIX FIRST" and evidence_ok(again):
+    try:
+        again = models.call(reviewer, "review-reask", files)
+    except ModelFailed:
+        return "UNSUPPORTED", text
+    if verdict_of(again) == "FIX FIRST" and evidence_ok(again, models.package):
         return "FIX", again
-    return "INVALID", again
+    return "UNSUPPORTED", again if again.strip() else text
 
 
 def _review(files, models, lineage, down):
@@ -212,28 +227,37 @@ def _review(files, models, lineage, down):
     except oc.ProviderUnavailable as exc:
         return Outcome("provider-unavailable", str(exc))
     used = set(panel) | set(down)
+    ready = []
     for reviewer in panel:
         try:
-            verdict, text = _review_one(models, reviewer, files)
+            kind, text = _review_one(models, reviewer, files)
         except ModelFailed:
-            verdict, text = "INVALID", ""
-        if verdict == "FIX":
-            return Outcome("review-fix", f"{reviewer}: {text.strip()}")
-        if verdict == "INVALID":
-            try:
-                backup = _gemma_for(used)
-            except oc.ProviderUnavailable as exc:
-                return Outcome("provider-unavailable", str(exc))
-            used.add(backup)
-            try:
-                verdict, text = _review_one(models, backup, files)
-            except ModelFailed:
-                verdict, text = "INVALID", ""
-            if verdict == "FIX":
-                return Outcome("review-fix", f"{backup}: {text.strip()}")
-            if verdict != "READY":
-                return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY with evidence")
-    return Outcome("passed", "every reviewer READY: " + ", ".join(panel))
+            kind, text = "INVALID", ""
+        except Blocked as exc:                    # the package is too large: no reviewer call was made for it
+            return Outcome("blocked", str(exc))
+        if kind == "READY":
+            ready.append(reviewer)
+            continue
+        if kind in ("FIX", "UNSUPPORTED"):
+            why = "" if kind == "FIX" else "FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): "
+            return Outcome("review-fix", f"{reviewer}: {why}{text.strip()}")
+        try:                                      # INVALID: the call failed or the reply had no verdict line
+            backup = _gemma_for(used)
+        except oc.ProviderUnavailable as exc:
+            return Outcome("provider-unavailable", str(exc))
+        used.add(backup)
+        try:
+            kind, text = _review_one(models, backup, files)
+        except ModelFailed:
+            kind, text = "INVALID", ""
+        except Blocked as exc:
+            return Outcome("blocked", str(exc))
+        if kind in ("FIX", "UNSUPPORTED"):
+            return Outcome("review-fix", f"{backup}: {text.strip()}")
+        if kind != "READY":
+            return Outcome("provider-unavailable", f"backup reviewer {backup} did not return READY with evidence")
+        ready.append(f"{backup} (backup for {reviewer})")
+    return Outcome("passed", "READY from: " + ", ".join(ready))
 
 
 def walk(job, models, lineage, clock=time.monotonic):

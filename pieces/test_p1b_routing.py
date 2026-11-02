@@ -14,6 +14,7 @@ DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["r
 GEMMA31, GEMMA26 = oc.REVIEWER_BACKUP
 JOB = {"files": ["pieces/calc.py", "pieces/test_calc.py"], "deadline_min": 60}
 READY = "Looks right.\n## Verdict: READY"
+PACKAGE = {"files": {"pieces/calc.py": 40, "pieces/test_calc.py": 40}, "spec_count": 5}
 FIX_NO_EVIDENCE = "This is wrong somewhere.\n## Verdict: FIX FIRST"
 FIX_WITH_EVIDENCE = "pieces/calc.py:12 breaks SPEC 3.2 (sum must include tax)\n## Verdict: FIX FIRST"
 
@@ -34,6 +35,7 @@ class FakeModels:
         self.tests_results = list(tests)
         self.paid_ok = paid_ok
         self.log, self.on_tests = [], None
+        self.package = PACKAGE                  # what the production runner sets on each review call: the files shown and the spec count
 
     def call(self, model_id, mode, files):
         self.log.append((mode, model_id))
@@ -134,9 +136,15 @@ def test_a_unit_over_1500_lines_is_refused():
     ("pieces/calc.py:12 breaks SPEC 3.2", True),
     ("pieces/calc.py:12 is wrong", False),
     ("SPEC 3.2 says tax applies", False),
+    ("pieces/missing.py:12 breaks SPEC 3", False),      # a file that is not in the package
+    ("pieces/calc.py:99 breaks SPEC 3", False),         # a line past the end of the file (40 lines)
+    ("pieces/calc.py:0 breaks SPEC 3", False),
+    ("pieces/calc.py:12 breaks SPEC 99", False),        # a spec number past the requirement count (5)
+    ("pieces/calc.py:12 breaks CHECK 7", False),        # only CHECK 1 to 5 exist
+    ("pieces/calc.py:12 breaks CHECK 2", True),
 ])
-def test_fix_first_needs_both_a_file_line_and_a_spec_clause(text, ok):
-    assert p1b.evidence_ok(text) is ok
+def test_fix_first_needs_a_valid_file_line_and_a_valid_spec_or_check(text, ok):
+    assert p1b.evidence_ok(text, PACKAGE) is ok
 
 
 def test_the_verdict_is_the_last_line():
@@ -301,16 +309,39 @@ def test_fix_first_with_evidence_comes_back_as_a_review_fix(monkeypatch):
     assert outcome.status == "review-fix" and "SPEC 3.2" in outcome.reason
 
 
-def test_fix_first_without_evidence_is_asked_once_more_then_the_backup_takes_the_slot(monkeypatch):
-    outcome, models = run({(DOTS, "write"): [full()], (XING, "review"): [FIX_NO_EVIDENCE], (XING, "review-reask"): [FIX_NO_EVIDENCE], (GEMMA31, "review"): [READY],
+def test_fix_first_without_evidence_is_asked_once_more_and_stays_open_and_no_backup_overrides_it(monkeypatch):
+    # 9. unsupported FIX FIRST, re-ask unsupported, a backup READY is queued: the job stays open, the backup is never asked
+    outcome, models = run({(DOTS, "write"): [full()], (XING, "review"): [FIX_NO_EVIDENCE], (XING, "review-reask"): [FIX_NO_EVIDENCE],
+                           (GEMMA31, "review"): [READY], (NORTH, "review"): [READY]}, [green()], enable_gemma=True, monkeypatch=monkeypatch)
+    assert outcome.status == "review-fix"
+    assert len(models.calls(XING, "review-reask")) == 1
+    assert models.calls(GEMMA31, "review") == []
+
+
+def test_fix_first_without_evidence_then_ready_on_the_re_ask_stays_open():
+    # 10. unsupported FIX FIRST, the re-ask answers READY: still open (a later READY never overrides the finding)
+    outcome, models = run({(DOTS, "write"): [full()], (XING, "review"): [FIX_NO_EVIDENCE], (XING, "review-reask"): [READY], (NORTH, "review"): [READY]},
+                          [green()])
+    assert outcome.status == "review-fix"
+    assert models.calls(NORTH, "review") == []
+
+
+def test_a_failed_reviewer_call_goes_to_the_backup_and_the_outcome_names_it(monkeypatch):
+    # 11. the reviewer's call fails, the backup returns READY: passed, and the reason names the backup
+    outcome, _ = run({(DOTS, "write"): [full()], (XING, "review"): [p1b.ModelFailed("down")], (GEMMA31, "review"): [READY], (NORTH, "review"): [READY]},
+                     [green()], enable_gemma=True, monkeypatch=monkeypatch)
+    assert outcome.status == "passed" and GEMMA31 in outcome.reason
+
+
+def test_a_reply_with_no_verdict_line_goes_to_the_backup_without_a_re_ask(monkeypatch):
+    outcome, models = run({(DOTS, "write"): [full()], (XING, "review"): ["looks fine but no verdict"], (GEMMA31, "review"): [READY],
                            (NORTH, "review"): [READY]}, [green()], enable_gemma=True, monkeypatch=monkeypatch)
     assert outcome.status == "passed"
-    assert len(models.calls(XING, "review-reask")) == 1
-    assert len(models.calls(GEMMA31, "review")) == 1
+    assert models.calls(XING, "review-reask") == []
 
 
 def test_no_enabled_backup_for_an_invalid_review_is_provider_unavailable():
-    outcome, _ = run({(DOTS, "write"): [full()], (XING, "review"): [FIX_NO_EVIDENCE], (XING, "review-reask"): [FIX_NO_EVIDENCE], (NORTH, "review"): [READY]}, [green()])
+    outcome, _ = run({(DOTS, "write"): [full()], (XING, "review"): ["no verdict line here"], (NORTH, "review"): [READY]}, [green()])
     assert outcome.status == "provider-unavailable"
 
 

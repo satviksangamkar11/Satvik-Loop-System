@@ -237,6 +237,29 @@ Five fixes from the pre-pilot bug review. Each was written as a failing test fir
 - **Suite.** Three `test_guards` checks read files that belong to the Reverse-Video project and are absent from this repository (`p3_audio_evidence.py`,
   `docs/AGENT_RULES.md`, and the real job files). They skip with that reason and run in full wherever the file exists. Nothing else was skipped.
 
+## Review package and FIX FIRST evidence (pre-pilot patch, 2026-11-02)
+
+Patch Steps 1 to 3 (`p1b_production.build_package`, `p1b_routing.evidence_ok` and `_review_one`); tests in `pieces/test_p1b_review_package.py`
+and `pieces/test_p1b_routing.py`.
+
+- **One request per reviewer, nine sections in this order.** 1 SPEC (every non-heading spec line, numbered `SPEC n`; `KNOWN:` and `ASSUMED:`
+  lines included). 2 DIFF (each job file against its original; `NEW FILE`, `DELETED`). 3 FILES (implementation files in full, with line numbers;
+  an unchanged one is marked `(unchanged)`). 4 TESTS (`[JOB TEST]` or `[LOCKED ACCEPTANCE]`, with line numbers). 5 RESULTS (every expected test
+  as passed, failed, skipped or missing, from the JUnit file of the last green run). 6 STATIC WARNINGS (advisory: a literal that job code and a
+  test both compare against; never decides a job). 7 CONTEXT (direct imports and reference files first, then callers including test callers,
+  smallest first). 8 OMITTED (every optional file left out, by name). 9 CHECKS (`CHECK 1` to `CHECK 5`, then the verdict line).
+- **Size.** Sections 1 to 6 and 9 are mandatory. If they do not fit `PACKAGE_LIMIT` (100,000 characters) the job ends `blocked` with the reason
+  "review package exceeds the prompt limit", before any reviewer call, and the originals are restored. Only CONTEXT is cut.
+- **Never read.** Anything that resolves outside the repo or into `_loop/`, `_moss/`, `secrets/`, `.git/`, a `.env` file or a key file, including
+  symlinks and Windows junctions into those places.
+- **FIX FIRST counts only with evidence.** It needs a `file:line` naming a file of the package with a line no greater than the file's length, and
+  `SPEC n` (n within the spec's requirement count) or `CHECK n` (n from 1 to 5). A FIX FIRST without it gets one re-ask from the same reviewer.
+- **Routing.** A failed call or a reply with no verdict line: the backup takes the slot, with no re-ask. A FIX FIRST still without evidence after
+  the re-ask, or a re-ask that answers READY, ends `review-open`; no backup and no later READY overrides it. A valid FIX FIRST ends `review-open`
+  (no repair loop yet). PASS needs READY from every reviewer on the panel, and the reason lists the reviewers that returned READY, a backup included.
+- **Candidate.** A stop before any write keeps no `candidate/` (it is kept only when a job file on disk differs from its original).
+- **Not done.** The repair loop for a valid FIX FIRST.
+
 ## Opus planner (P1c, 2026-11-02)
 
 `scripts/source/plan_job.py` plans one job with a single Opus call. Nothing calls it live yet: the tests use `pieces/fake_claude.py`.

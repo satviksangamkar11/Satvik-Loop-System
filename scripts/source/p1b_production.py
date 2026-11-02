@@ -4,8 +4,16 @@ decide. This module writes and restores the job files and records the evidence. 
 
 Pre-pilot review (2026-11-02): a fresh writer never receives a previous attempt's pytest output (the output goes to the job history instead);
 every result that is not PASS puts the originals back and keeps the authorized candidate for inspection; the job is marked `running` before its
-first write, so a killed worker is restored by the next launch (fix_loop._prepare_job_folder)."""
+first write, so a killed worker is restored by the next launch (fix_loop._prepare_job_folder).
+
+Review package (pre-pilot patch, Step 1): each reviewer gets ONE request with nine sections in this order: SPEC (requirement lines numbered),
+DIFF, FILES, TESTS, RESULTS (from the JUnit file of the last green run), STATIC WARNINGS (advisory only), CONTEXT, OMITTED, CHECKS. Sections 1 to 6
+and 9 are mandatory: if they do not fit PACKAGE_LIMIT the job is blocked before any reviewer call. Only CONTEXT is cut to fit. Excluded paths
+(_loop, _moss, secrets, .git, .env, keys, and anything that resolves outside the repo) are never read."""
+import ast
+import difflib
 import json
+import os
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -13,13 +21,29 @@ from pathlib import Path
 import openrouter_call as oc
 import p0_gates as gates
 import p1b_routing as p1b
+import sandbox_runner as sr
 
 ROLE_BY_MODEL = {p1b.DOTS: "writer_a", p1b.XING: "writer_b", p1b.NORTH: "reviewer", p1b.GLM: "repair"}
+PACKAGE_LIMIT = 100000              # characters: the whole review request (the owner's prompt limit for one reviewer call)
+EXCLUDED_DIRS = set(gates.NEVER_INCLUDED) | set(sr.EXCLUDED_NAMES)
+EXCLUDED_SUFFIXES = tuple(sr.EXCLUDED_SUFFIXES)
+EXCLUDED_PREFIXES = (".env", "id_rsa", "id_ed25519")
+CHECK_LINES = ("CHECK 1: every spec clause (SPEC n) has code and a test.",
+               "CHECK 2: no code special-cases test values.",
+               "CHECK 3: edge cases are handled.",
+               "CHECK 4: nothing changed outside the spec.",
+               "CHECK 5: no security or data-loss risk.")
+VERDICT_LINE = ("Then the verdict line: `## Verdict: READY` or `## Verdict: FIX FIRST`. A FIX FIRST must name file:line of a file in this package "
+                "and the SPEC n or CHECK n it breaks; without both it is not counted.")
+TRIVIAL = (-1, 0, 1, 2)
+CONTEXT_HEAD = "## 7. CONTEXT\n"
+OMITTED_HEAD = "## 8. OMITTED (optional files left out for the size limit, and excluded references)\n"
 WRITER_SYSTEM = ("You write the files of one job. Follow the spec exactly. Reply with FILE blocks only: for each file you were given, "
                  "`FILE: <path>` then the complete file in a fenced block, nothing else. Never write a reviewer verdict line.")
 REVIEW_SYSTEM = ("REVIEW TASK. Review the files against the spec. End your reply with exactly one line: `## Verdict: READY` or "
-                 "`## Verdict: FIX FIRST`. A FIX FIRST must name file:line and the SPEC clause it breaks; without both it is not counted.")
-REASK = "Your FIX FIRST had no file:line and no SPEC clause, so it is not counted. Reply again with that evidence, or with READY."
+                 "`## Verdict: FIX FIRST`. A FIX FIRST must name file:line (a file of this package) and the SPEC n or CHECK n it breaks; "
+                 "without both it is not counted.")
+REASK = ("Your FIX FIRST had no valid file:line and SPEC n or CHECK n, so it is not counted. Reply again with that evidence, or with READY.")
 
 
 class AcceptanceTampered(Exception):
@@ -60,6 +84,264 @@ def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _produced(root, files, originals):
+    """True when a candidate exists: some job file on disk differs from its original. A stop before any write has no candidate."""
+    for rel in files:
+        path = Path(root) / rel
+        now = path.read_text(encoding="utf-8") if path.is_file() else None
+        if now != (originals or {}).get(rel):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------- review package (Step 1)
+
+def readable(root, rel):
+    """The path of a repo file, or None when it resolves outside the repo, into an excluded folder, or is an excluded file (.env, keys)."""
+    base = Path(root).resolve()
+    try:
+        path = (base / rel).resolve()
+        parts = path.relative_to(base).parts
+    except (OSError, ValueError):
+        return None
+    if not path.is_file() or any(part in EXCLUDED_DIRS for part in parts):
+        return None
+    if path.name.startswith(EXCLUDED_PREFIXES) or path.name.endswith(EXCLUDED_SUFFIXES):
+        return None
+    return path
+
+
+def _read(root, rel):
+    path = readable(root, rel)
+    return None if path is None else path.read_text(encoding="utf-8", errors="replace")
+
+
+def numbered(text):
+    return "\n".join(f"{n:4d} | {line}" for n, line in enumerate(text.splitlines(), 1))
+
+
+def spec_requirements(spec_text):
+    """The requirement lines of the spec: every non-blank line that is not a markdown heading (KNOWN: and ASSUMED: lines included)."""
+    return [line.strip() for line in spec_text.splitlines() if line.strip() and not line.strip().startswith("#")]
+
+
+def diff_block(rel, before, now):
+    if before is None and now is None:
+        return f"{rel}: absent before and after (no change)"
+    if before == now:
+        return f"{rel}: (no change)"
+    head = f"{rel}: NEW FILE" if before is None else f"{rel}: DELETED" if now is None else f"{rel}: changed"
+    body = difflib.unified_diff((before or "").splitlines(), (now or "").splitlines(), fromfile=f"original/{rel}", tofile=f"current/{rel}",
+                                lineterm="")
+    return head + "\n" + "\n".join(body)
+
+
+def results_section(junit, expected):
+    """One line per expected test id: passed, failed, skipped or missing, from the JUnit XML of the last green run. `expected` is
+    gates.expected_test_ids(...): rel -> set of ids, or None when the file cannot be read."""
+    try:
+        details = gates._case_details(junit) if junit else []
+    except ET.ParseError:
+        details = []
+    seen = {}
+    for file, tid, outcome, _kind in details:
+        seen[(file, gates._base(tid))] = "failed" if outcome == "error" else outcome
+    lines = []
+    for rel in sorted(expected):
+        ids = expected[rel]
+        if ids is None:
+            lines.append(f"{rel}: unreadable, so its tests cannot be listed")
+            continue
+        lines.extend(f"{rel}::{tid}: {seen.get((rel, tid), 'missing')}" for tid in sorted(ids))
+    return "\n".join(lines) or "(no expected tests)"
+
+
+def _parse(text):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return ast.parse("")
+
+
+def _literal(node):
+    if isinstance(node, ast.Constant) and not isinstance(node.value, bool):
+        value = node.value
+        if isinstance(value, str) and len(value.strip()) >= 3:
+            return value
+        if isinstance(value, (int, float)) and value not in TRIVIAL:
+            return value
+    return None
+
+
+def _compared(tree):
+    """(value, line) for each non-trivial literal that a comparison (==, in, ...) or a regex match is made against."""
+    out = []
+    for node in ast.walk(tree):
+        sides = []
+        if isinstance(node, ast.Compare):
+            sides = [node.left, *node.comparators]
+        elif isinstance(node, ast.Call) and node.args:
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in ("match", "search", "fullmatch"):
+                sides = [node.args[0]]
+        for side in sides:
+            for item in (side.elts if isinstance(side, (ast.List, ast.Tuple, ast.Set)) else [side]):
+                value = _literal(item)
+                if value is not None:
+                    out.append((value, node.lineno))
+    return out
+
+
+def static_warnings(test_texts, impl_texts):
+    """Advisory only: a job's code compares against a literal that one of its tests compares against. Never decides a job on its own."""
+    seen = {}
+    for rel, text in test_texts.items():
+        for value, line in _compared(_parse(text)):
+            seen.setdefault(repr(value), f"{rel}:{line}")
+    out = []
+    for rel, text in impl_texts.items():
+        for value, line in _compared(_parse(text)):
+            key = repr(value)
+            if key in seen:
+                out.append(f"{rel}:{line} compares against {key}, which the test {seen[key]} also compares against")
+    return out
+
+
+def _module(rel):
+    return rel[:-3].replace("/", ".") if rel.endswith(".py") else None
+
+
+def _imported(text):
+    """Module names a Python file imports, and module.name for each from-import name (so `from pieces import calc` names pieces.calc)."""
+    out = set()
+    for node in ast.walk(_parse(text)):
+        if isinstance(node, ast.Import):
+            out.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            out.add(node.module)
+            out.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return out
+
+
+def _repo_python_files(root):
+    base = Path(root).resolve()
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_DIRS)
+        for name in sorted(filenames):
+            if name.endswith(".py"):
+                yield Path(dirpath, name).relative_to(base).as_posix()
+
+
+def _scrubbed(text, scrub_keys):
+    for key in scrub_keys:
+        text = text.replace(key, "[REDACTED]")
+    return text
+
+
+def build_package(root, job, originals, junit, scrub_keys=(), limit=None):
+    """(text, info): the nine-section review package for one review call. info = {"files": {path: lines} for every file shown,
+    "spec_count": n, "kept": [context files], "omitted": [context files left out by name]}. Raises p1b.Blocked when the mandatory sections
+    (1 to 6 and 9) do not fit in `limit` characters: no reviewer is called for it."""
+    limit = PACKAGE_LIMIT if limit is None else limit
+    root = Path(root)
+    tests = list(job["tests"])
+    locked = list(job.get("acceptance_tests") or []) + list(job.get("regression") or [])
+    impl = [rel for rel in job["files"] if rel not in tests]
+    job_files = set(job["files"]) | set(tests) | set(locked)
+    shown = {}
+
+    reqs = spec_requirements(_read(root, job["spec"]) or "")
+    sections = {1: "## 1. SPEC\n" + ("\n".join(f"SPEC {n}: {line}" for n, line in enumerate(reqs, 1)) or "(no requirement lines)")}
+    sections[2] = "## 2. DIFF\n" + "\n\n".join(diff_block(rel, originals.get(rel), _read(root, rel)) for rel in job["files"])
+
+    blocks = []
+    for rel in impl:
+        now = _read(root, rel)
+        if now is None:
+            blocks.append(f"{rel}: (missing)")
+            continue
+        shown[rel] = len(now.splitlines())
+        blocks.append(f"{rel}" + (" (unchanged)" if now == originals.get(rel) else "") + "\n" + numbered(now))
+    sections[3] = "## 3. FILES\n" + ("\n\n".join(blocks) or "(none)")
+
+    blocks = []
+    for label, rels in (("[JOB TEST]", tests), ("[LOCKED ACCEPTANCE]", locked)):
+        for rel in rels:
+            now = _read(root, rel)
+            if now is None:
+                blocks.append(f"{rel} {label}: (missing)")
+                continue
+            shown[rel] = len(now.splitlines())
+            blocks.append(f"{rel} {label}\n{numbered(now)}")
+    sections[4] = "## 4. TESTS\n" + ("\n\n".join(blocks) or "(none)")
+
+    targets = sorted(set(tests) | set(locked))
+    sections[5] = "## 5. RESULTS (JUnit file of the last green run)\n" + results_section(junit, gates.expected_test_ids(root, targets))
+
+    test_texts = {rel: _read(root, rel) for rel in targets}
+    impl_texts = {rel: _read(root, rel) for rel in impl}
+    warnings = static_warnings({rel: t for rel, t in test_texts.items() if t is not None},
+                               {rel: t for rel, t in impl_texts.items() if t is not None})
+    sections[6] = "## 6. STATIC WARNINGS (advisory: these never decide a job)\n" + ("\n".join(warnings) or "(none)")
+    sections[9] = "## 9. CHECKS\n" + "\n".join(CHECK_LINES) + "\n" + VERDICT_LINE
+
+    mandatory = [sections[k] for k in (1, 2, 3, 4, 5, 6, 9)]
+    if len("\n\n".join(mandatory)) > limit:
+        raise p1b.Blocked("review package exceeds the prompt limit")
+
+    # CONTEXT: direct imports of the job's files and the job's reference files first, then callers (test callers included); smallest first
+    # within each group. The rest is left out and named in OMITTED.
+    imports, seen = {}, set(job_files)
+    for rel in sorted(job_files):
+        text = _read(root, rel)
+        for mod in sorted(_imported(text) if text else set()):
+            for cand in (mod.replace(".", "/") + ".py", mod.replace(".", "/") + "/__init__.py"):
+                if cand not in seen and readable(root, cand) is not None:
+                    imports[cand] = _read(root, cand)
+                    seen.add(cand)
+    references = {}
+    excluded = []
+    for rel in job.get("reference") or []:
+        text = _read(root, rel)
+        if text is None:
+            excluded.append(rel)
+        else:
+            references[rel] = text
+    job_modules = {_module(rel) for rel in job_files} - {None}
+    callers = {}
+    for rel in _repo_python_files(root):
+        if rel in seen or rel in references:
+            continue
+        text = _read(root, rel)
+        if text is not None and _imported(text) & job_modules:
+            callers[rel] = text
+
+    def ordered(group, role):
+        return sorted(((rel, text, role) for rel, text in group.items()), key=lambda item: (len(item[1]), item[0]))
+
+    candidates = ordered(imports, "import") + ordered(references, "reference") + ordered(callers, "caller")
+    names = [rel for rel, _, _ in candidates] + excluded           # OMITTED can name at most these
+    reserve = len(CONTEXT_HEAD) + len(OMITTED_HEAD) + len("\n".join(names) or "(none)") + len("\n\n".join(mandatory)) + 16
+    budget = max(0, limit - reserve)
+    kept, omitted, used = [], list(excluded), 0
+    for rel, text, role in candidates:
+        block = f"{rel} ({role})\n{numbered(text)}"
+        if used + len(block) + 2 <= budget:
+            kept.append((rel, block))
+            used += len(block) + 2
+            shown[rel] = len(text.splitlines())
+        else:
+            omitted.append(rel)
+    sections[7] = CONTEXT_HEAD + ("\n\n".join(block for _, block in kept) or "(none)")
+    sections[8] = OMITTED_HEAD + ("\n".join(omitted) or "(none)")
+
+    text = "\n\n".join(sections[k] for k in range(1, 10))
+    if len(text) > limit:                         # cannot happen while the reserve above holds; refuse rather than send an oversize request
+        raise p1b.Blocked("review package exceeds the prompt limit")
+    info = {"files": shown, "spec_count": len(reqs), "kept": [rel for rel, _ in kept], "omitted": omitted}
+    return _scrubbed(text, scrub_keys), info
+
+
 class Production:
     """The models object walk() drives: calls through openrouter_call, writes and restores the job files, runs the sandbox."""
 
@@ -78,7 +360,9 @@ class Production:
         self.evidence_output = ""       # the output of the last test run, kept for the diagnostic
         self.test_runs = 0
         self.tested_hash = None         # hash of the job files at the last green run
+        self.green_junit = None         # the JUnit XML of the last green run: the RESULTS section of the review package
         self.reviewed_hashes = []       # hash of the job files at each review call
+        self.package = {"files": {}, "spec_count": 0}   # what the last review was given: read by p1b_routing.evidence_ok
 
     # ---------------------------------------------------------------- model calls
 
@@ -88,11 +372,12 @@ class Production:
             reply = self._parse(text)
             self._step(model, mode, f"{len(reply)} file(s) returned")
             return reply
-        user = self._review_user() + (("\n" + REASK) if mode == "review-reask" else "")
+        user = self._review_package(reask=(mode == "review-reask"))
         text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", backup=model in oc.REVIEWER_BACKUP)
         self._check_locked()
         self.reviewed_hashes.append(gates.combined_hash(self.root, self.files))
-        self._step(model, mode, text.strip().splitlines()[-1])
+        lines = text.strip().splitlines()
+        self._step(model, mode, lines[-1] if lines else "(empty reply)")
         return text
 
     def _ask(self, model, system, user, kind, backup=False):
@@ -124,12 +409,12 @@ class Production:
             parts.append("Fix exactly the problems shown above. Change nothing else.")
         return "\n\n".join(parts)
 
-    def _review_user(self):
-        parts = [f"SPEC:\n{self.spec}"]
-        for rel in self.files:
-            path = self.root / rel
-            parts.append(f"{rel}:\n{path.read_text(encoding='utf-8')}" if path.is_file() else f"{rel}: (missing)")
-        return "\n\n".join(parts)
+    def _review_package(self, reask=False):
+        """The one review request for this call: the nine-section package, with the re-ask note when this is the re-ask."""
+        limit = PACKAGE_LIMIT - (len(REASK) + 2 if reask else 0)
+        text, info = build_package(self.root, self.job, self.originals, self.green_junit, self.scrub_keys, limit=limit)
+        self.package = info
+        return text + ("\n\n" + REASK if reask else "")
 
     # ---------------------------------------------------------------- files and tests
 
@@ -157,6 +442,7 @@ class Production:
         green = not problems
         if green:
             self.tested_hash = gates.combined_hash(self.root, self.files)
+            self.green_junit = result.junit
         self._step("sandbox", "tests", "green" if green else f"red: {len(failing)} failing")
         systemic = result.timed_out or result.junit is None or (not green and not failing)
         return p1b.Result(green, frozenset(failing), frozenset(t.split("::")[0] for t in failing), systemic)
@@ -191,7 +477,8 @@ class Production:
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
         content_problem, scrub_keys=()):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
-    PASS leaves the originals in the checkout, the authorized candidate under candidate/, and a status with its reason."""
+    PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
+    with its reason."""
     root, files = Path(root), list(job["files"])
     status_dir_job.mkdir(parents=True, exist_ok=True)
     history = status_dir_job / "history"
@@ -244,8 +531,8 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
         state, verdict, tests_passed = "integrity-mismatch", "unavailable", True
     elif outcome.status in ("escalate", "blocked", "provider-unavailable", "deadline", "acceptance-tampered", "exception"):
         state = outcome.status
-    if state != "passed":                           # nothing that did not pass stays in the checkout: keep the candidate, then restore
-        if models is not None:
+    if state != "passed":                           # nothing that did not pass stays in the checkout: keep the candidate if one was produced, then restore
+        if _produced(root, job["files"], originals):
             _snapshot(root, job["files"], status_dir_job / "candidate")
         restore_files(root, originals)
     if state not in ("passed", "review-open"):
@@ -267,9 +554,3 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     print(f"{name}: {state}")
     return {"name": name, "state": state, "round": len(steps), "tests_passed": tests_passed, "review_verdict": verdict, "rounds": steps,
             "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "coder_budget": None, "evidence": evidence, "updated": status["updated"]}
-
-
-def _scrubbed(text, scrub_keys):
-    for key in scrub_keys:
-        text = text.replace(key, "[REDACTED]")
-    return text
