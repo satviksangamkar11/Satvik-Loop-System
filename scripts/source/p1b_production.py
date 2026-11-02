@@ -561,7 +561,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     except oc.OpenRouterError as exc:
         return _finish(job, root, status_dir_job, evidence, scrub_keys, None, p1b.Outcome("provider-unavailable", f"key state: {exc}"), None,
                        originals)
-    (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
+    (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys, repair_ask=repair_ask)
     lineage = p1b.Lineage()
@@ -632,7 +632,7 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
             coder_calls += 1
         elif step["mode"] in ("review", "review-reask"):
             reviewer_calls[step["model"]] = reviewer_calls.get(step["model"], 0) + 1
-    status = {"name": name, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
+    status = {"name": name, "schema_version": 1, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
               "reason": outcome.reason, "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved

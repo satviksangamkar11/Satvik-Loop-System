@@ -248,11 +248,8 @@ def test_unsupported_model_fields_are_refused_not_ignored(tmp_path):
         bad = {**job, "name": "bad", field: "some/other-model"}
         path = root / "_loop" / "jobs" / "bad.json"
         path.write_text(json.dumps(bad), encoding="utf-8")
-        with pytest.raises(ValueError, match="not configurable"):
+        with pytest.raises(ValueError, match=field):          # the job schema has no such field (2026-11-02: model IDs live in config/roster.json)
             fl.load_job(path)
-    ok = {**job, "name": "ok", "coder_model": "nvidia/nemotron-3-ultra-550b-a55b"}
-    (root / "_loop" / "jobs" / "ok.json").write_text(json.dumps(ok), encoding="utf-8")
-    assert fl.load_job(root / "_loop" / "jobs" / "ok.json")["coder_model"] == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_there_is_no_unreachable_review_missing_state():

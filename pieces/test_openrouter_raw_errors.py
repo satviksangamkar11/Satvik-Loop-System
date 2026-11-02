@@ -14,8 +14,7 @@ import openrouter_call as oc  # noqa: E402
 FREE_KEY = "sk-or-v1-FREETEST000000000000"
 PAID_KEY = "sk-or-v1-PAIDTEST000000000000"
 DOTS = "dots-studio/dots-3-note-preview:free"
-GEMMA31 = "google/gemma-4-31b-it:free"
-GEMMA26 = "google/gemma-4-26b-a4b-it:free"
+NORTH = "cohere/north-mini-code:free"
 
 
 class Clock:
@@ -128,16 +127,17 @@ def test_a_dropped_model_error_carries_the_raw_status_and_text(tmp_path):
 def test_probe_keeps_the_failed_attempts_of_a_dropped_model_in_full(tmp_path):
     fake = Fake()
     fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
-    fake.on("/chat/completions", ok("OK"), ok("OK"), ok("OK"),
-            fail(429, "Provider returned error"), fail(429, "Provider returned error"),
-            fail(429, "Provider returned error"), fail(429, "Provider returned error"))
+    # writer_a and writer_b each fail twice (the breaker drops them), then reviewer_b answers
+    fake.on("/chat/completions", fail(429, "Provider returned error"), fail(429, "Provider returned error"),
+            fail(429, "Provider returned error"), fail(429, "Provider returned error"), ok("OK"))
     built, _ = client(tmp_path, fake)
     results = oc.probe(built, str(tmp_path / "probe.json"))["probes"]
-    gemma = results[GEMMA31]
-    assert gemma["ok"] is False and "HTTP 429" in gemma["error"]
-    assert [f["status"] for f in gemma["failed_attempts"]] == [429, 429]
-    assert all(f["message"].startswith("Provider returned error") for f in gemma["failed_attempts"])
-    assert results[GEMMA26]["ok"] is False and len(results[GEMMA26]["failed_attempts"]) == 2
+    dots = results["writer_a"]
+    assert dots["ok"] is False and "HTTP 429" in dots["error"]
+    assert [f["status"] for f in dots["failed_attempts"]] == [429, 429]
+    assert all(f["message"].startswith("Provider returned error") for f in dots["failed_attempts"])
+    assert results["writer_b"]["ok"] is False and len(results["writer_b"]["failed_attempts"]) == 2
+    assert results["reviewer_b"]["ok"] is True
 
 
 def test_probe_can_be_limited_to_named_models(tmp_path):
@@ -145,9 +145,9 @@ def test_probe_can_be_limited_to_named_models(tmp_path):
     fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
     fake.on("/chat/completions", ok("OK"), ok("OK"))
     built, _ = client(tmp_path, fake)
-    summary = oc.probe(built, None, names=[GEMMA31, GEMMA26])
-    assert [p["body"]["model"] for p in fake.posts()] == [GEMMA31, GEMMA26]
-    assert set(summary["probes"]) == {GEMMA31, GEMMA26}
+    summary = oc.probe(built, None, names=["writer_a", "reviewer_b"])
+    assert [p["body"]["model"] for p in fake.posts()] == [DOTS, NORTH]
+    assert set(summary["probes"]) == {"writer_a", "reviewer_b"}
 
 
 def test_cli_models_option_runs_only_the_named_models(tmp_path, monkeypatch):
@@ -156,6 +156,6 @@ def test_cli_models_option_runs_only_the_named_models(tmp_path, monkeypatch):
     fake.on("/chat/completions", ok("OK"))
     monkeypatch.setattr(oc, "default_transport", fake)
     monkeypatch.setattr(oc, "load_keys", lambda: {"free": FREE_KEY, "paid": PAID_KEY})
-    code = oc.main(["probe", "--out", str(tmp_path / "gemma.json"), "--ledger", str(tmp_path / "ledger"), "--models", GEMMA31])
+    code = oc.main(["probe", "--out", str(tmp_path / "probe.json"), "--ledger", str(tmp_path / "ledger"), "--models", "reviewer_b"])
     assert code == 0
-    assert [p["body"]["model"] for p in fake.posts()] == [GEMMA31]
+    assert [p["body"]["model"] for p in fake.posts()] == [NORTH]

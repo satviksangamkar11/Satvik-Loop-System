@@ -35,8 +35,6 @@ JOB_SCHEMA = {
         "review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "groq_review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
-        "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
-        "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
         # a list for legacy jobs; the string "by_lineage" for production (P1b), checked in load_job / p1b_routing.check_production_job
         "reviewers": {"type": ["array", "string"], "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]},
                       "default": ["lightning", "minimax", "codex", "haiku"]},
@@ -97,15 +95,10 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review_files", None)
     job.setdefault("groq_review_files", None)
     job.setdefault("review_prompt", None if job.get("profile") == "production" else "docs/REVIEW_PROMPT.md")   # production: its own prompt only (never the legacy file)
-    job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
-    job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
-    if job["coder_model"] != "nvidia/nemotron-3-ultra-550b-a55b" or job["reviewer_model"] != "nvidia/nemotron-3.5-lightning-30b-a3b":
-        raise ValueError("coder_model and reviewer_model are not configurable: the loop always uses nemotron-3-ultra (coder) and nemotron-3.5-lightning (Lightning reviewer)")
     production = job.get("profile") == "production"
     if production:                                   # P1b: roles only (writer_a, writer_b); reviewers by lineage; the production checks below
         _p1b().check_production_job(job)
     else:
-        job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
         job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
         job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
         if not isinstance(job["reviewers"], list):
@@ -842,6 +835,13 @@ def run_job(
     openrouter=None,
 ) -> dict:
     production = job.get("profile") == "production"
+    roster_profile = _p1b().oc.PROFILE                      # SATVIK_PROFILE: the roster the adapter loaded (owner 2026-11-02)
+    if production and roster_profile != "production":       # a production job runs only on the production roster: refused before any call or write
+        reason = f"profile-mismatch: job={job.get('profile')} roster={roster_profile}"
+        print(f"{job['name']}: {reason}")
+        return {"name": job["name"], "state": "profile-mismatch", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [],
+                "coder_calls": 0, "reviewer_calls": {}, "coder_budget": 0, "problems": [reason], "evidence": {},
+                "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     if production and pytest_runner is not None:
         raise ValueError("a production job runs pytest only in the sandbox; pytest_runner cannot be replaced (pass sandbox= in tests)")
     if production and (caller is not None or callers is not None or reviewer is not None):
@@ -901,7 +901,7 @@ def run_job(
     if spec_problems:                                          # owner 2026-10-30: no coder call is made on an invalid spec
         nl = chr(10)
         (status_dir_job / "INVALID_SPEC.md").write_text("# INVALID_SPEC" + nl + nl + nl.join(f"- {p}" for p in spec_problems) + nl, encoding="utf-8")
-        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": "invalid-spec", "problems": spec_problems, "coder_calls": 0}, indent=2))
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "schema_version": 1, "state": "invalid-spec", "problems": spec_problems, "coder_calls": 0}, indent=2))
         print(f"{name}: invalid-spec {spec_problems}")
         return {"name": name, "state": "invalid-spec", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0, "reviewer_calls": {},
                 "coder_budget": 0, "problems": spec_problems, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
@@ -919,7 +919,7 @@ def run_job(
     def _early_stop(state_: str, filename: str, title: str, lines: list) -> dict:
         nl = chr(10)
         (status_dir_job / filename).write_text(f"# {title}" + nl + nl + nl.join(f"- {x}" for x in lines) + nl, encoding="utf-8")
-        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": state_, "problems": lines, "coder_calls": 0}, indent=2))
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "schema_version": 1, "state": state_, "problems": lines, "coder_calls": 0}, indent=2))
         print(f"{name}: {state_} {lines}")
         return {"name": name, "state": state_, "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0,
                 "reviewer_calls": {}, "coder_budget": 0, "problems": lines, "evidence": {},
@@ -999,6 +999,7 @@ def run_job(
         nonlocal state, review_verdict
         status = {
             "name": name,
+            "schema_version": 1,
             "state": state,
             "round": round_no,
             "tests_passed": tests_passed_,
