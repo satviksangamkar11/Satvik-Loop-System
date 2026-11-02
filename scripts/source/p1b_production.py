@@ -557,7 +557,7 @@ class Production:
         blocks = []
         for tid in test_ids:
             message = messages.get(tid, "(no assertion message in the last run)")
-            blocks.append(f"## {tid}\n- Assertion message: `{message}`\n- SPEC line it checks: {_spec_line(self.spec, tid, message)}\n")
+            blocks.append(f"## {tid}\n- Assertion message: `{message}`\n- likely SPEC line (guessed by word overlap): {_spec_line(self.spec, tid, message)}\n")
         text = ("# CONTRACT CHECK\n\nDots and Xing both fail the same locked acceptance test, and their code differs. The spec and the locked "
                 "acceptance test disagree or the spec is unclear. The job is escalated.\n\n" + "\n".join(blocks))
         self.job_dir.mkdir(parents=True, exist_ok=True)
@@ -581,7 +581,7 @@ def _messages(junit, ids):
         bad = next((c for c in case if c.tag in ("failure", "error")), None)
         full_id = f"{file}::{tid}" if file else tid
         if bad is not None and full_id in ids:
-            out[full_id] = " ".join(((bad.get("message") or bad.text or "").split()))[:300]
+            out[full_id] = bad.get("message") or bad.text or ""
     return out
 
 
