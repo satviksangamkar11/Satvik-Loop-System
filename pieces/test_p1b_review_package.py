@@ -4,6 +4,7 @@ Covers: the nine-section review package (order, SPEC numbering, DIFF, FILES, TES
 STATIC WARNINGS, CONTEXT, OMITTED, CHECKS); the prompt-limit stop; the excluded-path rules (_loop, _moss, secrets, .git, .env, symlinks out of the
 repo); a planted special-case caught by a reviewer that reads only the package; a static warning that never fails a job; and a provider failure
 before the first write. No Docker, no network: a scripted sandbox and the scripted OpenRouter transport (prod_harness)."""
+import json
 import os
 import subprocess
 import sys
@@ -63,8 +64,12 @@ class SpecialSandbox:
 class DownClient:
     """Every OpenRouter call is refused as a provider outage, before any write."""
     budget = oc.JobBudget(free_requests=40, paid_usd=0)
+    retry_log = []
 
     def begin_job(self):
+        return None
+
+    def set_job_deadline(self, seconds):
         return None
 
     def call(self, name, system, user, **kwargs):
@@ -268,3 +273,62 @@ def test_a_provider_failure_before_the_first_write_is_a_clean_stop(tmp_path):
     assert (root / "_loop" / "calc" / "status.json").is_file()
     assert (root / "_loop" / "calc" / "ESCALATE.md").is_file()
     assert not (root / "_loop" / "calc" / "candidate").exists()
+
+
+# ---------------------------------------------------------------- 15. a reviewer rate-limited upstream: the 429 window (patch 2026-11-02)
+
+class Rate429Transport:
+    """Wraps the scripted provider: the first `limited` POSTs to the reviewer get an upstream 429; every other request goes to the provider."""
+
+    def __init__(self, provider, limited):
+        self.provider, self.left, self.reviewer_posts = provider, limited, 0
+
+    def __call__(self, method, url, headers, body, timeout):
+        if method == "POST" and json.loads(body)["model"] == NORTH:
+            self.reviewer_posts += 1
+            if self.left > 0:
+                self.left -= 1
+                error = {"error": {"code": 429, "message": "Provider returned error", "metadata": {"raw": "rate-limited upstream"}}}
+                return 429, {}, json.dumps(error).encode("utf-8")
+        return self.provider(method, url, headers, body, timeout)
+
+
+def window_client(tmp_path, transport):
+    """The real adapter with a fake transport and a recorded (instant) sleep."""
+    sleeps = []
+    built = oc.OpenRouter({"free": ph.FREE_KEY, "paid": ph.PAID_KEY}, tmp_path / "ledger", transport=transport, sleep=sleeps.append,
+                          rand=lambda: 0.0)
+    return built, sleeps
+
+
+def test_reviewer_rate_limited_upstream_three_times_then_ready_passes_and_the_status_lists_the_retries(tmp_path):
+    provider = ph.Provider({
+        DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+        XING: [ph.READY],
+        NORTH: [ph.READY],
+    })
+    transport = Rate429Transport(provider, limited=3)
+    client, sleeps = window_client(tmp_path, transport)
+    root, result = run_e2e(tmp_path, client=client)
+    assert result["state"] == "passed", result
+    assert sleeps == [15.0, 30.0, 60.0] and transport.reviewer_posts == 4
+    status = json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
+    retries = status["evidence"]["openrouter_retries"]
+    assert [r["wait_s"] for r in retries] == [15.0, 30.0, 60.0]
+    assert all(r["model"] == NORTH for r in retries)
+
+
+def test_reviewer_rate_limited_on_every_call_is_provider_unavailable_with_the_originals_restored(tmp_path):
+    provider = ph.Provider({
+        DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+        XING: [ph.READY],
+    })
+    transport = Rate429Transport(provider, limited=99)
+    client, sleeps = window_client(tmp_path, transport)
+    root, result = run_e2e(tmp_path, client=client)
+    assert result["state"] == "provider-unavailable", result
+    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
+    assert sleeps == [15.0, 30.0, 60.0, 120.0, 180.0] and transport.reviewer_posts == 6
+    status = json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
+    assert "rate-limited upstream" in status["reason"]
+    assert len(status["evidence"]["openrouter_retries"]) == 5

@@ -303,6 +303,14 @@ Every reply is checked before it counts, and no failure falls back to another mo
 - **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
   Two provider errors in a row drop the model for the job. 401 and 402 block the account and are never retried. 403 is a refusal of that
   model only: the model is dropped for the job, and the other roles keep working (`ModelDenied`).
+- **Reviewer 429 window (patch, 2026-11-02).** An upstream 429 on a reviewer call (the provider is busy; a daily-limit 429 still stops at once,
+  and a per-minute 429 keeps its wait) is retried on its own schedule: 15, 30, 60, 120, 180 s, plus up to 1 s of jitter, or `Retry-After` when
+  that is longer. At most 5 retries (about 7 minutes). The window ends before the 600 s review timeout (counted from the call's start): if the
+  next wait would pass it, the retries stop. Upstream 429s inside the window do not count toward the breaker; the model is dropped only when the
+  window is used up. Before each retry the job's 40 free requests and the account's daily count must leave room, and no retry starts after the
+  unit deadline (`set_job_deadline`, set by `p1b_production.run` from `deadline_min`). Every retry is logged in the job's status
+  (`evidence.openrouter_retries`: model, attempt, wait in seconds, scrubbed error). Writers keep the old schedule (2 s, 8 s, 30 s): the breaker
+  drops a writer after two errors in a row, so its 30 s step is never reached.
 - **Private code.** Blocked. `APPROVED_PRIVATE` is empty because no non-training route has been approved.
 - **Keys.** `OPENROUTER_FREE_KEY` and `OPENROUTER_PAID_KEY` from the environment, or `secrets/openrouter_free_key.txt` and
   `secrets/openrouter_paid_key.txt`. Keys are never printed or written; error text is redacted.
