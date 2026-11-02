@@ -1,0 +1,87 @@
+{
+  "key_after": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 2,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 0
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 2,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 0
+    }
+  },
+  "key_before": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 2,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 0
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 2,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 0
+    }
+  },
+  "probed_at": "2026-11-02T03:55:02Z",
+  "probes": {
+    "deepseek": {
+      "attempts": 1,
+      "cost_usd": 6.648e-06,
+      "endpoint": "sail-research",
+      "finish": "stop",
+      "latency_s": 1.581,
+      "max_tokens": 256,
+      "model": "deepseek/deepseek-v4.1-flash-1017",
+      "ok": true,
+      "provider": "Sail Research",
+      "reply": "OK",
+      "status": 200,
+      "usage": {
+        "completion_tokens": 12,
+        "is_byok": false,
+        "prompt_tokens": 48,
+        "total_tokens": 60
+      }
+    },
+    "glm": {
+      "error": "z-ai/glm-5.3-flash:free: HTTP 404: This model is unavailable for free. The paid version is available now - use this slug instead: z-ai/glm-5.3-flash {}",
+      "model": "z-ai/glm-5.3-flash:free",
+      "ok": false
+    },
+    "inkling": {
+      "error": "thinkingmachines/inkling-small:free: HTTP 403: thinkingmachines/inkling-small:free is only available on agentic harnesses. Try plugging it into a coding agent or productivity app listed on https://openrouter.ai/apps {\"failed_routing_step\": \"Gate F",
+      "model": "thinkingmachines/inkling-small:free",
+      "ok": false
+    },
+    "qwen": {
+      "error": "qwen/qwen3.8-27b:free: HTTP 404: This model is unavailable for free. The paid version is available now - use this slug instead: qwen/qwen3.8-27b {}",
+      "model": "qwen/qwen3.8-27b:free",
+      "ok": false
+    }
+  }
+}
