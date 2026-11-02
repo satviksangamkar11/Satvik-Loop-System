@@ -42,6 +42,7 @@ class FakeModels:
         self.log, self.on_tests = [], None
         self.package = PACKAGE
         self.fixes = []                 # the review findings staged for each repair call, in order
+        self.rejected = []              # (model, mode, reason) of each writer reply the job cannot use (recorded as a failed call)
         self.contract = None            # (test ids, Dots files, Xing files) of the contract check, when one was made
 
     def call(self, model_id, mode, files):
@@ -72,6 +73,9 @@ class FakeModels:
 
     def stage_fix(self, findings):
         self.fixes.append(list(findings))
+
+    def reject(self, model_id, mode, reason):
+        self.rejected.append((model_id, mode, reason))
 
     def calls(self, model_id=None, mode=None):
         return [entry for entry in self.log if (model_id is None or entry[1] == model_id) and (mode is None or entry[0] == mode)]
@@ -290,6 +294,22 @@ def test_north_writes_the_fresh_round_only_when_xing_is_down_and_then_is_not_on_
     assert models.calls(mode="write") == [("write", DOTS), ("write", XING), ("write", NORTH)]
     assert models.calls(NORTH, "review") == []
     assert models.calls(DOTS, "review") == [("review", DOTS)]
+
+
+def test_a_reply_naming_a_file_outside_the_job_is_rejected_and_recorded_with_its_reason():
+    outcome, models = run({(DOTS, "write"): [{"pieces/calc.py": "x = 1\n", "pieces/other.py": "y = 1\n"}], (XING, "write"): [full()],
+                           (GLM, "review"): [READY], (NORTH, "review"): [READY]}, [green()])
+    assert outcome.status == "passed", outcome
+    assert len(models.rejected) == 1
+    model, mode, reason = models.rejected[0]
+    assert (model, mode) == (DOTS, "write") and "outside the job" in reason and "pieces/other.py" in reason
+
+
+def test_a_fresh_write_missing_job_files_is_rejected_and_recorded_with_its_reason():
+    outcome, models = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [{"pieces/calc.py": "x = 3\n"}]},
+                          [red(), red()])
+    assert outcome.status == "escalate" and "missing" in outcome.reason
+    assert models.rejected == [(XING, "write", models.rejected[0][2])] and "missing job files" in models.rejected[0][2]
 
 
 # ---- 6. Opus repairs: red, red, red, then Opus green; at most two; behind the gate

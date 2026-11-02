@@ -11,6 +11,8 @@ Injected `models` interface:
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
   stage_fix(findings) -> the stripped FIX FIRST findings ("file:line | requirement | one sentence") the next repair call carries to the writer.
+  reject(model, mode, reason) -> a writer reply the job cannot use (a file outside the job, or a fresh write missing job files) is recorded
+      as a failed call before BadReply is raised (Production records it with HTTP status 200 and the reason as its message).
   package -> {"files": {path: lines}, "spec_count": n}: the review package of the last review call (evidence_ok checks a FIX FIRST against it).
 
 Only the roster's exact IDs appear here. The owner's roster is read from openrouter_call, never copied, so there is one place to change it."""
@@ -315,6 +317,12 @@ def _verdict(models, reviewer, files):
     return kind, text, ""
 
 
+def _reject(models, model, mode, reason):
+    """A writer reply the job cannot use: recorded as a failed call (models.reject), then refused with BadReply."""
+    models.reject(model, mode, reason)
+    raise BadReply(reason)
+
+
 def _fix(reviewer, text, models):
     """A valid FIX FIRST: the reason keeps the reviewer's whole text (for the record); `findings` is the stripped repair note the writer gets."""
     return Outcome("review-fix", f"{reviewer}: {text.strip()}", (), tuple(strip_findings(text, models.package)))
@@ -389,14 +397,14 @@ def _ladder(job, models, lineage, clock):
     def late():
         return remaining() < 0
 
-    def take(reply, model, full, keep_origin):
+    def take(reply, model, mode, full, keep_origin):
         if not isinstance(reply, dict) or not reply:
             raise BadReply(f"{model} reply has no FILE blocks")
         extra = set(reply) - wanted
         if extra:
-            raise BadReply(f"{model} reply names files outside the job: {sorted(extra)}")
+            _reject(models, model, mode, f"{model} reply names files outside the job: {sorted(extra)}")
         if full and set(reply) != wanted:
-            raise BadReply(f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
+            _reject(models, model, mode, f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
         for path in reply:
             previous = lineage.get(path)
             keep = bool(keep_origin and previous)
@@ -406,7 +414,7 @@ def _ladder(job, models, lineage, clock):
 
     def attempt(model, mode, full=False, keep_origin=False):
         reply = models.call(model, mode, files)
-        take(reply, model, full, keep_origin)
+        take(reply, model, mode, full, keep_origin)
         if model in (_m("writer_a"), _m("writer_b")):
             written[model] = dict(reply)
         models.write(reply)                      # validated files go to disk before the tests run

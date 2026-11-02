@@ -245,6 +245,21 @@ def test_a_planted_special_case_is_sent_back_to_dots_as_a_check_2_repair_and_the
     assert provider.models()[-1] == GLM                       # GLM is called only after North says READY
 
 
+def test_a_writer_reply_naming_a_file_outside_the_job_is_a_failed_call_with_status_200_and_the_job_goes_on(tmp_path):
+    provider = ph.Provider({
+        DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST), ("pieces/extra.py", "X = 1" + NL))],
+        XING: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
+        NORTH: [ph.READY],
+        GLM: [ph.READY],
+    })
+    root, result = run_e2e(tmp_path, provider)
+    assert result["state"] == "passed", result
+    failed = [step for step in result["rounds"] if step["mode"] == "failed"]
+    assert len(failed) == 1, failed
+    assert failed[0]["model"] == DOTS and failed[0]["call"] == "write" and failed[0]["status"] == 200
+    assert "outside the job" in failed[0]["message"] and "pieces/extra.py" in failed[0]["message"]
+
+
 # ---------------------------------------------------------------- 13. a static warning alone never fails a job
 
 def test_a_static_warning_alone_never_fails_a_job(tmp_path):

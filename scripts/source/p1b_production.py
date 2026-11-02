@@ -428,6 +428,11 @@ class Production:
         """The stripped FIX FIRST findings the next repair call carries to the writer, and nothing else of the review."""
         self.fix_findings = list(findings)
 
+    def reject(self, model, mode, reason):
+        """A writer reply routing cannot use (a file outside the job, or a fresh write missing job files): a failed call, HTTP status 200, the
+        reason as its message."""
+        self._failure(model, mode, 200, reason)
+
     def call(self, model, mode, files):
         try:
             return self._call(model, mode, files)
