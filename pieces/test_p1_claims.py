@@ -215,7 +215,7 @@ def test_claim_overlap_rollback_and_release(tmp_path):
     first = store.claim([a, b], "j1")
     with pytest.raises(pc.ClaimConflict) as err:
         store.claim([c, b], "j2")                                    # c is free, b is taken: c must be rolled back
-    assert pc.canonical_path(b) in str(err.value)
+    assert "b.py" in str(err.value)                                  # the conflict names the repo-relative path
     store.claim([c], "j3").release()                                 # c was released by the failed call
     first.release()
     with store.claim([a, b], "j4"):
@@ -236,8 +236,7 @@ def test_claim_spellings_conflict(tmp_path, monkeypatch):
     held.release()
 
 
-@pytest.mark.skipif(not WIN, reason="OS byte-range locks are the Windows rule")
-def test_claim_of_killed_child_becomes_free(tmp_path):
+def test_claim_of_killed_child_is_free_at_once_but_its_job_id_waits_for_staleness(tmp_path):
     ctx = multiprocessing.get_context("spawn")
     started = ctx.Event()
     target = tmp_path / "t.py"
@@ -250,13 +249,14 @@ def test_claim_of_killed_child_becomes_free(tmp_path):
     finally:
         child.terminate()
         child.join(30)
-    for _ in range(50):
-        try:
-            pc.ClaimStore(tmp_path).claim([target], "parent").release()
-            return
-        except pc.ClaimConflict:
-            time.sleep(0.1)
-    pytest.fail("claim was not freed after the holder died")
+    pc.ClaimStore(tmp_path).claim([target], "parent").release()       # the dead process's claim is free at once
+    with pytest.raises(pc.ClaimConflict):                            # but its job id is not taken over: heartbeat still fresh
+        pc.ClaimStore(tmp_path).claim([target], "child")
+    lease = tmp_path / "leases" / "child.json"
+    data = json.loads(lease.read_text(encoding="utf-8"))
+    data["heartbeat"] = time.time() - 400                            # five minutes and more without a beat, and the pid is dead
+    lease.write_text(json.dumps(data), encoding="utf-8")
+    pc.ClaimStore(tmp_path).claim([target], "child").release()
 
 
 # ---------------------------------------------------------------- launcher
@@ -351,7 +351,7 @@ def test_report_on_a_corrupt_ledger_does_not_rewrite_it_with_one_key(tmp_path):
 
 def test_run_job_claims_the_status_folder_name_too(tmp_path):
     repo, job, out = make_repo(tmp_path)
-    held = pc.ClaimStore(repo / "_loop").claim([repo / "_loop" / "j"], "other job with the same name")
+    held = pc.ClaimStore(repo / "_loop").claim([repo / "_loop" / "j"], "holder")
     try:
         with pytest.raises(pc.ClaimConflict):
             pc.run_job(job, repo, environ={})
@@ -397,3 +397,59 @@ def test_the_launcher_accepts_the_p1b_writer_roles_and_still_refuses_codex():
     assert pc.fixers_allowed(["writer_a", "codex"]) is False
     assert pc.fixers_allowed(["writer_a", "nemotron"]) is False
     assert pc.fixers_allowed([]) is False
+
+
+def test_claims_are_repo_relative_keys_in_the_home(tmp_path):
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    repo.mkdir()
+    home.mkdir()
+    claim = pc.ClaimStore(home, repo=repo).claim([repo / "pieces" / "x.py"], "keyed")
+    try:
+        table = json.loads((home / "claims.json").read_text(encoding="utf-8"))["claims"]
+        assert list(table) == ["pieces/x.py"]
+        with pytest.raises(pc.ClaimConflict):                          # the same file, spelled through a '..' detour
+            pc.ClaimStore(home, repo=repo).claim([repo / "pieces" / ".." / "pieces" / "x.py"], "other")
+    finally:
+        claim.release()
+    assert json.loads((home / "claims.json").read_text(encoding="utf-8"))["claims"] == {}
+
+
+def test_a_file_outside_the_repo_keeps_one_identity_for_every_store(tmp_path):
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    repo.mkdir()
+    home.mkdir()
+    held = pc.ClaimStore(home, repo=repo).claim([tmp_path / "elsewhere.py"], "outside")
+    try:
+        table = json.loads((home / "claims.json").read_text(encoding="utf-8"))["claims"]
+        assert [k.startswith("external/") and k.endswith("/elsewhere.py") for k in table] == [True]
+        other = tmp_path / "other"
+        other.mkdir()
+        with pytest.raises(pc.ClaimConflict):                        # another repo root, the same file
+            pc.ClaimStore(home, repo=other).claim([tmp_path / "elsewhere.py"], "second")
+    finally:
+        held.release()
+
+
+def test_the_same_job_id_cannot_claim_twice_at_once(tmp_path):
+    store = pc.ClaimStore(tmp_path)
+    held = store.claim([tmp_path / "a.py"], "twice")
+    try:
+        with pytest.raises(pc.ClaimConflict):
+            store.claim([tmp_path / "b.py"], "twice")
+    finally:
+        held.release()
+
+
+def test_reconcile_stops_a_running_status_only_without_a_live_claim(tmp_path):
+    repo = tmp_path / "repo"
+    for name in ("live", "dead"):
+        (repo / "_loop" / name).mkdir(parents=True)
+        (repo / "_loop" / name / "status.json").write_text(json.dumps({"state": "running", "rounds": []}), encoding="utf-8")
+    held = pc.ClaimStore(repo / "_loop").claim([repo / "_loop" / "live"], "live-job")
+    try:
+        assert pc.reconcile_stale(repo) == ["dead"]
+    finally:
+        held.release()
+    dead = json.loads((repo / "_loop" / "dead" / "status.json").read_text(encoding="utf-8"))
+    assert dead["state"] == "stopped" and "process gone" in dead["stopped_reason"]
+    assert json.loads((repo / "_loop" / "live" / "status.json").read_text(encoding="utf-8"))["state"] == "running"

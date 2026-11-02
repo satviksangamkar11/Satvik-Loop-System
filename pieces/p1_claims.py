@@ -1,13 +1,18 @@
 """Safe parallel loops (decision P1-D6/D10, spec specs/phase1_claims.md): shared key ledger, dead-key markers, file claims, job launcher.
+Claims and job leases live in the shared loop home (scripts/source/loop_home.py, Revision 4): repo-relative keys, generation fencing.
 No network, no model call. Keys are never stored: only sha256(key)[:16] hashes reach the shared files."""
 import hashlib
-import uuid
 import json
 import os
 import runpy
 import sys
 import time
 from pathlib import Path
+
+SOURCE = str(Path(__file__).resolve().parents[1] / "scripts" / "source")
+if SOURCE not in sys.path:
+    sys.path.insert(0, SOURCE)
+import loop_home  # noqa: E402
 
 try:
     import msvcrt
@@ -37,10 +42,6 @@ class ClaimConflict(RuntimeError):
 
 def key_hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
-
-
-def canonical_path(path) -> str:
-    return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
 
 
 class FileLock:
@@ -107,6 +108,10 @@ class FileLock:
 
     def __exit__(self, *exc):
         self.release()
+
+
+def canonical_path(path) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
 
 
 def _write_json_default(path, obj):
@@ -289,20 +294,20 @@ class LedgerKeyPool:
 
 
 class Claim:
-    def __init__(self, locks, files=()):
-        self._locks = locks
-        self._files = list(files)             # reader lock files of this claim: removed again on release
+    """One job's claims and lease. release() stops the heartbeat, frees the claims, then the lease (generation-checked)."""
+
+    def __init__(self, store, job_id, gen, stop_beat=None):
+        self._store, self._job, self._gen, self._stop = store, job_id, gen, stop_beat
+        self._open = True
 
     def release(self):
-        locks, self._locks = self._locks, []
-        for lock in locks:
-            lock.release()
-        files, self._files = self._files, []
-        for name in files:
-            try:
-                os.unlink(name)
-            except OSError:
-                pass
+        if not self._open:
+            return
+        self._open = False
+        if self._stop:
+            self._stop()
+        self._store._claims.release(self._job, self._gen)
+        self._store._lease.release(self._job, self._gen)
 
     def __enter__(self):
         return self
@@ -312,101 +317,84 @@ class Claim:
 
 
 class ClaimStore:
-    def __init__(self, directory):
+    """Claims in the loop home (loop_home.claims): keys are repo-relative paths, the job holds a lease with a generation and a heartbeat while
+    it holds the claim. `directory` is the home; the default home of one loop is <repo>/_loop, so `repo` defaults to that folder's parent
+    (any other folder is its own repo)."""
+
+    def __init__(self, directory, repo=None):
         self.dir = str(directory)
         if not os.path.isdir(self.dir):
             raise ValueError(f"claims folder does not exist: {self.dir}")
+        base = Path(self.dir)
+        self.repo = Path(repo) if repo is not None else (base.parent if base.name == "_loop" else base)
+        self._lease = loop_home.Lease(self.dir)
+        self._claims = loop_home.Claims(self.dir)
 
     def _hash(self, canon: str) -> str:
         return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
-    def _live_reader(self, canon: str) -> bool:
-        """True when another job still reads this file. A reader holds an OS lock on `read_<hash>_<pid>.lock` for its whole life; a lock that can be
-        taken belongs to a dead reader and is removed (F10)."""
+    def _rel(self, path) -> str:
+        """Repo-relative key. A file outside the repo keeps one identity of its own (external/<hash>/<name>), so two jobs still conflict on it."""
+        text = str(path)
+        if not os.path.isabs(text):
+            return text.replace("\\", "/")         # already relative to the repo
+        canon, root = canonical_path(text), canonical_path(self.repo)
+        if canon == root or canon.startswith(root.rstrip(os.sep) + os.sep):
+            return os.path.relpath(canon, root).replace("\\", "/")
+        return f"external/{self._hash(canon)}/{os.path.basename(canon)}"
+
+    def _legacy_reader_files(self, canon):
+        """Reader lock files of the per-file design (before the loop home): `read_<hash>_*.lock` whose OS lock is free belong to a dead reader
+        and are removed. Nothing new is written in that form."""
         prefix = f"read_{self._hash(canon)}_"
         for name in os.listdir(self.dir):
-            if not (name.startswith(prefix) and name.endswith(".lock")):
-                continue
-            probe = FileLock(os.path.join(self.dir, name))
-            try:
-                free = probe.try_acquire()
-            except OSError:
-                free = False
-            if free:
-                probe.release()
+            if name.startswith(prefix) and name.endswith(".lock"):
+                probe = FileLock(os.path.join(self.dir, name))
                 try:
-                    os.unlink(os.path.join(self.dir, name))
+                    free = probe.try_acquire()
                 except OSError:
-                    pass
-            else:
-                return True
-        return False
+                    free = False
+                if free:
+                    probe.release()
+                    try:
+                        os.unlink(os.path.join(self.dir, name))
+                    except OSError:
+                        pass
 
     def claim(self, paths, job_name="", reads=()) -> Claim:
-        """`paths` are claimed exclusively (a job writes them). `reads` are files the job only READS (reference files, the spec): any number of readers
-        may hold one together, but a reader and a writer of the same file exclude each other, so nobody ever reads a file that is being rewritten."""
-        taken, seen, reader_files = [], set(), []
-
-        def give_up(canon):
-            for held in taken:
-                held.release()
-            for name in reader_files:
-                try:
-                    os.unlink(name)
-                except OSError:
-                    pass
-            raise ClaimConflict(canon)
-
-        for path in paths:
-            canon = canonical_path(path)
-            if canon in seen:
-                continue                                  # a job lists its test file under files AND tests: duplicates in ONE call are normal
-            seen.add(canon)
-            lock = FileLock(os.path.join(self.dir, f"claim_{self._hash(canon)}.json"))
-            try:
-                ok = lock.try_acquire()
-            except OSError:
-                ok = False
-            if not ok:
-                give_up(canon)
-            if self._live_reader(canon):
-                lock.release()
-                give_up(canon + " (being read by another job)")
-            lock.write_info(json.dumps({"path": canon, "job": job_name, "pid": os.getpid(), "started": time.time()}))
-            taken.append(lock)
-        for path in reads:
-            canon = canonical_path(path)
-            if canon in seen:
-                continue                                  # this job writes it itself
-            seen.add(canon)
-            gate = FileLock(os.path.join(self.dir, f"claim_{self._hash(canon)}.json"))
-            try:
-                ok = gate.try_acquire()                   # momentary: no writer may hold the file while a reader registers
-            except OSError:
-                ok = False
-            if not ok:
-                give_up(canon + " (being written by another job)")
-            try:
-                reader_name = os.path.join(self.dir, f"read_{self._hash(canon)}_{os.getpid()}_{uuid.uuid4().hex[:8]}.lock")
-                mark = FileLock(reader_name)
-                if not mark.try_acquire():
-                    give_up(canon + " (reader mark busy)")
-                taken.append(mark)
-                reader_files.append(reader_name)
-            finally:
-                gate.release()
-        return Claim(taken, reader_files)
+        """`paths` are claimed for writing, `reads` for reading (readers share a file, a writer excludes them). `job_name` is the job id and
+        must be unique while it runs: a second claim with the same id raises ClaimConflict. Any conflict takes nothing."""
+        writes = [self._rel(p) for p in paths]
+        read_keys = [self._rel(p) for p in reads]
+        for p in list(paths) + list(reads):
+            if os.path.isabs(str(p)):
+                self._legacy_reader_files(canonical_path(p))
+        job_id = job_name
+        try:
+            gen = self._lease.acquire(job_id)
+        except loop_home.LeaseHeld as exc:
+            raise ClaimConflict(f"job {job_id} is already running") from exc
+        try:
+            ok, conflicts = self._claims.take(job_id, gen, writes, reads=read_keys)
+        except BaseException:
+            self._lease.release(job_id, gen)
+            raise
+        if not ok:
+            self._lease.release(job_id, gen)
+            raise ClaimConflict(", ".join(conflicts))
+        return Claim(self, job_id, gen, self._lease.keep_alive(job_id, gen))
 
 
 def reconcile_stale(repo, claims_dir=None, note="") -> list:
-    """Honest cleanup of jobs killed while running. A job folder whose status.json says `running` but whose claim on `_loop/<job>` can be taken has no live
-    process: its state becomes `stopped` (with the time, the last round and the note), NEVER passed. Returns the job names that were changed."""
+    """Honest cleanup of jobs killed while running. A job folder whose status.json says `running` but which holds no live claim (the job's lease
+    is missing, released or stale) becomes `stopped` (with the time, the last round and the note), NEVER passed. Returns the job names changed."""
     repo = Path(repo)
-    claims = Path(claims_dir or repo / "_loop")
+    home_dir = Path(claims_dir or repo / "_loop")
     changed = []
     loop_dir = repo / "_loop"
     if not loop_dir.is_dir():
         return changed
+    claims = loop_home.Claims(home_dir)
     for folder in sorted(p for p in loop_dir.iterdir() if p.is_dir() and p.name != "jobs"):
         status_file = folder / "status.json"
         try:
@@ -415,23 +403,15 @@ def reconcile_stale(repo, claims_dir=None, note="") -> list:
             continue
         if not isinstance(status, dict) or status.get("state") != "running":
             continue
-        probe = FileLock(claims / f"claim_{hashlib.sha256(canonical_path(folder).encode()).hexdigest()[:16]}.json")
-        try:
-            free = probe.try_acquire()
-        except OSError:
-            free = False
-        if not free:
-            continue                                      # a live process still holds the job
-        try:
-            status["state"] = "stopped"
-            status["stopped_reason"] = "process gone while the status said running" + (f"; {note}" if note else "")
-            status["stopped_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            tmp = status_file.with_name("status.json.tmp")
-            tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
-            os.replace(tmp, status_file)
-            changed.append(folder.name)
-        finally:
-            probe.release()
+        if claims.is_live(f"_loop/{folder.name}"):
+            continue                                      # a live job still holds its folder
+        status["state"] = "stopped"
+        status["stopped_reason"] = "process gone while the status said running" + (f"; {note}" if note else "")
+        status["stopped_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        tmp = status_file.with_name("status.json.tmp")
+        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        os.replace(tmp, status_file)
+        changed.append(folder.name)
     return changed
 
 
@@ -486,11 +466,13 @@ def run_job(job_path, repo, claims_dir=None, loop_script=None, environ=None, esc
     env = os.environ if environ is None else environ
     script = str(loop_script or repo / "scripts" / "source" / "fix_loop.py")
     reads = ([repo / str(r) for r in list(job.get("reference") or []) + list(job.get("regression") or [])]
-             + [repo / str(job.get("spec", ""))]
+             + ([repo / str(job["spec"])] if job.get("spec") else [])
              + ([repo / str(job.get("review_prompt"))] if job.get("review_prompt") else [])
              + [repo / str(r) for r in list(job.get("review_files") or [])])
     (repo / "_loop").mkdir(exist_ok=True)                    # the loop's own state folder (a fresh repo has none)
-    claim = ClaimStore(claims_dir or repo / "_loop").claim(paths, job.get("name", ""), reads=reads)
+    home_dir = claims_dir or loop_home.home(fallback=repo / "_loop")      # SATVIK_HOME when set, else the repo's own _loop
+    job_id = loop_home.new_job_id(job.get("name", ""), home_dir=home_dir)   # unique: no two launches share an id
+    claim = ClaimStore(home_dir, repo).claim(paths, job_id, reads=reads)
     old_argv = sys.argv
     saved_env = {k: env.get(k) for k in ("PYTEST_ADDOPTS", "P1_LEDGER", "P1_KEY_OFFSET")}      # restored in finally: the launcher must not leak into its caller (P1-D21)
     try:
