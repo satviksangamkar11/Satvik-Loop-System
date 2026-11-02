@@ -15,6 +15,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
+import launch  # noqa: E402
 import openrouter_call as oc  # noqa: E402
 
 FREE_KEY = "sk-or-v1-FREETEST000000000000"
@@ -273,6 +274,17 @@ def test_upstream_429_uses_retry_after_when_it_is_longer(tmp_path):
     built, clock = client(tmp_path, fake)
     built.call("writer_a", "system", "user")
     assert clock.slept == [30.0]
+
+
+def test_counter_429_per_model_counts_minute_and_upstream_429s_not_daily(tmp_path, monkeypatch):
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "home"))
+    fake = Fake()
+    fake.on("/chat/completions", fail(429, "Rate limit exceeded: free-models-per-min", {"retry-after": "7"}),
+             fail(429, "Provider returned error", metadata={"raw": "rate-limited upstream"}), ok("hi"))
+    built, _ = client(tmp_path, fake)
+    model = oc.resolve("writer_a")
+    assert built.call("writer_a", "system", "user")[0] == "hi"
+    assert f"429:{model} = 2" in launch.counter_lines(tmp_path / "home")
 
 
 def test_unclear_429_is_never_read_as_a_daily_limit():

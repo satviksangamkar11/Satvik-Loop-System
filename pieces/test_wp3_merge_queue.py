@@ -80,6 +80,14 @@ def test_a_main_that_keeps_moving_stops_after_three_tries_without_a_push(tmp_pat
     assert env.api.registry.lookup(a["job_id"])["state"] == "main-moved"
 
 
+def test_counter_merge_retry_counts_each_retest_after_main_moved(tmp_path):
+    env = make_env(tmp_path, hook=lambda e, wt: move_main(e, f"other{len(e.runs)}"))
+    a = start(env, "alpha", "a.txt", "A\n")
+    assert env.queue.drain() == [(a["job_id"], "main-moved")]
+    assert len(env.runs) == 3
+    assert "merge-retry = 2" in launch.counter_lines(env.api.home)   # two retests: the first try is not a retry
+
+
 def test_a_conflict_with_main_ends_merge_conflict_and_keeps_the_worktree(tmp_path):
     env = make_env(tmp_path)
     a = start(env, "alpha", "shared.txt", "from alpha\n")

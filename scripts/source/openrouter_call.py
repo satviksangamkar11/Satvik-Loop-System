@@ -63,6 +63,16 @@ def _shared_limits():
     return shared_limits
 
 
+def _count_429(model):
+    """One upstream or per-minute 429 for `model`, as the registry counter "429:<model>" (loop_home, step 8). The loop home is SATVIK_HOME,
+    else the repo's _loop, the same fallback p1_claims uses."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import loop_home
+    loop_home.Registry(loop_home.home(fallback=REPO / "_loop")).bump("429:" + model)
+
+
 def _load_p1_claims():
     spec = importlib.util.spec_from_file_location("p1_claims_for_openrouter", REPO / "pieces" / "p1_claims.py")
     module = importlib.util.module_from_spec(spec)
@@ -696,6 +706,7 @@ class OpenRouter:
                 if limit == "daily":
                     self.ledger.set_snapshot(0)
                     raise self._err(QuotaExhausted, f"{model}: daily free limit reached: {message[:200]}")
+                _count_429(model)                       # upstream or per-minute only; a daily 429 stops above and is not counted
                 if limit == "minute":
                     self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute", attempts + 1)
                     retries += 1

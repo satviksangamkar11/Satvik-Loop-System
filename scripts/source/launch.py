@@ -146,10 +146,14 @@ class Launcher:
     def _take_claims(self, job_id, gen, rel_paths):
         """Claims are all or nothing, so a retry is safe. Waits up to wait_s for a conflicting job to release."""
         deadline = time.monotonic() + self.wait_s
+        waited = False
         while True:
             taken, conflicts = self.api.claims.take(job_id, gen, list(rel_paths))
             if taken or time.monotonic() >= deadline:
                 return taken, conflicts
+            if not waited:                                     # once per job that waits on a claim, not per poll
+                waited = True
+                self.api.registry.bump("queue-wait")
             self.sleep(self.poll_s)
 
     def finish(self, job_id, gen, state, base=None, result=None):
