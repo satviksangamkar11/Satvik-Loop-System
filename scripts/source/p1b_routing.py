@@ -26,8 +26,12 @@ ANTHROPIC = "anthropic"             # the repair step's name in the lineage and 
 REPAIR_TIMEOUT_S = 900              # the repair step's call timeout (the repair module's TIMEOUT_S): a repair starts only when this much of the unit deadline is left
 DEADLINES_MIN = (60, 120)
 UNIT_LINES, FILE_LINES = 1500, 800
-FREE_REQUESTS, REVIEW_USD = 40, 0.05
-PRODUCTION_BUDGET = {"free_requests": FREE_REQUESTS, "review_usd": REVIEW_USD, "paid_usd": 0}
+FREE_REQUESTS = 40
+
+
+def budget_for(profile=None):
+    """The job budget the profile requires: review_usd is exactly 0 under test and exactly 0.05 under production (owner 2026-11-02)."""
+    return {"free_requests": FREE_REQUESTS, "review_usd": oc.JOB_REVIEW_USD_BY_PROFILE[profile or oc.PROFILE], "paid_usd": 0}
 REPAIR_CALLS = 2                    # per job: at most two repair-step calls, and a third is never attempted
 TRIM_CHARS = 32000                  # pytest output fed back to a writer: about 8K tokens
 LOCALIZED_TESTS, LOCALIZED_FILES = 3, 2
@@ -97,8 +101,9 @@ class Lineage:
         return lineage
 
 
-def check_production_job(job):
-    """Role names only; the owner's settings for a production unit."""
+def check_production_job(job, profile=None):
+    """Role names only; the owner's settings for a production unit. The budget is the profile's (budget_for): test 0, production 0.05."""
+    wanted = budget_for(profile)
     if job.get("profile") != "production" or job.get("visibility") != "public":
         raise JobRefused("production jobs must be profile production and visibility public")
     if not isinstance(job.get("fixers"), list) or any(role not in ("writer_a", "writer_b") for role in job["fixers"]):
@@ -106,8 +111,8 @@ def check_production_job(job):
     if job.get("reviewers") != "by_lineage":
         raise JobRefused('reviewers must be "by_lineage"')
     budget = job.get("budget")
-    if not isinstance(budget, dict) or budget != PRODUCTION_BUDGET or any(isinstance(v, bool) for v in budget.values()):
-        raise JobRefused(f"budget must be exactly {PRODUCTION_BUDGET}")
+    if not isinstance(budget, dict) or budget != wanted or any(isinstance(v, bool) for v in budget.values()):
+        raise JobRefused(f"budget must be exactly {wanted}")
     if job.get("deadline_min") not in DEADLINES_MIN:
         raise JobRefused(f"deadline_min must be one of {DEADLINES_MIN}")
 

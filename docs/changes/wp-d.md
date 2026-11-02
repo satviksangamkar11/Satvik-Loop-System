@@ -49,3 +49,17 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
   (the author is never on its own panel, test 3) is unchanged and still passes.
 - `test_without_satvik_profile_the_test_profile_loads_with_every_role_free` now expects the nemotron ID for reviewer_a.
 - Suite after this change: 636 passed, 3 skipped.
+
+## Owner decision (2026-11-02, on 1a462e0)
+
+1. **Adapter reads the roster.** `openrouter_call` takes every role's model, provider pin, prices and settings from `config/roster.json` for
+   the active profile (`ROLES`, `PINS`, `PRICING`, `SETTINGS`, `ALLOWED`, `PAID` are all built from the profile). Test: `reviewer_a` is
+   `nvidia/nemotron-3-ultra-550b-a55b:free`, `reviewer_b` is North; production keeps GLM pinned to Z.ai. No literal provider or model
+   name is left in the adapter.
+2. **Budget depends on the profile.** `openrouter_call.JOB_REVIEW_USD_BY_PROFILE` = `{"test": 0.0, "production": 0.05}` is the single table.
+   `p1b_routing.budget_for(profile)` builds the job budget from it; `check_production_job(job, profile=None)` requires exactly that budget.
+   `p0_gates.production_job_problems(job, profile=None)` reports a `budget.review_usd` problem unless it matches the profile. One test per
+   profile in `pieces/test_roster_config.py` (section 7).
+3. **Schema version.** Limited to `status.json` (fix loop writers, earlier step). `lineage.json` is unchanged.
+4. **Profile guard.** The guard that exists: `load_job` refuses a production job whose `production_job_problems` fail, and `main()` refuses a
+   non-production job unless `--legacy`. No new guard was added in `run_job`.

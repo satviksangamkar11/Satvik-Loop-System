@@ -16,6 +16,7 @@ ROSTER = REPO / "config" / "roster.json"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("SATVIK_PROFILE", "production")      # this module's in-process roles are the production ones; the test profile is loaded explicitly
 import openrouter_call as oc  # noqa: E402
+import p0_gates  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 
 ROLE_NAMES = ("writer_a", "writer_b", "reviewer_a", "reviewer_b", "repair", "planner")
@@ -193,3 +194,26 @@ def test_fix_loop_status_json_carries_schema_version_1_on_the_invalid_spec_and_t
     caller, _ = scripted([reply(GOOD_MODULE, GOOD_TEST)])
     fl.run_job(job, root, caller=caller, reviewer={}, scrub_keys=[])
     assert read_status(root)["schema_version"] == 1
+
+
+# ---- 7. the job budget's review_usd depends on the profile (owner 2026-11-02): exactly 0 in test, exactly 0.05 in production
+
+def _budget_job(review_usd):
+    return {"name": "calc", "profile": "production", "visibility": "public", "fixers": ["writer_a", "writer_b"], "reviewers": "by_lineage",
+            "budget": {"free_requests": 40, "review_usd": review_usd, "paid_usd": 0}, "deadline_min": 60}
+
+
+def test_under_the_test_profile_the_budget_review_usd_must_be_exactly_zero():
+    assert p1b.check_production_job(_budget_job(0), profile="test") is None
+    with pytest.raises(p1b.JobRefused, match="review_usd|budget"):
+        p1b.check_production_job(_budget_job(0.05), profile="test")
+    assert any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0.05), profile="test"))
+    assert not any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0), profile="test"))
+
+
+def test_under_the_production_profile_the_budget_review_usd_must_be_exactly_0_05():
+    assert p1b.check_production_job(_budget_job(0.05), profile="production") is None
+    with pytest.raises(p1b.JobRefused, match="review_usd|budget"):
+        p1b.check_production_job(_budget_job(0), profile="production")
+    assert any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0), profile="production"))
+    assert not any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0.05), profile="production"))

@@ -111,9 +111,14 @@ def is_protected_control_file(rel: str) -> bool:
     return any(fnmatch.fnmatchcase(n, pat) for pat in PROTECTED_CONTROL_FILES)
 
 
-def production_job_problems(job: dict) -> list:
-    """Problems that make a job unsafe to run as a production job. load_job raises on any of them."""
+def production_job_problems(job: dict, profile: str | None = None) -> list:
+    """Problems that make a job unsafe to run as a production job. load_job raises on any of them. The budget's review_usd must be the
+    profile's: exactly 0 under test, exactly 0.05 under production (owner 2026-11-02; the adapter holds the values)."""
+    import openrouter_call as oc                              # the adapter's profile table (scripts/source is on the path where jobs load)
     p = []
+    budget = job.get("budget")
+    if not isinstance(budget, dict) or budget.get("review_usd") != oc.JOB_REVIEW_USD_BY_PROFILE[profile or oc.PROFILE] or isinstance(budget.get("review_usd"), bool):
+        p.append(f"budget.review_usd must be exactly {oc.JOB_REVIEW_USD_BY_PROFILE[profile or oc.PROFILE]} under the {profile or oc.PROFILE} profile")
     if not job.get("review", True):
         p.append("production jobs cannot set review: false (no-review mode is legacy/tests only)")
     if job.get("reviewers") != "by_lineage":                 # P1b 2026-11-02: the reviewers are the lineage panel (p1b_routing), never a list
