@@ -1478,6 +1478,38 @@ def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
         return proc.returncode, sink.read().decode("utf-8", "replace")
 
 
+# ---- close-1 wiring (steps 4-8): a launched job runs in its own worktree, through launch.Launcher and the merge queue
+
+def ledger_budget() -> dict:
+    """The launcher's start figures from package E's account ledger (shared_limits.usage): today's free requests and review spend."""
+    usage = _sibling_module("shared_limits").usage()
+    return {"free_requests": usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
+
+
+def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, **run_kwargs) -> dict:
+    """Start one job in its own worktree (Launcher.start: limits, request lookup, claims), run it there with the lease kept alive, record the
+    finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised."""
+    name = job["name"]
+    start = launcher.start(name, list(job["files"]), key=key or name)
+    if not start["ok"]:
+        return {"name": name, "state": "refused", "reason": start["reason"]}
+    job_id, gen, base = start["job_id"], start["gen"], start["base"]
+    stop_beat = api.lease.keep_alive(job_id, gen)
+    try:
+        try:
+            result = (run or run_job)(job, Path(start["worktree"]), **run_kwargs)
+        except BaseException:
+            launcher.finish(job_id, gen, "error", base)
+            raise
+    finally:
+        stop_beat()
+    state = result["state"]
+    launcher.finish(job_id, gen, state, base, {"round": result.get("round")})
+    if state == "passed" and merge_queue is not None:
+        merge_queue.submit(job_id, gen)
+    return dict(result, job_id=job_id)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser()

@@ -83,21 +83,31 @@ def run_rounds(api, job_id, gen, rounds, do_round, restore, home_dir):
     return "done"
 
 
+KEEP_WORKTREE = {"passed", "merge-conflict"}      # passed waits for the merge queue; merge-conflict stays for the owner
+
+
 class Launcher:
-    def __init__(self, repo, api, budget, sandbox_slots=SANDBOX_SLOTS):
-        """budget() -> {free_requests, review_spend_usd} for today, or None when the ledger has no figures yet."""
+    def __init__(self, repo, api, budget, sandbox_slots=SANDBOX_SLOTS, wait_s=0.0, poll_s=0.5, sleep=time.sleep):
+        """budget() -> {free_requests, review_spend_usd} for today, or None when the ledger has no figures yet.
+        wait_s: a claim conflict is retried every poll_s seconds for up to wait_s (queued-claim wait); 0 refuses at once."""
         self.repo = Path(repo)
         self.api = api
         self.budget = budget
         self.sandbox_slots = sandbox_slots
+        self.wait_s, self.poll_s, self.sleep = wait_s, poll_s, sleep
         self._slots = {}
+        self._keys = {}
 
-    def start(self, name, rel_paths=()):
+    def start(self, name, rel_paths=(), key=None):
         home = self.api.home
         recent = [r["state"] for r in self.api.registry.recent(PROVIDER_STREAK)]
         reason = start_refusal(stop_requested(home), self._running(), recent, self.budget())
         if reason:
             return {"ok": False, "reason": reason}
+        if key is not None:                                # the request key: a live run under it blocks a second start
+            prev = self.api.registry.lookup(key)
+            if prev and prev.get("state") == "running" and not self.api.lease.stale(prev["job"]):
+                return {"ok": False, "reason": "request-running", "job": prev["job"]}
         job_id, gen = self._reserve(name)
         wt, branch = home / "wt" / job_id, f"job/{job_id}"
         try:
@@ -112,23 +122,36 @@ class Launcher:
             slot.__enter__()
         except TimeoutError:                       # the gate raises TimeoutError when no slot frees within timeout_s
             return self._undo(job_id, wt, gen, {"ok": False, "reason": "no-sandbox-slot"})
-        taken, conflicts = self.api.claims.take(job_id, gen, list(rel_paths))
+        taken, conflicts = self._take_claims(job_id, gen, rel_paths)
         if not taken:
             slot.__exit__(None, None, None)
             return self._undo(job_id, wt, gen, {"ok": False, "reason": "claim-conflict", "conflicts": conflicts})
         self._slots[job_id] = slot
-        self.api.registry.record(job_id, job_id, gen, "running", base, None)
+        self._keys[job_id] = key or job_id                 # no request key: the row is keyed by job id, as before
+        self.api.registry.record(key or job_id, job_id, gen, "running", base, None)
         return {"ok": True, "job_id": job_id, "gen": gen, "worktree": str(wt), "branch": branch,
                 "base": base, "job_dir": str(wt / "_loop" / job_id)}
 
+    def _take_claims(self, job_id, gen, rel_paths):
+        """Claims are all or nothing, so a retry is safe. Waits up to wait_s for a conflicting job to release."""
+        deadline = time.monotonic() + self.wait_s
+        while True:
+            taken, conflicts = self.api.claims.take(job_id, gen, list(rel_paths))
+            if taken or time.monotonic() >= deadline:
+                return taken, conflicts
+            self.sleep(self.poll_s)
+
     def finish(self, job_id, gen, state, base=None, result=None):
-        """Release the sandbox slot, the claims and the lease, and record the state. The registry row is written before the lease goes."""
+        """Release the sandbox slot, the claims and the lease, and record the state. The registry row is written before the lease goes.
+        The worktree is removed unless the state keeps it (KEEP_WORKTREE)."""
         slot = self._slots.pop(job_id, None)
         if slot is not None:
             slot.__exit__(None, None, None)
         self.api.claims.release(job_id, gen)
-        self.api.registry.record(job_id, job_id, gen, state, base, result)
+        self.api.registry.record(self._keys.pop(job_id, job_id), job_id, gen, state, base, result)
         self.api.lease.release(job_id, gen)
+        if state not in KEEP_WORKTREE:
+            git(["worktree", "remove", "--force", str(self.api.home / "wt" / job_id)], self.repo, check=False)
         return state
 
     def _running(self):

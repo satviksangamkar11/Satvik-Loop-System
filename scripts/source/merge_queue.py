@@ -76,9 +76,7 @@ class MergeQueue:
                     return self.launcher.finish(job_id, gen, "push-failed", base)
                 continue                                       # main moved during the push: test again
             head = git(["rev-parse", "HEAD"], wt).stdout.strip()
-            self.launcher.finish(job_id, gen, "merged", base, {"head": head, "attempts": attempt + 1})
-            git(["worktree", "remove", "--force", str(wt)], self.repo)
-            return "merged"
+            return self.launcher.finish(job_id, gen, "merged", base, {"head": head, "attempts": attempt + 1})   # finish removes the worktree
         return self.launcher.finish(job_id, gen, "main-moved", base)
 
     def _fetch_main(self):
