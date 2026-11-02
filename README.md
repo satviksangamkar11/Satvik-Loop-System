@@ -108,6 +108,7 @@ The launcher accepts only `nemotron` or `haiku` as fixers; any other name is ref
 - `scripts/source/nemotron_code.py`, `draft_source.py`, `coder_run.py`: coder calls, streaming, parsing of `FILE:` blocks
 - `scripts/image_trials/nvidia_trial.py`: the key pool
 - `pieces/p1_claims.py`, `pieces/p1_escalate.py`: launcher, claims, ledger, escalation
+- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (roster allowlist, free ledger, DeepSeek budget, probe)
 - `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the Codex model; `REVIEW_WITH=haiku` asks Haiku at low effort instead)
 - `docs/REVIEW_PROMPT.md`: the prompt every reviewer receives
 - `pieces/test_*.py`: the tests
@@ -188,3 +189,29 @@ A job with `"profile": "production"` closes the false-pass and execution holes. 
   while it was reviewed ends `integrity-mismatch` and the tested version is restored.
 
 New states (exit code 1): `acceptance-invalid`, `acceptance-tampered`, `sandbox-unavailable`, `integrity-mismatch`.
+
+## OpenRouter adapter (P1a, 2026-11-02)
+
+`scripts/source/openrouter_call.py` is the only path to OpenRouter. The loop does not use it yet; P1b wires it in. Every reply is checked
+before it counts, and no failure falls back to another model or key.
+
+- **Roster.** Exact IDs only: `z-ai/glm-5.3-flash:free`, `qwen/qwen3.8-27b:free`, `thinkingmachines/inkling-small:free`,
+  `deepseek/deepseek-v4.1-flash-1017`. Refused before any request: `openrouter/free`, a `models` fallback list, any other ID.
+- **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
+  Every attempt is reserved before it is sent, failed attempts included. 15 a minute; 1,000 a day (a lower cap can be passed). A 429 that names
+  the day is `QuotaExhausted`; a per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
+- **DeepSeek.** The only paid ID, with the paid key. Its price is read live from the endpoints list; requests are pinned to the cheapest
+  endpoint. Each attempt reserves its estimate before it is sent, against the job ceiling (default $0.10). A missing live price sends nothing.
+- **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a `FILE:` block; a reviewer needs a
+  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at double `max_tokens`.
+- **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
+  Two provider errors in a row drop the model for the job. 401, 402 and 403 are never retried.
+- **Private code.** Blocked. `APPROVED_PRIVATE` is empty because no non-training route has been approved.
+- **Keys.** `OPENROUTER_FREE_KEY` and `OPENROUTER_PAID_KEY` from the environment, or `secrets/openrouter_free_key.txt` and
+  `secrets/openrouter_paid_key.txt`. Keys are never printed or written; error text is redacted.
+- **Probe.** `python scripts/source/openrouter_call.py probe --out <file>` makes one live call per roster model and records the key state before
+  and after. It spends free requests and a few cents of DeepSeek, so run it by hand.
+- **Sandbox credential check.** The container probe refuses any environment variable whose name contains a credential word (`KEY`, `TOKEN`,
+  `SECRET`, `PASSWORD`, ...), except `GPG_KEY`, which the base image sets. One rule, `sandbox_runner.CREDENTIAL_RULE`, is used on the host and in
+  the container (`pieces/test_sandbox_credential_names.py`).
+- **Ignored paths.** `.gitignore` keeps `secrets/`, `_loop/` and `.env` out of git.

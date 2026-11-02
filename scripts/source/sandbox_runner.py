@@ -191,7 +191,17 @@ def _open_perms(tmpd: Path):
             os.chmod(os.path.join(dirpath, f), 0o666)
 
 
-_PROBE = r'''
+# Credential-like environment variables. A name counts when it contains a credential word, except GPG_KEY, which the python:3.13-slim base
+# image sets (a GPG key id, not a credential). P1a (2026-11-02): the old list missed PRIVATE_KEY, SIGNING_KEY and similar names. The rule is
+# one source string, run on the host by the tests and inside the container by the probe, so the two cannot drift.
+CREDENTIAL_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "APIKEY", "OPENROUTER", "ANTHROPIC", "CLAUDE", "NVIDIA", "GROQ", "DEEPSEEK")
+BENIGN_KEY_NAMES = ("GPG_KEY",)
+CREDENTIAL_RULE = ("CREDENTIAL_WORDS = %r\nBENIGN_KEY_NAMES = %r\n"
+                   "def credential_like(name):\n"
+                   "    upper = name.upper()\n"
+                   "    return upper not in BENIGN_KEY_NAMES and any(w in upper for w in CREDENTIAL_WORDS)\n") % (CREDENTIAL_WORDS, BENIGN_KEY_NAMES)
+
+_PROBE = CREDENTIAL_RULE + r'''
 import os, socket
 def fail(msg): print("FAIL " + msg)
 if os.getuid() == 0: fail("runs as root")
@@ -213,7 +223,7 @@ except OSError:
     pass
 if os.path.exists("/var/run/docker.sock") or os.path.exists("/run/docker.sock"): fail("docker socket visible")
 for k in os.environ:
-    if any(w in k.upper() for w in ("API_KEY", "APIKEY", "ACCESS_KEY", "TOKEN", "SECRET", "PASSWORD", "OPENROUTER", "ANTHROPIC", "CLAUDE", "NVIDIA", "GROQ")):
+    if credential_like(k):
         fail("credential-like environment variable visible: " + k)
 try:
     caps = [l for l in open("/proc/self/status") if l.startswith("CapEff")][0].split()[1]
