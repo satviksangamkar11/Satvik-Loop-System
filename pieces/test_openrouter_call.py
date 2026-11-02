@@ -914,3 +914,22 @@ def test_a_writer_upstream_429_keeps_the_old_schedule(tmp_path):
 def _production_profile(profile):
     """Every test in this file runs on the production roster (the paid GLM reviewer lives there). Set per test, never at import."""
     profile("production")
+
+
+# ---- 10. probe roles follow the active profile (read per call)
+
+def test_step9_probe_roles_follow_the_active_profile_and_skip_the_paid_reviewer(profile):
+    profile("test")
+    assert oc.probe_roles() == ["writer_a", "writer_b", "reviewer_b", "reviewer_a"]      # the test roster's reviewer_a is free nemotron
+    profile("production")
+    assert oc.probe_roles() == ["writer_a", "writer_b", "reviewer_b"]                    # the production reviewer_a is paid GLM: never probed
+
+
+def test_step9_models_matching_no_role_exit_nonzero_without_a_call(tmp_path, monkeypatch, capsys):
+    fake = Fake()
+    monkeypatch.setattr(oc, "default_transport", fake)
+    monkeypatch.setattr(oc, "load_keys", lambda: {"free": FREE_KEY, "paid": PAID_KEY})
+    code = oc.main(["probe", "--ledger", str(tmp_path / "ledger"), "--models", "glm,planner"])
+    assert code != 0
+    assert "no matching role" in capsys.readouterr().err
+    assert fake.posts() == []

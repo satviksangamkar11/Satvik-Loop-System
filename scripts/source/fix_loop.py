@@ -833,6 +833,7 @@ def run_job(
     scrub_keys: list[str] | None = None,
     sandbox=None,
     openrouter=None,
+    stop_check: Callable[[], None] | None = None,
 ) -> dict:
     production = job.get("profile") == "production"
     roster_profile = _p1b().oc.PROFILE                      # SATVIK_PROFILE: the roster the adapter loaded (owner 2026-11-02)
@@ -1019,6 +1020,8 @@ def run_job(
     # rounds 0..max_rounds are for making the tests pass; once they have passed, up to review_rounds more rounds exist for review fixes (a job whose tests
     # first pass in the LAST round used to end review-open with no fix round at all)
     for round_no in range(max_rounds + 1 + (review_rounds if review_enabled else 0)):
+        if stop_check is not None:
+            stop_check()                                        # step 5: raises StopRequested before the round; a call in flight always finishes
         if not ever_passed and round_no > max_rounds:
             break
         if round_no > 0 and time.monotonic() - job_started > deadline_s:      # Opus F11: a job never runs for hours
@@ -1476,6 +1479,141 @@ def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
         proc = subprocess.run(cmd, input=prompt.encode("utf-8"), stdout=sink, stderr=subprocess.STDOUT, timeout=180)
         sink.seek(0)
         return proc.returncode, sink.read().decode("utf-8", "replace")
+
+
+# ---- close-1 wiring (steps 4-8): a launched job runs in its own worktree, through launch.Launcher and the merge queue
+
+class StopRequested(Exception):
+    """The stop switch (home/STOP) was on before a round. The job stops; its files are restored to the base commit."""
+
+
+def _stop_switch(home: Path):
+    """A stop_check for run_job: raises StopRequested while home/STOP exists."""
+    def check() -> None:
+        if _sibling_module("launch").stop_requested(home):
+            raise StopRequested("stop switch is on")
+    return check
+
+
+def restore_files(wt: Path, files: list[str]) -> None:
+    """Put the job's files back to the base commit: tracked files are checked out again, new files are removed."""
+    git = _sibling_module("launch").git
+    for rel in files:
+        if git(["cat-file", "-e", f"HEAD:{rel}"], wt, check=False).returncode == 0:
+            git(["checkout", "--", rel], wt)
+        else:
+            (Path(wt) / rel).unlink(missing_ok=True)
+
+
+def ledger_budget() -> dict:
+    """The launcher's start figures from package E's account ledger (shared_limits.usage): today's free requests and review spend."""
+    usage = _sibling_module("shared_limits").usage()
+    return {"free_requests": usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
+
+
+def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, **run_kwargs) -> dict:
+    """Start one job in its own worktree (Launcher.start: limits, request lookup, claims), run it there with the lease kept alive, record the
+    finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised."""
+    name = job["name"]
+    start = launcher.start(name, list(job["files"]), key=key or name)
+    if not start["ok"]:
+        return {"name": name, "state": "refused", "reason": start["reason"]}
+    job_id, gen, base = start["job_id"], start["gen"], start["base"]
+    stop_beat = api.lease.keep_alive(job_id, gen)
+    wt = Path(start["worktree"])
+    run_kwargs.setdefault("stop_check", _stop_switch(api.home))
+    try:
+        try:
+            result = (run or run_job)(job, wt, **run_kwargs)
+        except StopRequested:
+            restore_files(wt, list(job["files"]))
+            result = {"name": name, "state": "stopped", "round": None}
+        except BaseException:
+            launcher.finish(job_id, gen, "error", base)
+            raise
+    finally:
+        stop_beat()
+    state = result["state"]
+    try:
+        write_change_doc(wt, job_id, job, dict(result, state=state), base)
+    except BaseException:
+        launcher.finish(job_id, gen, "error", base)
+        raise
+    launcher.finish(job_id, gen, state, base, {"round": result.get("round")})
+    if state == "passed" and merge_queue is not None:
+        merge_queue.submit(job_id, gen)
+    return dict(result, job_id=job_id)
+
+
+def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
+    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it."""
+    doc = Path(wt) / "docs" / "changes" / f"{job_id}.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("\n".join([
+        f"# {job_id}", "",
+        f"- Job name: {job['name']}",
+        f"- Base: {base}",
+        f"- State: {result.get('state')}",
+        f"- Files: {', '.join(job['files'])}",
+        f"- Round: {result.get('round')}",
+        f"- Review verdict: {result.get('review_verdict')}",
+        "",
+    ]), encoding="utf-8")
+    git = _sibling_module("launch").git
+    git(["add", doc.relative_to(wt).as_posix()], wt)
+    git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
+    return doc
+
+
+def queue_dir(home: Path) -> Path:
+    """The job queue: home/queue/ (home is SATVIK_HOME, or the api's home folder)."""
+    return Path(home) / "queue"
+
+
+def enqueue(job_path: Path, home: Path) -> Path:
+    """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename)."""
+    folder = queue_dir(home)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_bytes(Path(job_path).read_bytes())
+    os.replace(tmp, dest)
+    return dest
+
+
+def take_next(home: Path) -> Path | None:
+    """Claim the oldest queued job by renaming it into queue/taken/. A rename that loses to another drainer is skipped, so each job is
+    taken once. Returns the claimed path, or None when the queue is empty."""
+    folder = queue_dir(home)
+    if not folder.exists():
+        return None
+    taken = folder / "taken"
+    taken.mkdir(exist_ok=True)
+    for path in sorted(folder.glob("*.json")):
+        try:
+            os.replace(path, taken / path.name)
+        except OSError:
+            continue
+        return taken / path.name
+    return None
+
+
+def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[tuple[str, str]]:
+    """Run queued jobs one after another, oldest first, until the queue is empty. Returns [(file name, state)]. A job file that does not
+    load is reported as "invalid" and the drain goes on."""
+    out = []
+    load = loader or load_job
+    while True:
+        path = take_next(api.home)
+        if path is None:
+            return out
+        try:
+            job = load(path)
+        except (ValueError, OSError) as exc:
+            out.append((path.name, "invalid"))
+            continue
+        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run)
+        out.append((path.name, res["state"]))
 
 
 def main(argv: list[str] | None = None) -> int:
