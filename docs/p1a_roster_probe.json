@@ -1,0 +1,128 @@
+{
+  "deviation": "Free models were called with the PAID key loaded in the FREE slot (owner decision 2026-11-02, option 1): the owner has no separate $0 free key, so the $0 free-key test was NOT done. Free calls showed cost 0.",
+  "failures_open": "gemma-4-31b-it:free and gemma-4-26b-a4b-it:free: each dropped after 2 provider errors in a row. The raw HTTP status and message of those two errors were NOT kept (the breaker message replaces them). Owner rule requires raw status and message for every failure: adapter fix needed (test first), then a re-run for these two only.",
+  "key_after": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    }
+  },
+  "key_before": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    }
+  },
+  "probed_at": "2026-11-02T05:07:25Z",
+  "probes": {
+    "google/gemma-4-26b-a4b-it:free": {
+      "error": "google/gemma-4-26b-a4b-it:free dropped for this job after 2 provider errors in a row",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "ok": false
+    },
+    "google/gemma-4-31b-it:free": {
+      "error": "google/gemma-4-31b-it:free dropped for this job after 2 provider errors in a row",
+      "model": "google/gemma-4-31b-it:free",
+      "ok": false
+    },
+    "reviewer": {
+      "attempts": 1,
+      "cost_usd": 0.0,
+      "endpoint": null,
+      "finish": "stop",
+      "latency_s": 1.277,
+      "max_tokens": 256,
+      "model": "cohere/north-mini-code:free",
+      "ok": true,
+      "provider": "Cohere",
+      "reasoning_tokens": 51,
+      "reply": "OK",
+      "status": 200,
+      "usage": {
+        "completion_tokens": 49,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 18,
+        "total_tokens": 67
+      }
+    },
+    "writer_a": {
+      "attempts": 1,
+      "cost_usd": 0.0,
+      "endpoint": null,
+      "finish": "stop",
+      "latency_s": 1.147,
+      "max_tokens": 256,
+      "model": "dots-studio/dots-3-note-preview:free",
+      "ok": true,
+      "provider": "AtlasCloud",
+      "reasoning_tokens": 33,
+      "reply": "OK",
+      "status": 200,
+      "usage": {
+        "completion_tokens": 33,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 25,
+        "total_tokens": 58
+      }
+    },
+    "writer_b": {
+      "attempts": 1,
+      "cost_usd": 0.0,
+      "endpoint": null,
+      "finish": "stop",
+      "latency_s": 3.116,
+      "max_tokens": 256,
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "ok": true,
+      "provider": "Phala",
+      "reasoning_tokens": 106,
+      "reply": "OK",
+      "status": 200,
+      "usage": {
+        "completion_tokens": 108,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 24,
+        "total_tokens": 132
+      }
+    }
+  }
+}

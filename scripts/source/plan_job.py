@@ -1,0 +1,211 @@
+"""P1c (2026-11-02, Revision 3): the Opus planner. One plain `claude -p` call per job: never --bare (that ignores the subscription login), never
+the API key, from an empty folder, with no tools and an empty MCP config, output as JSON. plan/INTENT.json is written before the call and the raw
+answer goes straight to plan/raw_response.json. A restart reuses a saved answer and never calls again; an intent with no saved answer is
+planner-uncertain, and nothing retries it. The answer is checked against the production rules before anything is written; the job file is
+then read-only and its hash is recorded. Nothing here names a legacy model family (a static test checks it)."""
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+import jsonschema
+
+import fix_loop as fl
+import p0_gates as gates
+import p1b_routing as p1b
+
+PLAN_TIMEOUT_S = 1800
+MAX_FILES = 30
+MODEL, EFFORT = "opus", "medium"
+TAG = re.compile(r"^(?:[-*]\s+)?(KNOWN|ASSUMED):\s+\S")
+NL = chr(10)
+INSTRUCTIONS = (
+    "You are the planner for one production job. Reply with ONE JSON object and nothing else, with these keys:" + NL
+    + "- plan_md: the plan in Markdown." + NL
+    + "- spec_md: the specification. Every line that states a requirement starts with `KNOWN:` (taken from the request or the files) or "
+      "`ASSUMED:` (your own assumption). Headings may stay untagged." + NL
+    + "- job: a production job object. Roles only: fixers are writer_a and writer_b; reviewers is the string by_lineage; visibility is public; "
+      "budget is {free_requests: 40, paid_usd: 0.15}; deadline_min is 60 or 120; name is the job name; files lists the files the coder may edit "
+      "(never a test file that is locked); tests and acceptance_tests are controller-owned test files; negative_controls show that each "
+      "acceptance test can fail on wrong code (or give acceptance_baseline_fail for a bug fix)." + NL
+    + "- acceptance: {path: file text} for exactly the job's acceptance_tests." + NL
+    + "- controls: {path: file text} for the source of every negative control." + NL
+    + "- expected_lines: {path: line count} for every job file: at most 800 lines per file and 1500 in total." + NL)
+
+
+def file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def claude_runner(prompt, cwd, claude_cmd, timeout_s):
+    """The real call: plain `claude -p`, JSON out, no tools, an empty MCP config, run from the empty folder `cwd`. Returns (exit code, output).
+    An empty output is replaced by an error envelope that keeps the exit code and the first error text, so a restart knows the call failed."""
+    with tempfile.TemporaryDirectory(prefix="plan_mcp_") as config_dir:
+        config = Path(config_dir) / "mcp.json"
+        config.write_text('{"mcpServers": {}}', encoding="utf-8")
+        cmd = list(claude_cmd or ["claude"]) + ["-p", "--model", MODEL, "--effort", EFFORT, "--output-format", "json",
+                                                  "--tools", "", "--mcp-config", str(config), "--strict-mcp-config"]
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}      # the subscription is used, never an API key
+        proc = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout_s, env=env)
+        if proc.stdout.strip():
+            return proc.returncode, proc.stdout
+        return proc.returncode, json.dumps({"is_error": True, "exit_code": proc.returncode, "stderr": (proc.stderr or "")[-2000:]})
+
+
+def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None, timeout_s=PLAN_TIMEOUT_S):
+    """Plans one job. Returns {state, reason, job_sha256, assumed}. States: planned, planner-uncertain, planner-refused, planner-invalid,
+    planner-failed. The only call is made after INTENT.json is written; a restart never makes a second call."""
+    root, plan_dir = Path(root), Path(plan_dir)
+    intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
+    if intent_path.is_file():
+        if raw_path.is_file():
+            return _from_answer(raw_path.read_text(encoding="utf-8"), root, job_name, plan_dir)     # reused: no call
+        return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
+    if len(files) > MAX_FILES:
+        return _outcome("planner-refused", f"at most {MAX_FILES} files may be sent to the planner; got {len(files)}")
+    prompt = _prompt(root, request, files)
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    intent_path.write_text(json.dumps({"job": job_name, "model": MODEL, "effort": EFFORT, "files": list(files),
+                                       "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "timeout_s": timeout_s,
+                                       "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
+    try:
+        with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
+            _code, raw = (runner or claude_runner)(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+    except subprocess.TimeoutExpired:
+        return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
+    raw_path.write_text(raw, encoding="utf-8")
+    return _from_answer(raw, root, job_name, plan_dir)
+
+
+def _prompt(root, request, files):
+    parts = [INSTRUCTIONS, "REQUEST:", request, "", "FILES (chosen by the controller):"]
+    base = root.resolve()
+    for rel in files:
+        path = (root / rel).resolve()
+        if base not in path.parents or not path.is_file():
+            raise ValueError(f"planner file is not a file under the repo: {rel}")
+        parts.append(f"### {rel}" + NL + path.read_text(encoding="utf-8"))
+    return NL.join(parts)
+
+
+def _from_answer(raw, root, job_name, plan_dir):
+    try:
+        envelope = json.loads(raw)
+    except ValueError:
+        return _outcome("planner-invalid", "the output is not JSON")
+    if not isinstance(envelope, dict):
+        return _outcome("planner-invalid", "the output is not a JSON object")
+    reported = [key for key in ("mcp_servers", "mcpServers", "mcp", "plugins") if envelope.get(key)]
+    if reported:
+        return _outcome("planner-refused", f"the session reports MCP servers or plugins ({', '.join(reported)}); the planner runs with none")
+    if envelope.get("is_error"):
+        detail = envelope.get("result") or envelope.get("stderr") or envelope.get("exit_code")
+        return _outcome("planner-failed", f"the call reported an error: {str(detail)[:300]}")
+    text = envelope.get("result")
+    if not isinstance(text, str):
+        return _outcome("planner-invalid", "the answer has no result text")
+    try:
+        answer = json.loads(_strip_fences(text))
+    except ValueError:
+        return _outcome("planner-invalid", "the answer text is not JSON")
+    if not isinstance(answer, dict):
+        return _outcome("planner-invalid", "the answer is not a JSON object")
+    problems = _problems(answer, job_name)
+    if problems:
+        return _outcome("planner-invalid", "; ".join(problems))
+    return _write(answer, plan_dir)
+
+
+def _strip_fences(text):
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = NL.join(lines)
+    return stripped
+
+
+def spec_problems(spec_md):
+    out = []
+    for number, line in enumerate(spec_md.splitlines(), 1):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if not TAG.match(text):
+            out.append(f"spec line {number} is not tagged KNOWN or ASSUMED")
+    return out
+
+
+def _problems(answer, job_name):
+    missing = [key for key in ("plan_md", "spec_md", "job", "acceptance", "controls", "expected_lines") if key not in answer]
+    if missing:
+        return [f"missing {', '.join(missing)}"]
+    job = answer["job"]
+    if not isinstance(job, dict):
+        return ["the job must be an object"]
+    problems = []
+    if job.get("name") != job_name:
+        problems.append("the job name differs from the job being planned")
+    try:
+        p1b.check_production_job(job)
+    except p1b.JobRefused as exc:
+        problems.append(str(exc))
+    problems += gates.production_job_problems(job)
+    try:
+        jsonschema.validate(instance=job, schema=fl.JOB_SCHEMA)
+    except jsonschema.ValidationError as exc:
+        problems.append("job schema: " + exc.message)
+    problems += spec_problems(str(answer["spec_md"]))
+    if set(answer["acceptance"]) != set(job.get("acceptance_tests") or []):
+        problems.append("acceptance files must be exactly the job's acceptance_tests")
+    for control in job.get("negative_controls") or []:
+        for source in (control.get("replace") or {}).values():
+            if source not in answer["controls"]:
+                problems.append(f"negative control source {source} is missing from controls")
+    lines = answer["expected_lines"]
+    if not isinstance(lines, dict) or any(not isinstance(v, int) for v in lines.values()):
+        problems.append("expected_lines must map each file to a line count")
+    else:
+        absent = [f for f in job.get("files") or [] if f not in lines]
+        if absent:
+            problems.append(f"expected_lines has no count for {absent}")
+        try:
+            p1b.check_job_size(lines)
+        except p1b.JobTooLarge as exc:
+            problems.append(str(exc))
+    return problems
+
+
+def _write(answer, plan_dir):
+    job_path = plan_dir / "job.json"
+    if job_path.is_file():                              # a restart: the artifacts of this answer are already written and read-only
+        return _summary(plan_dir)
+    job = answer["job"]
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    (plan_dir / "PLAN.md").write_text(str(answer["plan_md"]), encoding="utf-8")
+    (plan_dir / "SPEC.md").write_text(str(answer["spec_md"]), encoding="utf-8")
+    (plan_dir / "expected_lines.json").write_text(json.dumps(answer["expected_lines"], indent=2, sort_keys=True), encoding="utf-8")
+    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")
+    os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
+    for rel, text in {**answer["acceptance"], **answer["controls"]}.items():
+        target = plan_dir / "files" / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(text), encoding="utf-8")
+    return _summary(plan_dir)
+
+
+def _summary(plan_dir):
+    spec = (plan_dir / "SPEC.md").read_text(encoding="utf-8")
+    assumed = [line.split(":", 1)[1].strip() for line in spec.splitlines() if re.match(r"^\s*(?:[-*]\s+)?ASSUMED:", line)]
+    return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"), "assumed": assumed}
+
+
+def _outcome(state, reason):
+    return {"state": state, "reason": reason, "job_sha256": None, "assumed": []}

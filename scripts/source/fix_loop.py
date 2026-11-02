@@ -37,10 +37,15 @@ JOB_SCHEMA = {
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
         "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
-        "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
-        "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "haiku"]}, "default": ["nemotron", "nemotron", "nemotron"]},
+        # a list for legacy jobs; the string "by_lineage" for production (P1b), checked in load_job / p1b_routing.check_production_job
+        "reviewers": {"type": ["array", "string"], "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]},
+                      "default": ["lightning", "minimax", "codex", "haiku"]},
+        "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "haiku", "writer_a", "writer_b"]}, "default": ["nemotron", "nemotron", "nemotron"]},
         # P0 2026-11-02: production jobs (locked acceptance tests, sandboxed pytest, strict review). A job without `profile` is legacy.
         "profile": {"type": "string", "enum": ["production", "legacy"]},
+        # P1b 2026-11-02 (production only): public visibility, the owner's budget and the unit deadline
+        "visibility": {"type": "string", "enum": ["public", "private"]},
+        "budget": {"type": "object", "properties": {"free_requests": {"type": "integer"}, "paid_usd": {"type": "number"}}, "additionalProperties": False},
         "acceptance_tests": {"type": "array", "items": {"type": "string"}, "default": []},
         "acceptance_baseline_fail": {"type": "array", "items": {"type": "string"}, "default": []},
         "negative_controls": {"type": "array", "default": [], "items": {
@@ -96,23 +101,28 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
     if job["coder_model"] != "nvidia/nemotron-3-ultra-550b-a55b" or job["reviewer_model"] != "nvidia/nemotron-3.5-lightning-30b-a3b":
         raise ValueError("coder_model and reviewer_model are not configurable: the loop always uses nemotron-3-ultra (coder) and nemotron-3.5-lightning (Lightning reviewer)")
-    job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
-    job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
-    job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
-
-    if job.get("min_valid_reviews", 0) > len(job["reviewers"]):
-        raise ValueError("min_valid_reviews cannot exceed the number of reviewers")
-    if job.get("review", True) and not job["reviewers"]:
-        raise ValueError("reviewers cannot be empty while review is enabled")
-    # Validate fixers field
-    fixers = job.get("fixers")
-    if not isinstance(fixers, list):
-        raise ValueError("fixers must be a list")
-    if len(fixers) == 0:
-        raise ValueError("fixers list cannot be empty")
-    for f in fixers:
-        if f not in ("nemotron", "haiku"):
-            raise ValueError(f"unknown fixer name: {f}")
+    production = job.get("profile") == "production"
+    if production:                                   # P1b: roles only (writer_a, writer_b); reviewers by lineage; the production checks below
+        _p1b().check_production_job(job)
+    else:
+        job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
+        job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
+        job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
+        if not isinstance(job["reviewers"], list):
+            raise ValueError("reviewers must be a list for a legacy job (the string by_lineage is for production jobs)")
+        if job.get("min_valid_reviews", 0) > len(job["reviewers"]):
+            raise ValueError("min_valid_reviews cannot exceed the number of reviewers")
+        if job.get("review", True) and not job["reviewers"]:
+            raise ValueError("reviewers cannot be empty while review is enabled")
+        # Validate fixers field
+        fixers = job.get("fixers")
+        if not isinstance(fixers, list):
+            raise ValueError("fixers must be a list")
+        if len(fixers) == 0:
+            raise ValueError("fixers list cannot be empty")
+        for f in fixers:
+            if f not in ("nemotron", "haiku"):
+                raise ValueError(f"unknown fixer name: {f}")
 
     root = path.parent.resolve()
     _validate_path(job["spec"], root, "spec")
@@ -182,6 +192,12 @@ def _sibling_module(name: str):
 def _p0():
     """The P0 gates module (scripts/source/p0_gates.py)."""
     return _sibling_module("p0_gates")
+
+
+def _p1b():
+    """The P1b routing module, imported normally: the production runner and this file must share one copy (the exception classes must match)."""
+    import p1b_routing
+    return p1b_routing
 
 
 def _sandbox_mod():
@@ -823,13 +839,18 @@ def run_job(
     status_dir: Path | None = None,
     scrub_keys: list[str] | None = None,
     sandbox=None,
+    openrouter=None,
 ) -> dict:
     production = job.get("profile") == "production"
     if production and pytest_runner is not None:
         raise ValueError("a production job runs pytest only in the sandbox; pytest_runner cannot be replaced (pass sandbox= in tests)")
+    if production and (caller is not None or callers is not None or reviewer is not None):
+        raise ValueError("production jobs call the P1b roster through openrouter_call by role; caller, callers and reviewer are legacy and cannot be passed")
     # Backward compatibility: if caller is provided, use it for all rounds
     # Otherwise, build callers dict with defaults
-    if caller is not None:
+    if production:
+        effective_callers = {}                 # P1b 2026-11-02: no legacy model is built for a production job (see the dispatch below)
+    elif caller is not None:
         # Legacy mode: single caller for all rounds
         effective_callers = {"nemotron": caller}
     else:
@@ -843,7 +864,7 @@ def run_job(
         if "haiku" in (job.get("fixers") or []):             # owner exception 2026-10-31: Haiku 5.5 high as coder for a named job, via the Claude CLI
             effective_callers["haiku"] = _haiku_cli_caller_factory()
 
-    if reviewer is None:
+    if reviewer is None and not production:
         reviewer = _default_reviewers_factory(root, job.get("review_prompt"))
     # Backward compatibility: if a single callable is passed, wrap it for the first reviewer
     if reviewer is not None and not isinstance(reviewer, dict):
@@ -905,6 +926,11 @@ def run_job(
                 "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     if production:
+        line_counts = {rel: len((root / rel).read_text(encoding="utf-8").splitlines()) if (root / rel).is_file() else 0 for rel in expected_files}
+        try:
+            _p1b().check_job_size(line_counts)
+        except _p1b().JobTooLarge as exc:          # the planner splits it first; no sandbox run and no model call
+            return _early_stop("job-too-large", "JOB_TOO_LARGE.md", "JOB TOO LARGE (no model call was made)", [str(exc)])
         if sandbox is None:
             sbm = _sandbox_mod()
             include = job.get("sandbox_include") or sorted({Path(p.split("::")[0]).parts[0] for p in
@@ -942,6 +968,12 @@ def run_job(
             if probs:
                 out += chr(10) + "LOOP P0 VERDICT: not a pass:" + chr(10) + chr(10).join("- " + p for p in probs)
             return (not probs), out
+
+    if production:                             # P1b 2026-11-02: the whole unit runs through p1b_routing.walk(), every model call via openrouter_call by role
+        import p1b_production
+        return p1b_production.run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock,
+                                  originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root, job),
+                                  parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys)
 
     rounds_record: list[dict] = []
     coder_calls = 0
@@ -1475,7 +1507,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dry-run: prompt size {len(system) + len(user)} chars")
         return 0
 
-    if job.get("review", True):
+    if job.get("review", True) and job.get("profile") != "production":      # production reviewers are the P1b lineage panels (no CLI to ping)
         dead = preflight_reviewers(root, job.get("reviewers", []))
         if dead:
             print(f"reviewer login/CLI check failed for: {dead}; stopping before round 0 (exit 6)", file=sys.stderr)

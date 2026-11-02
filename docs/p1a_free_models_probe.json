@@ -1,0 +1,127 @@
+{
+  "probed_at": "2026-11-02T03:58:34Z",
+  "results": {
+    "cohere/north-mini-code:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 0.808,
+      "ok": true,
+      "provider": "Cohere",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 49,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 18,
+        "total_tokens": 67
+      }
+    },
+    "dots-studio/dots-3-note-preview:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 1.009,
+      "ok": true,
+      "provider": "AtlasCloud",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 23,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 25,
+        "total_tokens": 48
+      }
+    },
+    "google/gemma-4-26b-a4b-it:free": {
+      "error": "google/gemma-4-26b-a4b-it:free dropped for this job after 2 provider errors in a row",
+      "ok": false
+    },
+    "google/gemma-4-31b-it:free": {
+      "error": "google/gemma-4-31b-it:free dropped for this job after 2 provider errors in a row",
+      "ok": false
+    },
+    "liquid/lfm-2.5-2.6b:free": {
+      "error": "liquid/lfm-2.5-2.6b:free dropped for this job after 2 provider errors in a row",
+      "ok": false
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 0.914,
+      "ok": true,
+      "provider": "Nvidia",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 59,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 34,
+        "total_tokens": 93
+      }
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 13.08,
+      "ok": true,
+      "provider": "Nvidia",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 18,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 34,
+        "total_tokens": 52
+      }
+    },
+    "nvidia/nemotron-3.5-content-safety:free": {
+      "error": "nvidia/nemotron-3.5-content-safety:free: HTTP 404: Provider returned error {\"is_byok\": false, \"provider_name\": \"Nvidia\", \"raw\": \"{\\\"status\\\":404,\\\"title\\\":\\\"Not Found\\\",\\\"detail\\\":\\\"Function id '3e84ff75-527b-4491-8647-530406876074' version",
+      "ok": false
+    },
+    "nvidia/nemotron-3.5-lightning:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 67.637,
+      "ok": true,
+      "provider": "Nvidia",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 202,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 34,
+        "total_tokens": 236
+      }
+    },
+    "nvidia/nemotron-3.5-super-vl:free": {
+      "attempts": 1,
+      "finish": "stop",
+      "latency_s": 1.579,
+      "ok": true,
+      "provider": "Nvidia",
+      "reply": "OK",
+      "usage": {
+        "completion_tokens": 38,
+        "cost": 0,
+        "is_byok": false,
+        "prompt_tokens": 34,
+        "total_tokens": 72
+      }
+    },
+    "recursive/flint-v1.0:free": {
+      "error": "recursive/flint-v1.0:free dropped for this job after 2 provider errors in a row",
+      "ok": false
+    },
+    "thinkingmachines/inkling-small:free": {
+      "error": "thinkingmachines/inkling-small:free: HTTP 403: thinkingmachines/inkling-small:free is only available on agentic harnesses. Try plugging it into a coding agent or productivity app listed on https://openrouter.ai/apps {\"failed_routing_step\": ",
+      "ok": false
+    },
+    "thinkingmachines/inkling:free": {
+      "error": "thinkingmachines/inkling:free: HTTP 403: thinkingmachines/inkling:free is only available on agentic harnesses. Try plugging it into a coding agent or productivity app listed on https://openrouter.ai/apps {\"failed_routing_step\": \"Gate Free E",
+      "ok": false
+    },
+    "xingchen-agi/xing4.0-29b-a4b:free": {
+      "error": "xingchen-agi/xing4.0-29b-a4b:free dropped for this job after 2 provider errors in a row",
+      "ok": false
+    }
+  }
+}

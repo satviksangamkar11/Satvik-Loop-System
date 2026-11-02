@@ -108,6 +108,8 @@ The launcher accepts only `nemotron` or `haiku` as fixers; any other name is ref
 - `scripts/source/nemotron_code.py`, `draft_source.py`, `coder_run.py`: coder calls, streaming, parsing of `FILE:` blocks
 - `scripts/image_trials/nvidia_trial.py`: the key pool
 - `pieces/p1_claims.py`, `pieces/p1_escalate.py`: launcher, claims, ledger, escalation
+- `scripts/source/p1b_routing.py` and `scripts/source/p1b_production.py`: the production ladder and its runner (P1b; see the P1b section)
+- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (owner roster, free ledger, Z.AI-pinned repair budget, probe)
 - `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the Codex model; `REVIEW_WITH=haiku` asks Haiku at low effort instead)
 - `docs/REVIEW_PROMPT.md`: the prompt every reviewer receives
 - `pieces/test_*.py`: the tests
@@ -188,3 +190,131 @@ A job with `"profile": "production"` closes the false-pass and execution holes. 
   while it was reviewed ends `integrity-mismatch` and the tested version is restored.
 
 New states (exit code 1): `acceptance-invalid`, `acceptance-tampered`, `sandbox-unavailable`, `integrity-mismatch`.
+
+## Production run through P1b (2026-11-02)
+
+A job with `profile: production` runs one unit through `p1b_routing.walk()`, and every model call goes through `openrouter_call` by role.
+`fix_loop.run_job` dispatches it to `scripts/source/p1b_production.py` after the P0 setup (sandbox self-test, locked acceptance tests,
+calibration). The legacy loop (nemotron, codex, haiku, groq, minimax, lightning) is not reached by a production job; `caller`, `callers`
+and `reviewer` are refused for production, and a static test checks that the P1b modules name no legacy model family.
+
+- **Job shape.** `fixers` are the role names `writer_a` and `writer_b`; `reviewers` is the string `by_lineage`; `visibility` is `public`;
+  `budget` is `{free_requests: 40, paid_usd: 0}` (a free pilot: no paid call) or `{free_requests: 40, paid_usd: 0.15}`; `deadline_min` is 60 or 120; `files` at most 800 lines each and 1,500 in total
+  (`check_job_size`, checked before the sandbox runs). The legacy fields (`reviewers` as a list, `min_valid_reviews`) are refused for production.
+- **Ladder.** Dots writes; a localized red (at most 3 failing tests in at most 2 files, not systemic) gets one Dots repair; otherwise the files
+  are restored and Xing writes fresh (every job file required), with one Xing repair if still red; then the GLM gate: at most 2 GLM rounds,
+  only for a defect both free writers failed on the same test, and only while the budget fits.
+- **Reviewers.** The lineage panel from `p1b_routing.panel_for`: code last written by Dots is reviewed by Xing and North; by Xing, by Dots and
+  North; after a GLM repair the origin decides. Each file keeps `{last, origin}` in `_loop/<job>/lineage.json`.
+- **Tests decide.** A green run is the job's tests plus the locked acceptance tests passing in the sandbox, with the locked files unchanged. The
+  files that passed are hashed; the review hashes and the final hash must equal that hash, or the state is `integrity-mismatch`.
+- **States.** `passed`, `review-open` (a reviewer's FIX FIRST with evidence; the FIX FIRST repair loop is not built yet, so the report is kept in
+  `REVIEW_FIX.md`), `escalate`, `blocked`, `provider-unavailable`, `deadline`, `acceptance-tampered`, `integrity-mismatch`, `job-too-large`.
+  Anything that did not pass is restored to the originals, the authorized candidate files are kept under `candidate/`, and the reason is
+  written to `ESCALATE.md` (or `EXCEPTION.md` for an unexpected error). See the pre-pilot section below.
+- **Tests.** `pieces/test_p1b_production_run.py` runs the Dots, Xing, GLM order end to end through the real Docker sandbox with scripted
+  models (`pieces/prod_harness.py`); it skips with the reason when the sandbox is not available. Nothing calls the network or the paid model.
+- **Not done.** The FIX FIRST repair loop; the frozen-test rule of the legacy loop is not applied to the P1b ladder (the locked acceptance tests
+  are the protection); no live run.
+
+## Pre-pilot review fixes (2026-11-02)
+
+Five fixes from the pre-pilot bug review. Each was written as a failing test first (`pieces/test_pre_pilot_review.py`, no Docker, fake sandbox).
+
+- **A fresh writer gets no earlier pytest output.** `restore()` clears the output a writer sees. Every test run's output is kept under
+  `_loop/<job>/history/test_NN.txt`, never in a prompt.
+- **Nothing unaccepted stays in the checkout.** Every state other than `passed` (`review-open`, `integrity-mismatch`, `escalate`, `exception`
+  and the rest) snapshots the job's own files to `candidate/`, restores the originals, and writes its reason. An unexpected exception is caught,
+  so it is a state (`exception`), not a crash.
+- **A killed worker is recovered on the next launch.** The job writes `status.json` with state `running` before its first file write. The next
+  `run_job` finds `running` with the originals saved and restores them before any model call (`fix_loop._prepare_job_folder`). The abandoned
+  candidate is not used: the restart's first writer sees the originals only. (A kill cannot be handled inside the process; this recovery is what
+  covers SIGKILL.)
+- **`paid_usd` 0 is accepted** (the free pilot). The validator accepts exactly 0 or 0.15. `client_for(root, job)` passes the job's budget to the
+  `JobBudget`, so a 0 budget makes no GLM request, not even the price lookup.
+- **One key for both roles.** With only one key file or variable, the free and the paid roles use it. The paid allowlist (`resolve`) and the
+  dollar budget still apply; an unlisted paid model is refused before any request.
+- **Suite.** Three `test_guards` checks read files that belong to the Reverse-Video project and are absent from this repository (`p3_audio_evidence.py`,
+  `docs/AGENT_RULES.md`, and the real job files). They skip with that reason and run in full wherever the file exists. Nothing else was skipped.
+
+## Review package and FIX FIRST evidence (pre-pilot patch, 2026-11-02)
+
+Patch Steps 1 to 3 (`p1b_production.build_package`, `p1b_routing.evidence_ok` and `_review_one`); tests in `pieces/test_p1b_review_package.py`
+and `pieces/test_p1b_routing.py`.
+
+- **One request per reviewer, nine sections in this order.** 1 SPEC (every non-heading spec line, numbered `SPEC n`; `KNOWN:` and `ASSUMED:`
+  lines included). 2 DIFF (each job file against its original; `NEW FILE`, `DELETED`). 3 FILES (implementation files in full, with line numbers;
+  an unchanged one is marked `(unchanged)`). 4 TESTS (`[JOB TEST]` or `[LOCKED ACCEPTANCE]`, with line numbers). 5 RESULTS (every expected test
+  as passed, failed, skipped or missing, from the JUnit file of the last green run). 6 STATIC WARNINGS (advisory: a literal that job code and a
+  test both compare against; never decides a job). 7 CONTEXT (direct imports and reference files first, then callers including test callers,
+  smallest first). 8 OMITTED (every optional file left out, by name). 9 CHECKS (`CHECK 1` to `CHECK 5`, then the verdict line).
+- **Size.** Sections 1 to 6 and 9 are mandatory. If they do not fit `PACKAGE_LIMIT` (100,000 characters) the job ends `blocked` with the reason
+  "review package exceeds the prompt limit", before any reviewer call, and the originals are restored. Only CONTEXT is cut.
+- **Never read.** Anything that resolves outside the repo or into `_loop/`, `_moss/`, `secrets/`, `.git/`, a `.env` file or a key file, including
+  symlinks and Windows junctions into those places.
+- **FIX FIRST counts only with evidence.** It needs a `file:line` naming a file of the package with a line no greater than the file's length, and
+  `SPEC n` (n within the spec's requirement count) or `CHECK n` (n from 1 to 5). A FIX FIRST without it gets one re-ask from the same reviewer.
+- **Routing.** A failed call or a reply with no verdict line: the backup takes the slot, with no re-ask. A FIX FIRST still without evidence after
+  the re-ask, or a re-ask that answers READY, ends `review-open`; no backup and no later READY overrides it. A valid FIX FIRST ends `review-open`
+  (no repair loop yet). PASS needs READY from every reviewer on the panel, and the reason lists the reviewers that returned READY, a backup included.
+- **Candidate.** A stop before any write keeps no `candidate/` (it is kept only when a job file on disk differs from its original).
+- **Not done.** The repair loop for a valid FIX FIRST.
+
+## Opus planner (P1c, 2026-11-02)
+
+`scripts/source/plan_job.py` plans one job with a single Opus call. Nothing calls it live yet: the tests use `pieces/fake_claude.py`.
+
+- **One call per job.** `plan/INTENT.json` is written before the call; the raw answer goes straight to `plan/raw_response.json`. A restart with a
+  saved answer parses it and makes no call. An intent with no saved answer is `planner-uncertain`; it is never retried automatically. A timed-out
+  call is `planner-uncertain` too.
+- **The call.** `claude -p --model opus --effort medium --output-format json --tools "" --mcp-config <empty file> --strict-mcp-config`, from an
+  empty temporary folder, prompt on stdin, `ANTHROPIC_API_KEY` removed from its environment, never `--bare`. The flags were checked against the installed
+  `claude --help` (no model call): `-p`, `--output-format json`, `--tools ""`, `--mcp-config`, `--strict-mcp-config`, `--effort`, `--model`.
+- **Refused.** Any MCP server or plugin reported by the session; more than 30 files sent; an answer that fails the production rules
+  (`check_production_job`, `production_job_problems`, the job schema); a spec line without a `KNOWN:` or `ASSUMED:` tag; acceptance files that are
+  not exactly the job's acceptance tests; a missing negative control source; a unit over 800 lines per file or 1,500 in total.
+- **Output.** `plan/PLAN.md`, `plan/SPEC.md`, `plan/job.json` (read-only, its SHA-256 is returned), `plan/expected_lines.json`, and the acceptance and
+  control files under `plan/files/`. The result lists the ASSUMED lines.
+- **Not done.** The loop does not start from a planned job yet; the owner's approval of ASSUMED lines is not a gate in code yet; no live run.
+
+## OpenRouter adapter (P1a, 2026-11-02)
+
+`scripts/source/openrouter_call.py` is the only path to OpenRouter. A production job calls it through `p1b_production.py` (see the P1b section).
+Every reply is checked before it counts, and no failure falls back to another model or key.
+
+- **Roster (owner, 2026-11-02).** Roles: `writer_a` = `dots-studio/dots-3-note-preview:free`, `writer_b` = `xingchen-agi/xing4.0-29b-a4b:free`,
+  `reviewer` = `cohere/north-mini-code:free`, `repair` = `z-ai/glm-5.3-flash` (the only paid ID). The reviewer backup
+  (`google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it:free`) is disabled: only the probe may call those IDs. Refused before any request:
+  `openrouter/free`, a `models` list, a bare paid ID, a free ID without `:free`, a disabled backup role, any other ID.
+- **Limits.** Writer and repair: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
+  sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
+  Xing sends temperature 0.8, top_p 0.95, repetition_penalty 1.05.
+- **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
+  Every attempt is reserved before it is sent, failed attempts included. 15 a minute. `begin_job()` saves each key's full `GET /api/v1/key`
+  JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
+  and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
+  per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
+- **Repair (paid).** The paid key only. Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint
+  and prices are in `docs/p1a_glm_endpoint.json`. The cheapest-endpoint choice is removed. A reply from any other provider is unavailable and its
+  spend still counts. Limits per job: 2 logical repair rounds, 4 physical paid attempts (retries included), $0.15 ceiling. Each attempt reserves
+  its estimate before it is sent; a missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
+- **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a `FILE:` block; a reviewer needs a
+  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at the retry limit (writer and repair: 72000).
+- **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
+  Two provider errors in a row drop the model for the job. 401 and 402 block the account and are never retried. 403 is a refusal of that
+  model only: the model is dropped for the job, and the other roles keep working (`ModelDenied`).
+- **Private code.** Blocked. `APPROVED_PRIVATE` is empty because no non-training route has been approved.
+- **Keys.** `OPENROUTER_FREE_KEY` and `OPENROUTER_PAID_KEY` from the environment, or `secrets/openrouter_free_key.txt` and
+  `secrets/openrouter_paid_key.txt`. Keys are never printed or written; error text is redacted.
+- **Raw errors.** Every failed attempt is kept in `failed_attempts`: model, HTTP status (`null` for a network error) and the first 500 characters
+  of its message. A dropped model's error repeats the last two raw failures. The probe writes them in full for each model.
+- **Probe.** `python scripts/source/openrouter_call.py probe --out <file> [--models a,b]` makes one live free call each to writer_a, writer_b,
+  reviewer and the two Gemma backups (or only the named ones), and records the key state before and after. It never calls the repair model.
+  It spends free requests, so run it by hand and only after the owner's go.
+- **Results (2026-11-02).** `docs/p1a_roster_probe.json`: writer_a, writer_b and reviewer answered at $0. `docs/p1a_gemma_rerun.json`: both Gemma
+  backups returned HTTP 429 "upstream shared pool" (Google AI Studio, "temporarily rate-limited upstream"), the expected result, now recorded
+  in full. Gemma stays disabled.
+- **Sandbox credential check.** The container probe refuses any environment variable whose name contains a credential word (`KEY`, `TOKEN`,
+  `SECRET`, `PASSWORD`, ...), except `GPG_KEY`, which the base image sets. One rule, `sandbox_runner.CREDENTIAL_RULE`, is used on the host and in
+  the container (`pieces/test_sandbox_credential_names.py`).
+- **Ignored paths.** `.gitignore` keeps `secrets/`, `_loop/` and `.env` out of git.

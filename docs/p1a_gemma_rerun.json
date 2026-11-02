@@ -1,0 +1,87 @@
+{
+  "key_after": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    }
+  },
+  "key_before": {
+    "free": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    },
+    "paid": {
+      "is_free_tier": false,
+      "limit": 2,
+      "limit_remaining": 1.999993352,
+      "rate_limit": {
+        "interval": "10s",
+        "note": "This field is deprecated and safe to ignore.",
+        "requests": -1
+      },
+      "usage": 6.648e-06
+    }
+  },
+  "probed_at": "2026-11-02T05:12:36Z",
+  "probes": {
+    "google/gemma-4-26b-a4b-it:free": {
+      "error": "google/gemma-4-26b-a4b-it:free dropped for this job after 2 provider errors in a row; last: HTTP 429: Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provid | HTTP 429: Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provid",
+      "failed_attempts": [
+        {
+          "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provid",
+          "model": "google/gemma-4-26b-a4b-it:free",
+          "status": 429
+        },
+        {
+          "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provid",
+          "model": "google/gemma-4-26b-a4b-it:free",
+          "status": 429
+        }
+      ],
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "ok": false
+    },
+    "google/gemma-4-31b-it:free": {
+      "error": "google/gemma-4-31b-it:free dropped for this job after 2 provider errors in a row; last: HTTP 429: Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider r | HTTP 429: Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider r",
+      "failed_attempts": [
+        {
+          "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider r",
+          "model": "google/gemma-4-31b-it:free",
+          "status": 429
+        },
+        {
+          "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_error_code\": \"429\", \"provider_name\": \"Google AI Studio\", \"raw\": \"google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations\", \"remedy_hint\": \"Retry shortly, add your own provider key (https://openrouter.ai/settings/integrations), or route to another provider with provider r",
+          "model": "google/gemma-4-31b-it:free",
+          "status": 429
+        }
+      ],
+      "model": "google/gemma-4-31b-it:free",
+      "ok": false
+    }
+  }
+}

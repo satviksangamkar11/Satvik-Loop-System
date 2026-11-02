@@ -107,22 +107,33 @@ def test_judge_ready_cannot_fill_a_missing_review_end_to_end(tmp_path):
     assert result["review_verdict"] != "READY"
 
 
+def _prod_job(root, **extra):
+    """A production job in the P1b shape (2026-11-02) with one change given by `extra`."""
+    job = {"name": "j", "profile": "production", "visibility": "public", "spec": "specs/s.md", "files": ["pieces/m.py", "pieces/test_m.py"],
+           "tests": ["pieces/test_m.py"], "reference": [], "review": True, "reviewers": "by_lineage", "review_prompt": "docs/RP.md",
+           "fixers": ["writer_a", "writer_b"], "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60, **extra}
+    (root / "_loop" / "jobs").mkdir(exist_ok=True)
+    (root / "_loop" / "jobs" / "j.json").write_text(json.dumps(job), encoding="utf-8")
+    return fl.load_job(root / "_loop" / "jobs" / "j.json")
+
+
 def test_review_false_is_refused_for_a_production_job(tmp_path):
     root = make_root(tmp_path)
-    with pytest.raises(ValueError, match="production"):
-        _legacy_job(root, ["lightning", "codex"], profile="production", review=False)
+    with pytest.raises(ValueError, match="review: false"):
+        _prod_job(root, review=False)
 
 
-def test_a_lower_quorum_is_refused_for_a_production_job(tmp_path):
+def test_a_reviewer_list_is_refused_for_a_production_job(tmp_path):
+    """P1b: production reviewers are the lineage panel (by_lineage). A list of reviewer names, and so any quorum, is refused."""
     root = make_root(tmp_path)
-    with pytest.raises(ValueError, match="production"):
-        _legacy_job(root, ["lightning", "codex", "minimax"], profile="production", min_valid_reviews=2)
+    with pytest.raises(ValueError, match="by_lineage"):
+        _prod_job(root, reviewers=["lightning", "codex", "minimax"], min_valid_reviews=2)
 
 
-def test_a_single_reviewer_is_refused_for_a_production_job(tmp_path):
+def test_a_legacy_model_name_is_refused_for_a_production_job(tmp_path):
     root = make_root(tmp_path)
-    with pytest.raises(ValueError, match="production"):
-        _legacy_job(root, ["lightning"], profile="production")
+    with pytest.raises(ValueError, match="fixers"):
+        _prod_job(root, fixers=["nemotron"])
 
 
 def test_the_cli_refuses_a_non_production_job_without_the_legacy_flag(tmp_path):

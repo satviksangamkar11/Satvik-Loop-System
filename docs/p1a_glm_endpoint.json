@@ -1,0 +1,17 @@
+{
+  "read_at": "2026-11-02",
+  "read_by": "GET /api/v1/models/z-ai/glm-5.3-flash/endpoints (metadata only, no completion call)",
+  "model": "z-ai/glm-5.3-flash",
+  "pinned_provider_name": "Z.AI",
+  "pinned_provider_slug": "z-ai",
+  "endpoint_tag": "z-ai/fp8",
+  "quantization": "fp8",
+  "status": 0,
+  "pricing_usd_per_token": {
+    "prompt": "0.00000015",
+    "completion": "0.0000005",
+    "input_cache_read": "0.00000003"
+  },
+  "rule": "requests send provider {\"only\": [\"z-ai\"], \"allow_fallbacks\": false}; a reply from any other provider is unavailable; the cheapest-endpoint choice is removed",
+  "note": "Full endpoint list (35 entries) is in _loop/openrouter/glm_endpoints_raw.json, git-ignored. Cheaper entries exist (for example Relace, OpenInference); they are not used."
+}
