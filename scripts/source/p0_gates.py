@@ -4,7 +4,9 @@ Every check FAILS CLOSED: an unreadable input, a parse error or an unexpected sh
 from __future__ import annotations
 
 import ast
+import fnmatch
 import hashlib
+import posixpath
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
@@ -15,6 +17,13 @@ VALID_VERDICTS = ("READY", "FIX FIRST")
 TEST_CONFIG_NAMES = {"conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", ".pytest.ini"}
 STARTUP_NAMES = {"sitecustomize", "usercustomize", "pytest", "_pytest", "pluggy", "py", "conftest"}
 NEVER_INCLUDED = {"_moss", "_loop", "secrets", ".git"}
+
+# the loop's own control files (lower case, repo-relative, fnmatch patterns): a production job may never edit them
+PROTECTED_CONTROL_FILES = (
+    "scripts/source/fix_loop.py", "scripts/source/p1b_*.py", "scripts/source/openrouter_call.py", "scripts/source/sandbox_runner.py",
+    "scripts/source/p0_gates.py", "scripts/source/opus_repair.py", "scripts/source/plan_job.py", "scripts/source/loop_home.py",
+    "scripts/source/launch.py", "scripts/source/merge_queue.py", "scripts/source/shared_limits.py", "config/roster.json", "tools/sandbox/*",
+)
 
 
 # ---------------------------------------------------------------- review acceptance
@@ -90,6 +99,18 @@ def protected_paths(root: Path, acceptance_tests, control_files) -> list:
 
 # ---------------------------------------------------------------- production job validation
 
+def normal_repo_path(rel: str) -> str:
+    """Repo-relative, forward slashes, no '.', '..', doubled or leading slashes, lower case; trailing dots and spaces dropped from each part
+    (Windows ignores them, so 'fix_loop.py.' is fix_loop.py)."""
+    p = posixpath.normpath(str(rel).replace("\\", "/")).lstrip("/")
+    return "/".join(part.rstrip(" .") for part in p.split("/")).lower()
+
+
+def is_protected_control_file(rel: str) -> bool:
+    n = normal_repo_path(rel)
+    return any(fnmatch.fnmatchcase(n, pat) for pat in PROTECTED_CONTROL_FILES)
+
+
 def production_job_problems(job: dict) -> list:
     """Problems that make a job unsafe to run as a production job. load_job raises on any of them."""
     p = []
@@ -107,6 +128,8 @@ def production_job_problems(job: dict) -> list:
     files = job.get("files") or []
     control_files = [src for c in controls for src in (c.get("replace") or {}).values()]
     for f in files:
+        if is_protected_control_file(f):
+            p.append(f"{f}: job edits the loop's own control files")
         name = PurePosixPath(f).name
         if f in acc or f in control_files or f in (job.get("regression") or []):
             p.append(f"{f}: acceptance tests, regression tests and negative controls cannot be coder-editable files")
