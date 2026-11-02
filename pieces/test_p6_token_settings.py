@@ -52,8 +52,9 @@ def test_glm_is_called_after_north_says_ready_and_not_before():
     assert [entry for entry in models.log if entry[0] == "review"] == [("review", NORTH), ("review", GLM)]
 
 
-def test_a_valid_north_fix_first_ends_review_open_and_glm_is_never_called():
-    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE]}, [green()])
+def test_a_valid_north_fix_first_is_repaired_twice_then_ends_review_open_and_glm_is_never_called():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE] * 3,
+                           (DOTS, "repair"): [full("x = 2\n"), full("x = 3\n")]}, [green(), green(), green()])
     assert outcome.status == "review-fix" and NORTH in outcome.reason
     assert models.calls(GLM) == []
 
@@ -77,8 +78,9 @@ def test_a_glm_failure_after_north_ready_is_not_a_pass():
     assert outcome.status == "provider-unavailable" and "GLM" in outcome.reason
 
 
-def test_a_glm_fix_first_after_north_ready_is_review_open_and_names_glm():
-    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [READY], (GLM, "review"): [FIX_WITH_EVIDENCE]}, [green()])
+def test_a_glm_fix_first_after_north_ready_is_repaired_twice_then_review_open_and_names_glm():
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [READY] * 3, (GLM, "review"): [FIX_WITH_EVIDENCE] * 3,
+                      (DOTS, "repair"): [full("x = 2\n"), full("x = 3\n")]}, [green(), green(), green()])
     assert outcome.status == "review-fix" and GLM in outcome.reason
 
 

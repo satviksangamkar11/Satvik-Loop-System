@@ -157,7 +157,8 @@ def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path, o
 def test_review_open_restores_the_originals_and_keeps_the_candidate_for_inspection(tmp_path):
     root = with_original(make_prod_root(tmp_path))
     job = load(root, prod_job())
-    provider = ph.Provider({DOTS: [good_reply()], NORTH: [FIX_FIRST]})   # Dots green; North (the first reviewer) gives a FIX FIRST with file:line and SPEC
+    # Dots green; North (the first reviewer) gives a FIX FIRST with file:line and SPEC each time: Dots repairs twice, the third FIX FIRST stays open
+    provider = ph.Provider({DOTS: [good_reply(), good_reply(), good_reply()], NORTH: [FIX_FIRST, FIX_FIRST, FIX_FIRST]})
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "review-open", result
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
