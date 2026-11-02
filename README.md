@@ -219,9 +219,14 @@ before it counts, and no failure falls back to another model or key.
 - **Private code.** Blocked. `APPROVED_PRIVATE` is empty because no non-training route has been approved.
 - **Keys.** `OPENROUTER_FREE_KEY` and `OPENROUTER_PAID_KEY` from the environment, or `secrets/openrouter_free_key.txt` and
   `secrets/openrouter_paid_key.txt`. Keys are never printed or written; error text is redacted.
-- **Probe.** `python scripts/source/openrouter_call.py probe --out <file>` makes one live free call each to writer_a, writer_b, reviewer and the
-  two Gemma backups, and records the key state before and after. It never calls the repair model. It spends free requests, so run it by hand
-  and only after the owner's go.
+- **Raw errors.** Every failed attempt is kept in `failed_attempts`: model, HTTP status (`null` for a network error) and the first 500 characters
+  of its message. A dropped model's error repeats the last two raw failures. The probe writes them in full for each model.
+- **Probe.** `python scripts/source/openrouter_call.py probe --out <file> [--models a,b]` makes one live free call each to writer_a, writer_b,
+  reviewer and the two Gemma backups (or only the named ones), and records the key state before and after. It never calls the repair model.
+  It spends free requests, so run it by hand and only after the owner's go.
+- **Results (2026-11-02).** `docs/p1a_roster_probe.json`: writer_a, writer_b and reviewer answered at $0. `docs/p1a_gemma_rerun.json`: both Gemma
+  backups returned HTTP 429 "upstream shared pool" (Google AI Studio, "temporarily rate-limited upstream"), the expected result, now recorded
+  in full. Gemma stays disabled.
 - **Sandbox credential check.** The container probe refuses any environment variable whose name contains a credential word (`KEY`, `TOKEN`,
   `SECRET`, `PASSWORD`, ...), except `GPG_KEY`, which the base image sets. One rule, `sandbox_runner.CREDENTIAL_RULE`, is used on the host and in
   the container (`pieces/test_sandbox_credential_names.py`).

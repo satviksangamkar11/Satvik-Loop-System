@@ -386,9 +386,23 @@ class OpenRouter:
         self.clock, self.sleep, self.rand = clock, sleep, rand
         self.approved_private = frozenset(approved_private)
         self._endpoints = {}
+        self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 500 chars of its message
 
     def _err(self, cls, message):
         return cls(redact(message, self._secrets))
+
+    def _note(self, model, status, message):
+        """Keeps one failed attempt. The message is redacted and cut to its first 500 characters."""
+        self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:500]})
+
+    def _last_failures(self, model):
+        """The last BREAKER_LIMIT raw failures of a model, for the error that drops it."""
+        mine = [f for f in self.failed_attempts if f["model"] == model][-BREAKER_LIMIT:]
+        return " | ".join(f"HTTP {f['status']}: {f['message']}" if f["status"] is not None else f"no HTTP status: {f['message']}" for f in mine)
+
+    def failures_for(self, model):
+        return [f for f in self.failed_attempts if f["model"] == model]
+
 
     def endpoint(self, model):
         """The paid model's Z.AI endpoint, read live once per job: per-token prices and the slug the requests are pinned to.
@@ -478,12 +492,14 @@ class OpenRouter:
             if attempts and "retry_timeout_s" in limits:
                 timeout = limits["retry_timeout_s"]
             if self.breaker.open(model):
-                raise self._err(ProviderUnavailable, f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row")
+                raise self._err(ProviderUnavailable,
+                                f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row; last: {self._last_failures(model)}")
             attempts += 1
             reserved = self._reserve(model, slot, system, user, tokens)
             try:
                 status, headers, raw = self._post(model, slot, system, user, tokens, private, timeout)
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
+                self._note(model, None, f"{type(exc).__name__}: {exc}")
                 self.breaker.failed(model)
                 self._settle(slot, model, reserved, None)
                 self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"{type(exc).__name__}: {exc}")
@@ -493,26 +509,32 @@ class OpenRouter:
             spent = self._settle(slot, model, reserved, data)
             if status == 200:
                 if data is None:
+                    self._note(model, 200, "malformed reply: not a JSON object")
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
                 if slot == "paid" and data.get("provider") != PAID_PROVIDER_NAME:
+                    self._note(model, 200, f"reply came from provider {data.get('provider')!r}")
                     self.breaker.failed(model)
                     raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {PAID_PROVIDER_NAME!r}")
                 try:
                     text = check_reply(kind, model, data)
-                except _Truncated:
+                except _Truncated as exc:
+                    self._note(model, 200, str(exc))
                     if truncations == TRUNCATION_RETRIES:
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens} again")
                     truncations += 1
                     tokens = limits.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
                     continue
                 except _Mismatch as exc:
+                    self._note(model, 200, str(exc))
                     self.breaker.failed(model)
                     raise self._err(ProviderUnavailable, f"{model}: {exc}")
                 except ReplyRejected as exc:
+                    self._note(model, 200, str(exc))
                     raise self._err(ReplyRejected, f"{model}: {exc}")
                 self.breaker.ok(model)
                 return text, self._info(model, data, spent, attempts, tokens, started)
             if status == 429:
+                self._note(model, 429, message)
                 limit = classify_429(message)
                 if limit == "daily":
                     self.ledger.set_snapshot(0)
@@ -525,15 +547,19 @@ class OpenRouter:
                 retries += 1
                 continue
             if status == 403:
+                self._note(model, 403, message)
                 self.breaker.drop(model)
                 raise self._err(ModelDenied, f"{model}: HTTP 403: {message[:200]}")
             if status in (401, 402):
+                self._note(model, status, message)
                 raise self._err(AccountBlocked, f"{model}: HTTP {status}: {message[:200]}")
             if status >= 500:
+                self._note(model, status, message)
                 self.breaker.failed(model)
                 self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"HTTP {status}")
                 retries += 1
                 continue
+            self._note(model, status, message)
             raise self._err(OpenRouterError, f"{model}: HTTP {status}: {message[:200]}")
 
     def _reserve(self, model, slot, system, user, tokens):
@@ -603,20 +629,24 @@ PROBE_SYSTEM = "You are a connectivity check. Answer exactly as instructed."
 PROBE_USER = "Reply with the single word OK."
 
 
-def probe(client, out_path=None):
-    """One live call per roster model (kind text), plus each loaded key's state before and after. The summary holds no key value."""
+def probe(client, out_path=None, names=None):
+    """One live call per roster model (kind text), plus each loaded key's state before and after. `names` limits the run to some of the
+    probe names. The summary holds no key value; every failed attempt is kept in full (status and first 500 characters)."""
     def key_states():
         return {slot: {k: v for k, v in client.key_info(slot).items() if k in KEY_FIELDS} for slot in client.keys}
 
     before = key_states()
     results = {}
     targets = [("writer_a", False), ("writer_b", False), ("reviewer", False), (REVIEWER_BACKUP[0], True), (REVIEWER_BACKUP[1], True)]
+    if names is not None:
+        targets = [t for t in targets if t[0] in names]
     for name, backup in targets:
+        model = resolve(name, backup)
         try:
             text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256, allow_disabled_backup=backup)
-            results[name] = dict(info, ok=True, reply=text.strip()[:60])
+            results[name] = dict(info, ok=True, reply=text.strip()[:60], failed_attempts=client.failures_for(model))
         except OpenRouterError as exc:
-            results[name] = {"model": resolve(name, backup), "ok": False, "error": str(exc)[:300]}
+            results[name] = {"model": model, "ok": False, "error": str(exc), "failed_attempts": client.failures_for(model)}
     summary = {"probed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(client.clock())), "key_before": before,
                "key_after": key_states(), "probes": results}
     if out_path:
@@ -630,13 +660,15 @@ def main(argv=None):
     ap.add_argument("command", choices=["probe"])
     ap.add_argument("--out", help="also write the JSON summary to this file")
     ap.add_argument("--ledger", default=str(REPO / "_loop" / "openrouter"))
+    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer, or a backup model ID); default all")
     args = ap.parse_args(argv)
     keys = load_keys()
     if not keys:
         print("no key found: set OPENROUTER_FREE_KEY and/or OPENROUTER_PAID_KEY, or put them in secrets/", file=sys.stderr)
         return 2
+    names = [m.strip() for m in args.models.split(",") if m.strip()] if args.models else None
     try:
-        summary = probe(OpenRouter(keys, args.ledger), args.out)
+        summary = probe(OpenRouter(keys, args.ledger), args.out, names)
     except OpenRouterError as exc:
         print(f"probe stopped: {exc}", file=sys.stderr)
         return 1
