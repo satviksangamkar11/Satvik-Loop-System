@@ -245,3 +245,17 @@ def test_run_job_runs_a_production_job_when_the_roster_profile_matches(tmp_path,
     result = fl.run_job(_production_job(root, "ok"), root, status_dir=root / "_loop", scrub_keys=[])
     assert result["state"] == "invalid-spec"                   # the guard let it through: the next check (spec) decided, no model call
     assert result["state"] != "profile-mismatch"
+
+
+# ---- 9. the production runner writes schema_version 1 into status.json (owner 2026-11-02)
+
+def test_production_status_json_written_by_the_runner_carries_schema_version_1(tmp_path):
+    import p1b_production as pp
+    root = tmp_path / "repo"
+    (root / "pieces").mkdir(parents=True)
+    (root / "pieces" / "calc.py").write_text("X = 1\n", encoding="utf-8")
+    status_dir_job = root / "_loop" / "calc"
+    status_dir_job.mkdir(parents=True)
+    pp._finish({"name": "calc", "files": ["pieces/calc.py"]}, root, status_dir_job, {}, [], None, p1b.Outcome("escalate", "test reason"), None, {})
+    status = json.loads((status_dir_job / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "escalate" and status["schema_version"] == 1

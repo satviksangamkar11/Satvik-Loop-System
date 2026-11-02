@@ -12,9 +12,7 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
 2. **schema_version.** `lineage.json` already carried `"schema_version": 1` (`p1b_routing.py`). `status.json` now carries it in the three
    writers of `fix_loop.py`: the invalid-spec write, `_early_stop`, and `_write_status`. Test:
    `test_fix_loop_status_json_carries_schema_version_1_on_the_invalid_spec_and_the_normal_path`.
-   **Not done:** the two `status.json` writes in `scripts/source/p1b_production.py` (the running write at line ~564 and the final write at line
-   ~635). That file is not package D's, so it was not edited. A production job's status.json has no `schema_version` until its owner
-   adds it there.
+   Rebase (2026-11-02, on main 5afdc45): the two `status.json` writes in `scripts/source/p1b_production.py` (running and final) now also write `"schema_version": 1`. Test: `test_production_status_json_written_by_the_runner_carries_schema_version_1` (covers the final write through `_finish`; the running write has the same key but no direct test).
 3. **Harness and acceptance test.** Both were reverted to `HEAD` (= the package's own version) and tested; both changes are required, so
    they are kept:
    - `pieces/prod_harness.py`: `oc.PAID_PROVIDER_NAME` was removed from `openrouter_call.py` by this package. With the 8027d82 version,
@@ -73,3 +71,10 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
 - **Budget check (already built).** review_usd must be exactly 0 under test and exactly 0.05 under production. Tests:
   `test_under_the_test_profile_the_budget_review_usd_must_be_exactly_zero` and
   `test_under_the_production_profile_the_budget_review_usd_must_be_exactly_0_05`.
+
+## Rebase onto main 5afdc45 (2026-11-02)
+
+- The branch is rebased onto main 5afdc45 (package F, PR #12). The one conflict was in `scripts/source/p0_gates.py`: package F's
+  `normal_repo_path` and `is_protected_control_file` are kept, and `production_job_problems(job, profile=None)` carries the budget rule
+  next to the protected-file check.
+- `pieces/test_p0_gates*.py` matches no file on this branch; the package F tests are in `pieces/test_p0_protected_files.py`, which was run.
