@@ -18,7 +18,7 @@
 - `Launcher.finish` releases the sandbox slot, the claims and the lease, and records the state. The registry row is written before the lease goes.
 
 ## Decisions to confirm
-- `SANDBOX_SLOTS = 2`: the number of jobs that may hold a sandbox slot at once. Chosen here; WP2's gate default is 1.
+- `SANDBOX_SLOTS = 4`: the number of jobs that may hold a sandbox slot at once. Owner decision, matching the capacity plan and package E; WP2's gate default is 1.
 - The budget is passed as `budget()`, returning `{free_requests, review_spend_usd}` or None. The ledger that produces it is not built yet (WP4).
 - `loop_home.home()` is called by the caller, not by the launcher. Production should use `home(loops=2, worktrees=[repo])`, so `SATVIK_HOME` must be set.
 - `fenced_write` is not used: `registry.record` already fences by generation.

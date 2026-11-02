@@ -24,7 +24,7 @@ RESERVE_PER_JOB = 40
 REVIEW_SPEND_CAP_USD = 0.50
 PROVIDER_STREAK = 3           # the last 3 jobs all provider-unavailable blocks the start
 RUNNING_SCAN = 500            # registry rows looked at when counting running jobs
-SANDBOX_SLOTS = 2             # sandbox gate capacity: jobs that may hold a sandbox slot at once
+SANDBOX_SLOTS = 4             # sandbox gate capacity (owner decision: matches the capacity plan): jobs that may hold a sandbox slot at once
 
 
 def git(args, cwd, check=True):
