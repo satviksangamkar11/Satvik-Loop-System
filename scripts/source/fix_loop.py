@@ -972,7 +972,7 @@ def run_job(
     if production:                             # P1b 2026-11-02: the whole unit runs through p1b_routing.walk(), every model call via openrouter_call by role
         import p1b_production
         return p1b_production.run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock,
-                                  originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root),
+                                  originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root, job),
                                   parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys)
 
     rounds_record: list[dict] = []

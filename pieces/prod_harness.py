@@ -28,8 +28,10 @@ class Provider:
     def __init__(self, script):
         self.script = {model: list(items) for model, items in script.items()}
         self.calls = []                  # (model, request body) for every completion POST, in order
+        self.http = []                   # (method, url, headers) for every request of any kind, in order
 
     def __call__(self, method, url, headers, body, timeout):
+        self.http.append((method, url, headers))
         if method == "GET" and url.endswith("/key"):
             return 200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()
         if method == "GET" and url.endswith("/models/" + oc.ROLES["repair"] + "/endpoints"):
@@ -53,7 +55,7 @@ class Provider:
         return [model for model, _ in self.calls]
 
 
-def client(tmp_path, provider):
-    """The job's OpenRouter client: both keys loaded, no real sleeps, ledger under tmp_path."""
-    return oc.OpenRouter({"free": FREE_KEY, "paid": PAID_KEY}, tmp_path / "ledger", transport=provider,
+def client(tmp_path, provider, budget=None):
+    """The job's OpenRouter client: both keys loaded, no real sleeps, ledger under tmp_path. budget: the job's JobBudget (default: the adapter's)."""
+    return oc.OpenRouter({"free": FREE_KEY, "paid": PAID_KEY}, tmp_path / "ledger", budget=budget, transport=provider,
                          sleep=lambda seconds: None, rand=lambda: 0.0)

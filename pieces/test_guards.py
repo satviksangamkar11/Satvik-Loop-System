@@ -5,6 +5,8 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 FORBIDDEN = "blend" + "er"                                       # the 7-letter name of the 3D tool, built from pieces on purpose
 
@@ -96,7 +98,10 @@ def test_the_forbidden_word_is_in_no_code_file_and_no_spec():
 
 def test_the_audio_module_really_sets_hf_hub_offline():
     """The spec requires it so that nothing is ever downloaded; the first generated version only had a comment about it."""
-    text = (REPO / "pieces" / "p3_audio_evidence.py").read_text(encoding="utf-8")
+    path = REPO / "pieces" / "p3_audio_evidence.py"
+    if not path.is_file():   # isolated 2026-11-02: the audio module belongs to the Reverse-Video project; the guard runs where that module lives
+        pytest.skip("pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)")
+    text = path.read_text(encoding="utf-8")
     assert re.search(r"os\.environ\[\s*[\"']HF_HUB_OFFLINE[\"']\s*\]\s*=\s*[\"']1[\"']", text)
 
 
@@ -107,7 +112,10 @@ def test_review_prompt_checks_the_recurring_mistake_classes():
 
 
 def test_agent_rules_list_the_known_coder_traps():
-    text = (REPO / "docs" / "AGENT_RULES.md").read_text(encoding="utf-8")
+    path = REPO / "docs" / "AGENT_RULES.md"
+    if not path.is_file():   # isolated 2026-11-02: the agent rules belong to the Reverse-Video project; the guard runs where that file lives
+        pytest.skip("docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)")
+    text = path.read_text(encoding="utf-8")
     assert "KNOWN CODER TRAPS" in text
 
 
@@ -116,7 +124,8 @@ def test_every_real_job_file_is_consistent():
     import json
     repo = Path(__file__).resolve().parents[1]
     jobs = sorted((repo / "_loop" / "jobs").glob("*.json"))
-    assert jobs, "no job files found: this guard would pass vacuously"
+    if not jobs:   # isolated 2026-11-02: the real job files live in the Reverse-Video project; with none here the guard is skipped, never passed
+        pytest.skip("no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)")
     for path in jobs:
         job = json.loads(path.read_text(encoding="utf-8"))
         assert (repo / job["spec"]).is_file(), f"{path.name}: spec missing"

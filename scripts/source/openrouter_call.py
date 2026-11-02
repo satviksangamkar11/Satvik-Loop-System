@@ -369,6 +369,9 @@ def load_keys(secrets_dir=None, environ=None):
             value = path.read_text(encoding="utf-8").strip()
         if value:
             keys[slot] = value
+    if ("free" in keys) != ("paid" in keys):          # one key serves both roles (owner 2026-11-02): the paid allowlist and dollar budget still apply
+        only = keys.get("free") or keys.get("paid")
+        keys = {"free": only, "paid": only}
     return keys
 
 

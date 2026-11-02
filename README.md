@@ -199,7 +199,7 @@ calibration). The legacy loop (nemotron, codex, haiku, groq, minimax, lightning)
 and `reviewer` are refused for production, and a static test checks that the P1b modules name no legacy model family.
 
 - **Job shape.** `fixers` are the role names `writer_a` and `writer_b`; `reviewers` is the string `by_lineage`; `visibility` is `public`;
-  `budget` is `{free_requests: 40, paid_usd: 0.15}`; `deadline_min` is 60 or 120; `files` at most 800 lines each and 1,500 in total
+  `budget` is `{free_requests: 40, paid_usd: 0}` (a free pilot: no paid call) or `{free_requests: 40, paid_usd: 0.15}`; `deadline_min` is 60 or 120; `files` at most 800 lines each and 1,500 in total
   (`check_job_size`, checked before the sandbox runs). The legacy fields (`reviewers` as a list, `min_valid_reviews`) are refused for production.
 - **Ladder.** Dots writes; a localized red (at most 3 failing tests in at most 2 files, not systemic) gets one Dots repair; otherwise the files
   are restored and Xing writes fresh (every job file required), with one Xing repair if still red; then the GLM gate: at most 2 GLM rounds,
@@ -210,11 +210,32 @@ and `reviewer` are refused for production, and a static test checks that the P1b
   files that passed are hashed; the review hashes and the final hash must equal that hash, or the state is `integrity-mismatch`.
 - **States.** `passed`, `review-open` (a reviewer's FIX FIRST with evidence; the FIX FIRST repair loop is not built yet, so the report is kept in
   `REVIEW_FIX.md`), `escalate`, `blocked`, `provider-unavailable`, `deadline`, `acceptance-tampered`, `integrity-mismatch`, `job-too-large`.
-  Anything that did not pass is restored to the originals and explained in `ESCALATE.md`.
+  Anything that did not pass is restored to the originals, the authorized candidate files are kept under `candidate/`, and the reason is
+  written to `ESCALATE.md` (or `EXCEPTION.md` for an unexpected error). See the pre-pilot section below.
 - **Tests.** `pieces/test_p1b_production_run.py` runs the Dots, Xing, GLM order end to end through the real Docker sandbox with scripted
   models (`pieces/prod_harness.py`); it skips with the reason when the sandbox is not available. Nothing calls the network or the paid model.
 - **Not done.** The FIX FIRST repair loop; the frozen-test rule of the legacy loop is not applied to the P1b ladder (the locked acceptance tests
   are the protection); no live run.
+
+## Pre-pilot review fixes (2026-11-02)
+
+Five fixes from the pre-pilot bug review. Each was written as a failing test first (`pieces/test_pre_pilot_review.py`, no Docker, fake sandbox).
+
+- **A fresh writer gets no earlier pytest output.** `restore()` clears the output a writer sees. Every test run's output is kept under
+  `_loop/<job>/history/test_NN.txt`, never in a prompt.
+- **Nothing unaccepted stays in the checkout.** Every state other than `passed` (`review-open`, `integrity-mismatch`, `escalate`, `exception`
+  and the rest) snapshots the job's own files to `candidate/`, restores the originals, and writes its reason. An unexpected exception is caught,
+  so it is a state (`exception`), not a crash.
+- **A killed worker is recovered on the next launch.** The job writes `status.json` with state `running` before its first file write. The next
+  `run_job` finds `running` with the originals saved and restores them before any model call (`fix_loop._prepare_job_folder`). The abandoned
+  candidate is not used: the restart's first writer sees the originals only. (A kill cannot be handled inside the process; this recovery is what
+  covers SIGKILL.)
+- **`paid_usd` 0 is accepted** (the free pilot). The validator accepts exactly 0 or 0.15. `client_for(root, job)` passes the job's budget to the
+  `JobBudget`, so a 0 budget makes no GLM request, not even the price lookup.
+- **One key for both roles.** With only one key file or variable, the free and the paid roles use it. The paid allowlist (`resolve`) and the
+  dollar budget still apply; an unlisted paid model is refused before any request.
+- **Suite.** Three `test_guards` checks read files that belong to the Reverse-Video project and are absent from this repository (`p3_audio_evidence.py`,
+  `docs/AGENT_RULES.md`, and the real job files). They skip with that reason and run in full wherever the file exists. Nothing else was skipped.
 
 ## Opus planner (P1c, 2026-11-02)
 

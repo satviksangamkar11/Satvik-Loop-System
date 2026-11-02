@@ -86,8 +86,12 @@ def check_production_job(job):
         raise JobRefused("fixers must be a list of the role names writer_a and writer_b (never a model ID)")
     if job.get("reviewers") != "by_lineage":
         raise JobRefused('reviewers must be "by_lineage"')
-    if job.get("budget") != {"free_requests": FREE_REQUESTS, "paid_usd": PAID_USD}:
-        raise JobRefused(f"budget must be free_requests {FREE_REQUESTS} and paid_usd {PAID_USD}")
+    budget = job.get("budget")
+    if not isinstance(budget, dict) or set(budget) != {"free_requests", "paid_usd"} or budget["free_requests"] != FREE_REQUESTS:
+        raise JobRefused(f"budget must be free_requests {FREE_REQUESTS} and paid_usd 0 (no paid call) or {PAID_USD}")
+    paid = budget["paid_usd"]
+    if isinstance(paid, bool) or paid not in (0, PAID_USD):   # the owner's two values: 0 (free pilot, no paid call) or the $0.15 ceiling
+        raise JobRefused(f"budget must be free_requests {FREE_REQUESTS} and paid_usd 0 (no paid call) or {PAID_USD}")
     if job.get("deadline_min") not in DEADLINES_MIN:
         raise JobRefused(f"deadline_min must be one of {DEADLINES_MIN}")
 
@@ -180,7 +184,7 @@ def _gate(result, failing, models):
     if not (failing[DOTS] & failing[XING]):
         return "Dots and Xing did not fail on the same test"
     if not models.paid_fits():
-        return "the budget does not fit: the next call would pass the $0.15 ceiling"
+        return "the budget does not fit: the next call would pass the job's paid ceiling"
     return None
 
 
