@@ -49,10 +49,18 @@ def isolated_env(environ=None):
     return env
 
 
+def real_call_refused(claude_cmd):
+    """Test guard (2026-11-02): under pytest, or with SATVIK_NO_OPUS=1, no real Claude command may start. The fake claude is the one exception."""
+    under_test = "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("SATVIK_NO_OPUS") == "1"
+    return under_test and not any("fake_claude" in str(part) for part in claude_cmd)
+
+
 def run_claude(prompt, cwd, claude_cmd, timeout_s, env, system_prompt=REPAIR_SYSTEM):
     """The real call (only when switched on): plain `claude -p` with JSON output, no tools, an empty MCP config, no session saved, the repair-only
     system prompt (None leaves it out: the probe), the output cap in the environment, run from `cwd`, the prompt on stdin. Returns (exit code,
     stdout, stderr). Raises subprocess.TimeoutExpired past timeout_s."""
+    if real_call_refused(claude_cmd):
+        raise RepairFailed("a real Claude command is refused under pytest or SATVIK_NO_OPUS=1: no process was started")
     with tempfile.TemporaryDirectory(prefix="opus_mcp_") as config_dir:
         config = Path(config_dir) / "mcp.json"
         config.write_text('{"mcpServers": {}}', encoding="utf-8")

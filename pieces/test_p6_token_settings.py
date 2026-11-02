@@ -192,7 +192,7 @@ def test_the_repair_call_passes_a_repair_only_system_prompt_no_session_persisten
         return _Done()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    opus.run_claude("prompt", str(tmp_path), ["claude"], 900, opus.isolated_env())
+    opus.run_claude("prompt", str(tmp_path), [sys.executable, str(REPO / "pieces" / "fake_claude.py")], 900, opus.isolated_env())
     cmd = seen["cmd"]
     prompt = cmd[cmd.index("--system-prompt") + 1]
     assert "repair" in prompt.lower() and len(prompt) <= 300
