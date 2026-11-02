@@ -421,6 +421,8 @@ class Production:
         self.package = {"files": {}, "spec_count": 0}   # what the last review was given: read by p1b_routing.evidence_ok
         self.failed_calls = 0           # failed calls so far: each is history/failed_call_NN.json and a "failed" step in status.json
         self._seen_attempts = len(client.failed_attempts)   # the adapter's failed attempts before this job's calls belong to nobody here
+        self._seen_requests = len(client.requests)          # the adapter's requests before this job's calls belong to nobody here
+        self.calls_written = 0          # history/call_NN.json files so far: one per model call, failed or not
 
     # ---------------------------------------------------------------- model calls
 
@@ -463,21 +465,39 @@ class Production:
         try:
             text, _info = self.client.call(role_by_model()[model], system, user, kind=kind)
         except oc.OpenRouterError as exc:
-            self._record_attempts(model, mode)
+            self._record_history(model, mode)
             if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
                 raise p1b.BudgetStop(str(exc)) from exc
             if isinstance(exc, oc.QuotaExhausted):           # the day's free requests are used up: the job ends quota-exhausted, no further call
                 raise p1b.QuotaStop(str(exc)) from exc
             raise p1b.ModelFailed(str(exc)) from exc         # refused, dropped, quota, budget, account: this model is down for this job
-        self._record_attempts(model, mode)
+        self._record_history(model, mode)
         return text
+
+    def _record_history(self, model, mode):
+        """Every request the adapter sent since the last call here, failed or not: each is a history/call_NN.json. The failed ones are also failed calls."""
+        fresh = self.client.requests[self._seen_requests:]
+        self._seen_requests = len(self.client.requests)
+        for request in fresh:
+            self._write_call(request, mode)
+        self._record_attempts(model, mode)
+
+    def _write_call(self, request, mode):
+        """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds."""
+        self.calls_written += 1
+        if self.history is not None:
+            usage = request.get("usage") or {}
+            record = {"model": request.get("model"), "mode": mode, "status": request.get("status"), "failed": bool(request.get("failed")),
+                      "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
+                      "reasoning_tokens": request.get("reasoning_tokens"), "finish_reason": request.get("finish_reason"), "seconds": request.get("seconds")}
+            (self.history / f"call_{self.calls_written:02d}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
 
     def _record_attempts(self, model, mode):
         """Every failed attempt the adapter kept since the last call here, retries included: each one is a failed call."""
         fresh = self.client.failed_attempts[self._seen_attempts:]
         self._seen_attempts = len(self.client.failed_attempts)
         for attempt in fresh:
-            self._failure(attempt["model"], mode, attempt["status"], attempt["message"])
+            self._failure(attempt["model"], mode, attempt["status"], attempt["message"], attempt.get("facts"))
 
     def _usable(self, model, mode, text, status=200):
         """The files of a reply. A reply the job cannot use is a failed call; its status is the HTTP status of that reply (200 for a writer)."""
@@ -487,16 +507,18 @@ class Production:
             self._failure(model, mode, status, exc)
             raise
 
-    def _failure(self, model, mode, status, message):
+    def _failure(self, model, mode, status, message, facts=None):
         """One failed call, kept whole: its model, its raw HTTP status (None when there is none) and the first 2,000 characters of its message with
-        keys redacted. It is a file in the job's history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
+        keys redacted. facts (openrouter_call.reply_facts) joins the history file: finish_reason, usage and, for a reply with no message text,
+        its message keys and reasoning lengths. It is a file in the job's history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
         self.failed_calls += 1
         text = oc.redact(_scrubbed(str(message), self.scrub_keys))[:oc.FAILURE_CHARS]
         step = {"model": model, "mode": "failed", "call": mode, "status": status, "message": text,
                 "note": f"failed, HTTP {status}" if status is not None else "failed, no HTTP status"}
         if self.history is not None:
             name = f"failed_call_{self.failed_calls:02d}.json"
-            (self.history / name).write_text(json.dumps({"model": model, "call": mode, "status": status, "message": text}, indent=2), encoding="utf-8")
+            record = {"model": model, "call": mode, "status": status, "message": text, **_scrubbed_obj(facts or {}, self.scrub_keys)}
+            (self.history / name).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step["history"] = f"history/{name}"
         self.steps.append(step)
 
@@ -512,8 +534,10 @@ class Production:
                 (self.history / f"repair_step_{number:02d}_raw.json").write_text(_scrubbed(raw, self.scrub_keys), encoding="utf-8")
 
         ask = self.repair_ask or (lambda text, raw_sink=None: opus_repair.ask(text, raw_sink=raw_sink))
+        started, reply = time.monotonic(), None
         try:
             text = ask(prompt, raw_sink=keep_raw)
+            reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         except opus_repair.RepairFailed as exc:
             self._failure(p1b.ANTHROPIC, "repair", None, exc)
             self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
@@ -522,7 +546,8 @@ class Production:
             self._failure(p1b.ANTHROPIC, "repair", None, exc)
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
-        reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
+        finally:
+            self._write_call({"model": p1b.ANTHROPIC, "status": None, "failed": reply is None, "seconds": round(time.monotonic() - started, 3)}, "repair")
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply
 

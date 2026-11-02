@@ -295,6 +295,7 @@ class FakeClient:
         self.queue, self.calls, self.retry_log = list(queue), [], []
         self.budget = oc.JobBudget(40, 0.05)
         self.failed_attempts = []
+        self.requests = []              # every request the adapter sent: a fixed success (100 prompt, 40 completion, 8 reasoning tokens, 1.5 s)
 
     def begin_job(self):
         pass
@@ -308,9 +309,12 @@ class FakeClient:
         if isinstance(item, tuple):             # (attempts, error): the adapter's failed attempts for this call, then its error
             attempts, error = item
             self.failed_attempts.extend(attempts)
+            self.requests.extend(dict(a, failed=True, seconds=0.0) for a in attempts)
             raise error
         if isinstance(item, BaseException):
             raise item
+        self.requests.append({"model": oc.ROLES[role], "status": 200, "failed": False, "seconds": 1.5, "finish_reason": "stop",
+                              "usage": {"prompt_tokens": 100, "completion_tokens": 40}, "reasoning_tokens": 8})
         return item, {}
 
 
@@ -534,3 +538,54 @@ def test_a_repair_prompt_is_smaller_than_the_fresh_write_prompt_for_the_same_job
     assert "pieces/test_extra.py:" not in repair
     assert len(findings) < len(fresh) and FILLER_MARK not in findings and "pieces/test_calc.py:" not in findings
     assert "pieces/calc.py:" in findings and "REVIEW FINDINGS" in findings
+
+
+# ---- every model call keeps a history/call_NN.json (2026-11-03, Track G2): model, mode, tokens, finish_reason, seconds; a failed one too
+
+def test_every_model_call_writes_call_NN_failed_or_not(tmp_path):
+    root = wp_h_root(tmp_path)
+    attempt = {"model": DOTS, "status": 503, "message": "upstream down"}
+    client = FakeClient([([attempt], oc.ProviderUnavailable("HTTP 503")), ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)),
+                         ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+    wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    history = root / "_loop" / "calc" / "history"
+    first = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
+    assert first == {"model": DOTS, "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
+                     "reasoning_tokens": None, "finish_reason": None, "seconds": 0.0}
+    second = json.loads((history / "call_02.json").read_text(encoding="utf-8"))
+    assert second["model"] == XING and second["mode"] == "write" and second["status"] == 200 and second["failed"] is False
+    assert second["prompt_tokens"] == 100 and second["completion_tokens"] == 40 and second["reasoning_tokens"] == 8
+    assert second["finish_reason"] == "stop" and second["seconds"] == 1.5
+
+
+def test_a_failed_call_with_no_message_text_keeps_finish_reason_keys_usage_and_reasoning_lengths(tmp_path):
+    root = wp_h_root(tmp_path)
+    facts = {"finish_reason": "stop", "usage": {"prompt_tokens": 9, "completion_tokens": 4}, "message_keys": ["reasoning", "role"],
+             "reasoning_len": 9, "reasoning_content_len": None}
+    attempt = {"model": DOTS, "status": 200, "message": "malformed reply: no message text", "facts": facts}
+    client = FakeClient([([attempt], oc.ProviderUnavailable("malformed reply: no message text")),
+                         ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)),
+                         ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+    wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    record = json.loads((root / "_loop" / "calc" / "history" / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert record["finish_reason"] == "stop" and record["usage"] == {"prompt_tokens": 9, "completion_tokens": 4}
+    assert record["message_keys"] == ["reasoning", "role"] and record["reasoning_len"] == 9 and record["reasoning_content_len"] is None
+
+
+def test_a_repair_call_writes_a_call_record_with_no_usage(tmp_path):
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+
+    def refused(prompt, raw_sink=None):
+        raise opus.RepairFailed("the call did not finish in 600 s")
+
+    models = pm.Production(job, root, FakeClient([]), FakeSandbox({}), protected=[], acceptance_lock=None, originals={},
+                           parse_files=lambda text: ({}, []), check_path=lambda rel: None, content_problem=lambda rel, content: None,
+                           history=history, job_dir=root / "_loop" / "calc", repair_ask=refused)
+    with pytest.raises(p1b.ModelFailed):
+        models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
+    record = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
+    assert record["model"] == ANTHROPIC and record["mode"] == "repair" and record["failed"] is True and record["status"] is None
+    assert record["prompt_tokens"] is None and record["finish_reason"] is None and record["seconds"] >= 0
