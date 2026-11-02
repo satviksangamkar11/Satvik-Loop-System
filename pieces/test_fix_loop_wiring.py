@@ -10,6 +10,7 @@ import pytest
 
 import fix_loop as fl
 import launch
+import plan_job as pj
 from wp3_repos import git, live_leases, make_repos
 
 JOB = {"name": "pilot", "files": ["base.txt"]}
@@ -317,3 +318,102 @@ def test_step8_counter_lines_are_sorted_name_equals_count(tmp_path):
     env.api.registry.bump("started")
     env.api.registry.bump("finished:passed", by=2)
     assert launch.counter_lines(env.home) == ["finished:passed = 2", "started = 1"]
+
+
+# ---------------------------------------------------------------- planner: request -> validated job, approval gate, restart
+from test_plan_job import ACCEPT, CONTROL, envelope, good_answer  # noqa: E402,F401
+
+FAKE_CLAUDE = str(Path(__file__).resolve().parents[1] / "pieces" / "fake_claude.py")
+CLEAN_SPEC = "# Spec" + chr(10) + "- KNOWN: calculate_total(prices) returns the sum of the prices." + chr(10)
+REQUEST = "Write calculate_total: the sum of the prices."
+
+
+def planner_repo(tmp_path):
+    root = tmp_path / "repo"
+    (root / "docs").mkdir(parents=True)
+    (root / "pieces").mkdir()
+    (root / "docs" / "RP.md").write_text("review", encoding="utf-8")
+    (root / "pieces" / "calc.py").write_text("def calculate_total(prices):" + chr(10) + "    return sum(prices)" + chr(10), encoding="utf-8")
+    return root
+
+
+def fake_planner(tmp_path, monkeypatch, answer):
+    """The fake claude prints `answer` as the planner's envelope. Returns the log file: one line per run of the fake."""
+    out = tmp_path / "fake_output.json"
+    out.write_text(envelope(answer), encoding="utf-8")
+    monkeypatch.setenv("FAKE_CLAUDE_OUTPUT", str(out))
+    log = tmp_path / "fake_claude.log"
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    return log
+
+
+def planner_calls(log):
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def request(root, env, run, runner=None):
+    return fl.request_job(root, "calc", REQUEST, files=["pieces/calc.py"], claude_cmd=None if runner else [sys.executable, FAKE_CLAUDE],
+                          runner=runner, api=env.api, launcher=env.launcher, run=run)
+
+
+def planner_env(tmp_path):
+    (tmp_path / "L").mkdir()
+    return env_for(tmp_path / "L")
+
+
+def test_planner_request_becomes_a_validated_job_and_starts_without_approve(tmp_path, monkeypatch, profile):
+    profile("production")
+    root = planner_repo(tmp_path)
+    log = fake_planner(tmp_path, monkeypatch, good_answer(spec_md=CLEAN_SPEC))
+    env, ran = planner_env(tmp_path), []
+    res = request(root, env, fake_run("passed", ran))
+    assert res["state"] == "passed", res
+    assert ran == [("calc", True)], "a validated job starts at once through the launcher, with no --approve"
+    assert len(planner_calls(log)) == 1
+    assert (root / "_loop" / "calc" / "plan" / "job.json").is_file()
+
+
+def test_planner_assumed_lines_stop_the_job_until_approved(tmp_path, monkeypatch, profile):
+    profile("production")
+    root = planner_repo(tmp_path)
+    fake_planner(tmp_path, monkeypatch, good_answer())            # the good answer carries one ASSUMED line
+    env, ran = planner_env(tmp_path), []
+    res = request(root, env, fake_run("passed", ran))
+    assert res["state"] == "awaiting-approval", res
+    assert res["assumed"] == ["prices is a list of integers."]
+    assert ran == [] and worktree_dirs(env) == [], "nothing starts before --approve"
+    done = fl.approve_job("calc", root, env.api, env.launcher, run=fake_run("passed", ran))
+    assert done["state"] == "passed" and ran == [("calc", True)]
+    assert live_leases(env.home) == []
+
+
+def test_planner_a_changed_job_file_is_refused_at_approval(tmp_path, monkeypatch, profile):
+    profile("production")
+    root = planner_repo(tmp_path)
+    fake_planner(tmp_path, monkeypatch, good_answer())
+    env, ran = planner_env(tmp_path), []
+    assert request(root, env, fake_run("passed", ran))["state"] == "awaiting-approval"
+    job_path = root / "_loop" / "calc" / "plan" / "job.json"
+    os.chmod(job_path, 0o666)                                     # the planned job is read-only; someone edits it anyway
+    job_path.write_text(job_path.read_text(encoding="utf-8").replace('"deadline_min": 60', '"deadline_min": 120'), encoding="utf-8")
+    res = fl.approve_job("calc", root, env.api, env.launcher, run=fake_run("passed", ran))
+    assert res == {"name": "calc", "state": "refused", "reason": "job-changed"}
+    assert ran == []
+
+
+def test_planner_crash_after_the_answer_and_restart_make_exactly_one_planner_call(tmp_path, monkeypatch, profile):
+    profile("production")
+    root = planner_repo(tmp_path)
+    log = fake_planner(tmp_path, monkeypatch, good_answer(spec_md=CLEAN_SPEC))
+    env, ran = planner_env(tmp_path), []
+    real_write = pj._write
+
+    def crash(answer, plan_dir):
+        raise KeyboardInterrupt                                   # the process dies after the answer is saved
+    monkeypatch.setattr(pj, "_write", crash)
+    with pytest.raises(KeyboardInterrupt):
+        request(root, env, fake_run("passed", ran))
+    monkeypatch.setattr(pj, "_write", real_write)
+    res = request(root, env, fake_run("passed", ran))
+    assert res["state"] == "passed", res
+    assert len(planner_calls(log)) == 1, "the restart reuses the saved answer: exactly one planner call"

@@ -140,6 +140,26 @@ def test_a_timed_out_call_is_planner_uncertain(repo, tmp_path, monkeypatch):
     assert plan(repo, timeout_s=1)["state"] == "planner-uncertain" and len(calls(log)) == 1
 
 
+def test_the_real_claude_is_refused_under_pytest_before_any_process_or_intent(repo, monkeypatch):
+    def no_process(*args, **kwargs):
+        raise AssertionError("a real claude process was started")
+    monkeypatch.setattr(pj.subprocess, "run", no_process)
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    result = pj.plan(root=repo, job_name="calc", plan_dir=plan_dir, request="r", files=["pieces/calc.py"])
+    assert result["state"] == "planner-refused" and "refused" in result["reason"]
+    assert not (plan_dir / "INTENT.json").exists()
+
+
+def test_the_test_profile_has_no_planner_so_it_refuses_with_no_call(repo, profile):
+    profile("test")                                              # roster: planner = fake under the test profile
+    calls = []
+    result = pj.plan(root=repo, job_name="calc", plan_dir=repo / "_loop" / "calc" / "plan", request="r", files=["pieces/calc.py"],
+                     runner=lambda *a, **k: calls.append(1))
+    assert result["state"] == "planner-refused"
+    assert result["reason"] == "the test profile has no planner (planner=fake)"
+    assert calls == [] and not (repo / "_loop" / "calc" / "plan" / "INTENT.json").exists()
+
+
 # ---------------------------------------------------------------- how it is called
 
 def test_the_command_is_plain_no_tools_empty_mcp_from_an_empty_folder_without_the_api_key(repo, tmp_path, monkeypatch):
