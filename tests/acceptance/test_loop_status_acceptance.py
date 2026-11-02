@@ -7,6 +7,7 @@ MODULE = Path(__file__).parents[2] / "scripts/source/loop_status.py"
 
 
 def load():
+    assert MODULE.is_file(), "loop_status.py not written yet"
     spec = importlib.util.spec_from_file_location("loop_status_under_test", MODULE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

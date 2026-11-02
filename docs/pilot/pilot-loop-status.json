@@ -1,0 +1,19 @@
+{
+ "name": "pilot-loop-status",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/LOOP_STATUS_SPEC.md",
+ "files": ["scripts/source/loop_status.py", "pieces/test_loop_status.py"],
+ "tests": ["pieces/test_loop_status.py"],
+ "acceptance_tests": ["tests/acceptance/test_loop_status_acceptance.py"],
+ "negative_controls": [
+  {"name": "empty-stub",
+   "replace": {"scripts/source/loop_status.py": "tests/controls/loop_status_empty.py"},
+   "must_fail": ["tests/acceptance/test_loop_status_acceptance.py::test_rows_order_and_fields",
+                 "tests/acceptance/test_loop_status_acceptance.py::test_main_output"]}
+ ],
+ "fixers": ["writer_a", "writer_b"],
+ "reviewers": "by_lineage",
+ "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0},
+ "deadline_min": 60
+}
