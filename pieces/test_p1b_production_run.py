@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ import openrouter_call as oc  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 import sandbox_runner as sr  # noqa: E402
 import prod_harness as ph  # noqa: E402
+import p0_gates as gates  # noqa: E402
 from test_p0_acceptance import make_prod_root, CONSTANT_CODE, CONSTANT_TEST, GOOD_CODE, GOOD_TEST  # noqa: E402
 
 NL = "\n"
@@ -274,3 +276,125 @@ def _production_profile(profile):
     profile("production")
     roles = oc.roster_state()["ROLES"]
     DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]
+
+
+# ---- WP-H (2026-11-02): needs_review, quota-exhausted and CONTRACT_CHECK.md, with fakes only (no Docker, no network, no model call)
+
+ORIG_CODE = "def calculate_total(prices):" + NL + "    return 0" + NL
+ORIG_TEST = "def test_placeholder():" + NL + "    pass" + NL
+ACC_ID = "tests/acceptance/test_calc_acceptance.py::test_sums_two_prices"
+SUM_CODE = "def calculate_total(prices):" + NL + "    return sum(prices[:-1])" + NL     # Xing's wrong code in these tests
+DOTS_CODE = "def calculate_total(prices):" + NL + "    return 50" + NL                  # Dots' wrong code in these tests
+
+
+class FakeClient:
+    """Stands in for the OpenRouter client: `queue` holds reply texts in call order, and an exception item is raised instead."""
+
+    def __init__(self, queue):
+        self.queue, self.calls, self.retry_log = list(queue), [], []
+        self.budget = oc.JobBudget(40, 0.05)
+
+    def begin_job(self):
+        pass
+
+    def set_job_deadline(self, seconds):
+        pass
+
+    def call(self, role, system, user, kind):
+        self.calls.append(oc.ROLES[role])
+        item = self.queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item, {}
+
+
+class FakeSandbox:
+    """Runs no pytest: every expected test passes except `failing` (test id -> assertion message); with an overlay (a negative control) every
+    expected test fails, as a control must. Returns the same fields the real sandbox returns."""
+
+    def __init__(self, failing):
+        self.failing, self.runs = dict(failing), 0
+
+    def selftest(self):
+        return []
+
+    def run(self, root, targets, readonly=(), timeout_s=600, overlay=None):
+        self.runs += 1
+        cases, failed = [], False
+        for rel, ids in sorted(gates.expected_test_ids(root, targets).items()):
+            for tid in sorted(ids or ()):
+                module = rel[:-3].replace("/", ".")
+                fid = f"{rel}::{tid}"
+                if overlay is not None or fid in self.failing:
+                    failed = True
+                    msg = self.failing.get(fid, "assert False")
+                    cases.append(f'<testcase classname="{module}" name="{tid}" file="{rel}"><failure message="{msg}">E   AssertionError: {msg}</failure></testcase>')
+                else:
+                    cases.append(f'<testcase classname="{module}" name="{tid}" file="{rel}"/>')
+        xml = "<testsuites><testsuite>" + "".join(cases) + "</testsuite></testsuites>"
+        return SimpleNamespace(output="pytest output (fake)", junit=xml, returncode=1 if failed else 0, timed_out=False)
+
+
+def wp_h_root(tmp_path):
+    root = make_prod_root(tmp_path)
+    (root / "pieces" / "calc.py").write_text(ORIG_CODE, encoding="utf-8")
+    (root / "pieces" / "test_calc.py").write_text(ORIG_TEST, encoding="utf-8")
+    return root
+
+
+def wp_h_run(root, client, sandbox):
+    job = load(root, p1b_job())
+    return fl.run_job(job, root, sandbox=sandbox, openrouter=client, scrub_keys=[])
+
+
+def wp_h_status(root):
+    return json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
+
+
+def test_the_same_failing_set_three_writer_runs_in_a_row_ends_needs_review_after_opus_has_had_its_two_repairs(tmp_path, fake_claude):
+    """A streak of three identical writer runs does not stop the ladder while a repair step is left: Opus runs (twice), and only then the job
+    ends needs_review with the failing ids in status.json and the originals back."""
+    root = wp_h_root(tmp_path)
+    fake_claude.reply(ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)))    # Opus returns a red candidate, twice
+    reply = ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))
+    client = FakeClient([reply, reply, reply, reply])                                                  # Dots write, Dots repair, Xing write, Xing repair
+    result = wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    assert result["state"] == "needs_review", result
+    status = wp_h_status(root)
+    assert status["state"] == "needs_review" and status["failing_tests"] == [ACC_ID]
+    assert status["schema_version"] == 1
+    assert len(fake_claude.runs()) == 2
+    assert client.calls == [DOTS, DOTS, XING, XING]
+    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE
+    assert (root / "pieces" / "test_calc.py").read_text(encoding="utf-8") == ORIG_TEST
+
+
+def test_a_quota_exhausted_adapter_error_ends_the_job_with_the_reason_and_makes_no_further_call(tmp_path):
+    root = wp_h_root(tmp_path)
+    client = FakeClient([ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)),
+                         oc.QuotaExhausted("free requests for today are used up")])
+    result = wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    assert result["state"] == "quota-exhausted", result
+    status = wp_h_status(root)
+    assert status["state"] == "quota-exhausted" and "used up" in status["reason"]
+    assert client.calls == [DOTS, DOTS] and client.queue == []      # the repair call raised; nothing was called after it
+    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE
+
+
+def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_write_contract_check_and_the_ladder_goes_on(tmp_path):
+    """The contract file is written when Dots and Xing fail the same locked assertion with different code. The ladder does not stop: here
+    Opus is off, so the job ends escalate with the existing reason, and status.json points at the contract file."""
+    root = wp_h_root(tmp_path)
+    client = FakeClient([ph.file_reply(("pieces/calc.py", DOTS_CODE), ("pieces/test_calc.py", ORIG_TEST))] * 2
+                        + [ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))] * 2)
+    result = wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    assert result["state"] == "escalate", result
+    status = wp_h_status(root)
+    assert status["reason"] == "Opus repair unavailable"
+    assert status["contract_check"].endswith("CONTRACT_CHECK.md") and status["schema_version"] == 1
+    text = (root / "_loop" / "calc" / "CONTRACT_CHECK.md").read_text(encoding="utf-8")
+    assert ACC_ID in text and "assert 0 == 50" in text
+    assert "SPEC 1: calculate_total(prices) returns the sum of the prices." in text
+    assert "likely SPEC line (guessed by word overlap)" in text
+    assert client.calls == [DOTS, DOTS, XING, XING]
+    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE

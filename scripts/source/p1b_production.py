@@ -397,8 +397,10 @@ class Production:
     """The models object walk() drives: calls through openrouter_call, writes and restores the job files, runs the sandbox."""
 
     def __init__(self, job, root, client, sandbox, *, protected, acceptance_lock, originals, parse_files, check_path, content_problem,
-                 history=None, scrub_keys=(), repair_ask=None):
+                 history=None, scrub_keys=(), repair_ask=None, job_dir=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
+        self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
+        self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
         self.files, self.protected, self.acceptance_lock, self.originals = list(job["files"]), protected, acceptance_lock, originals
         self.parse_files, self.check_path, self.content_problem = parse_files, check_path, content_problem
         self.history, self.scrub_keys = history, tuple(scrub_keys)
@@ -438,6 +440,8 @@ class Production:
             text, _info = self.client.call(role_by_model()[model], system, user, kind=kind)
         except oc.ReviewBudgetExceeded as exc:     # the GLM review would pass the job's review ceiling: nothing was sent
             raise p1b.BudgetStop(str(exc)) from exc
+        except oc.QuotaExhausted as exc:           # the day's free requests are used up: the job ends quota-exhausted, no further call
+            raise p1b.QuotaStop(str(exc)) from exc
         except oc.OpenRouterError as exc:          # refused, dropped, quota, budget, account: this model is down for this job
             raise p1b.ModelFailed(str(exc)) from exc
         return text
@@ -545,8 +549,55 @@ class Production:
             out |= {f"{rel}::{tid}" for tid in ids - seen}
         return out
 
+    def contract_check(self, test_ids, dots_files, xing_files):
+        """Dots and Xing both failed these locked acceptance tests with different code: the test id, its assertion message from the last run's
+        JUnit, and the SPEC line it checks (the closest requirement line by shared words), written to CONTRACT_CHECK.md in the job folder."""
+        if self.job_dir is None:
+            return
+        messages = _messages(self.last_junit, set(test_ids))
+        blocks = []
+        for tid in test_ids:
+            message = messages.get(tid, "(no assertion message in the last run)")
+            blocks.append(f"## {tid}\n- Assertion message: `{message}`\n- likely SPEC line (guessed by word overlap): {_spec_line(self.spec, tid, message)}\n")
+        text = ("# CONTRACT CHECK\n\nDots and Xing both fail the same locked acceptance test, and their code differs. The spec and the locked "
+                "acceptance test disagree or the spec is unclear. The ladder goes on; the repair step may still run.\n\n" + "\n".join(blocks))
+        self.job_dir.mkdir(parents=True, exist_ok=True)
+        (self.job_dir / "CONTRACT_CHECK.md").write_text(_scrubbed(text, self.scrub_keys), encoding="utf-8")
+        self.contract_file = str(self.job_dir / "CONTRACT_CHECK.md")
+
     def _step(self, model, mode, note):
         self.steps.append({"model": model, "mode": mode, "note": note})
+
+
+def _messages(junit, ids):
+    """{test id: assertion message} for the failing test ids in one JUnit run."""
+    if not junit:
+        return {}
+    try:
+        cases = list(ET.fromstring(junit).iter("testcase"))
+        details = gates._case_details(junit)
+    except ET.ParseError:
+        return {}
+    out = {}
+    for case, (file, tid, _outcome, _kind) in zip(cases, details):
+        bad = next((c for c in case if c.tag in ("failure", "error")), None)
+        full_id = f"{file}::{tid}" if file else tid
+        if bad is not None and full_id in ids:
+            out[full_id] = bad.get("message") or bad.text or ""
+    return out
+
+
+def _spec_line(spec_text, test_id, message):
+    """The SPEC line that shares the most words with the test's name and its assertion message; ties go to the first line."""
+    def words(text):
+        return set(re.findall(r"[a-z]{4,}", text.lower()))
+    wanted = words(test_id.split("::")[-1].removeprefix("test_").replace("_", " ")) | words(message or "")
+    best, score = "no SPEC line matches this assertion", 0
+    for n, line in enumerate(spec_requirements(spec_text), 1):
+        hit = len(wanted & words(line))
+        if hit > score:
+            best, score = f"SPEC {n}: {line}", hit
+    return best
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
@@ -561,11 +612,12 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     try:
         client.begin_job()
     except oc.OpenRouterError as exc:
-        return _finish(job, root, status_dir_job, evidence, scrub_keys, None, p1b.Outcome("provider-unavailable", f"key state: {exc}"), None,
-                       originals)
+        kind = "quota-exhausted" if isinstance(exc, oc.QuotaExhausted) else "provider-unavailable"
+        return _finish(job, root, status_dir_job, evidence, scrub_keys, None, p1b.Outcome(kind, f"key state: {exc}"), None, originals)
     (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
-                        parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys, repair_ask=repair_ask)
+                        parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys,
+                       repair_ask=repair_ask, job_dir=status_dir_job)
     lineage = p1b.Lineage()
     try:
         client.set_job_deadline(job["deadline_min"] * 60)     # the unit deadline: no retry (openrouter_call) starts after it
@@ -635,8 +687,10 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
         elif step["mode"] in ("review", "review-reask"):
             reviewer_calls[step["model"]] = reviewer_calls.get(step["model"], 0) + 1
     status = {"name": name, "schema_version": 1, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
-              "reason": outcome.reason, "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
+              "reason": outcome.reason, "failing_tests": sorted(outcome.failing), "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
+    if models is not None and models.contract_file:
+        status["contract_check"] = models.contract_file        # the contract evidence, whatever the end state
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved
     (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
     print(f"{name}: {state}")
