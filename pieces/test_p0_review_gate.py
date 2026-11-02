@@ -156,3 +156,9 @@ def test_reviewed_code_must_be_the_tested_code(tmp_path):
     result = fl.run_job(job, root, caller=lambda s, u: (_reply(), {"status": 200}), reviewer={"lightning": sneaky, "codex": _reviewer(R)},
                         pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=[])
     assert result["state"] != "passed"
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import."""
+    profile("production")

@@ -299,3 +299,9 @@ def test_production_stops_when_the_sandbox_is_unavailable(tmp_path):
     result, calls = run_prod(root, GOOD_CODE, GOOD_TEST, sandbox=Broken())
     assert result["state"] == "sandbox-unavailable"
     assert calls == []
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import."""
+    profile("production")

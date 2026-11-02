@@ -24,7 +24,7 @@ import sandbox_runner as sr  # noqa: E402
 from test_p0_acceptance import make_prod_root, prod_job, CONSTANT_CODE, CONSTANT_TEST, GOOD_CODE, GOOD_TEST  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+DOTS = XING = NORTH = GLM = None      # set per test by the fixture at the end of this file (read from the roster, never at import)
 ORIGINAL_CODE = "def calculate_total(prices):" + NL + "    return 0" + NL       # the job file before the run: the originals
 XING_CODE = "def calculate_total(prices):" + NL + "    return sum(prices[:-1])" + NL
 XING_TEST = "from pieces.calc import calculate_total" + NL + "def test_calculate_total():" + NL + "    assert calculate_total([20, 30]) == 20" + NL
@@ -215,7 +215,7 @@ def child_main(root, job_path):
         os._exit(9)
 
     pp.Production.write = write_one_file_then_die
-    provider = ph.Provider({DOTS: [good_reply()]})
+    provider = ph.Provider({oc.roster_state()["ROLES"]["writer_a"]: [good_reply()]})     # the child reads the roster itself (it runs its own process)
     fl.run_job(fl.load_job(Path(job_path)), Path(root), sandbox=FakeSandbox(), openrouter=ph.client(Path(root).parent, provider), scrub_keys=[])
 
 
@@ -224,7 +224,8 @@ def test_a_worker_killed_after_one_candidate_write_is_restored_by_the_next_launc
     job_path = write_job(root, prod_job())
     code = (f"import sys; sys.path.insert(0, {str(REPO / 'pieces')!r}); import test_pre_pilot_review as t; "
             f"t.child_main({str(root)!r}, {str(job_path)!r})")
-    killed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    child_env = {**os.environ, "SATVIK_PROFILE": "production"}                   # the child process has its own import: it needs the profile too
+    killed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=child_env)
     assert killed.returncode == 9, killed.stderr[-2000:]
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == GOOD_CODE    # the abandoned candidate is on disk
     assert status_of(root)["state"] == "running"
@@ -294,3 +295,12 @@ def test_an_unlisted_paid_model_is_refused_with_the_one_key_and_no_request_is_ma
     with pytest.raises(oc.ModelRefused):
         client.call("z-ai/glm-6-unlisted", "sys", "user", kind="text")
     assert provider.http == []
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import: the role names are read from the roster here."""
+    global DOTS, XING, NORTH, GLM
+    profile("production")
+    roles = oc.roster_state()["ROLES"]
+    DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]

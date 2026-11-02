@@ -157,3 +157,9 @@ def test_production_job_stops_when_docker_is_missing(tmp_path):
     root = acc.make_prod_root(tmp_path)
     res, calls = acc.run_prod(root, acc.GOOD_CODE, acc.GOOD_TEST, sandbox=sr.DockerSandbox(docker="docker-binary-that-does-not-exist"))
     assert res["state"] == "sandbox-unavailable" and calls == []
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import."""
+    profile("production")

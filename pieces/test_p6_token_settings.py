@@ -22,7 +22,10 @@ import p1b_production as pp  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 import plan_job as pj  # noqa: E402
 from test_openrouter_call import Fake, client, ok, paid_fake, REVIEW_OK, WRITER_OK  # noqa: E402
-from test_p1b_routing import DOTS, XING, NORTH, GLM, READY, FIX_WITH_EVIDENCE, FIX_NO_EVIDENCE, full, green, red, run  # noqa: E402
+import test_p1b_routing as tp  # noqa: E402
+from test_p1b_routing import READY, FIX_WITH_EVIDENCE, FIX_NO_EVIDENCE, full, green, red, run  # noqa: E402
+
+DOTS = XING = NORTH = GLM = None      # set per test by the fixture at the end of this file
 
 NL = "\n"
 
@@ -221,3 +224,13 @@ def test_the_production_switch_stays_off_because_the_check_ran_on_haiku_and_the_
 def test_the_planner_prompt_asks_for_the_owner_budget():
     assert "budget is {free_requests: 40, review_usd: 0.05, paid_usd: 0}" in pj.INSTRUCTIONS
     assert "paid_usd: 0.15" not in pj.INSTRUCTIONS
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Production roster per test; the role names are read here, and the helpers imported from test_p1b_routing get the same names."""
+    global DOTS, XING, NORTH, GLM
+    profile("production")
+    roles = oc.roster_state()["ROLES"]
+    DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]
+    tp.DOTS, tp.XING, tp.NORTH, tp.GLM = DOTS, XING, NORTH, GLM
