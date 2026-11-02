@@ -71,6 +71,12 @@ def stop_requested(home_dir):
     return (Path(home_dir) / "STOP").exists()
 
 
+def counter_lines(home_dir) -> list[str]:
+    """The registry counters as "name = count" lines, sorted by name. loop_status shows these lines (step 8)."""
+    counts = loop_home.Registry(home_dir).counters()
+    return [f"{name} = {counts[name]}" for name in sorted(counts)]
+
+
 def run_rounds(api, job_id, gen, rounds, do_round, restore, home_dir):
     """Round loop with the stop switch. The check sits before every round, so a call in flight always finishes.
     When home/STOP exists, restore() puts the job's files back and the loop returns "stopped"."""
@@ -99,6 +105,11 @@ class Launcher:
         self._keys = {}
 
     def start(self, name, rel_paths=(), key=None):
+        res = self._start(name, rel_paths, key)
+        self.api.registry.bump("started" if res["ok"] else "refused:" + res["reason"])
+        return res
+
+    def _start(self, name, rel_paths=(), key=None):
         home = self.api.home
         recent = [r["state"] for r in self.api.registry.recent(PROVIDER_STREAK)]
         reason = start_refusal(stop_requested(home), self._running(), recent, self.budget())
@@ -106,7 +117,7 @@ class Launcher:
             return {"ok": False, "reason": reason}
         if key is not None:                                # the request key: a live run under it blocks a second start
             prev = self.api.registry.lookup(key)
-            if prev and prev.get("state") == "running" and not self.api.lease.stale(prev["job"]):
+            if prev and prev.get("state") == "running" and self.api.lease.held(prev["job"]):
                 return {"ok": False, "reason": "request-running", "job": prev["job"]}
         job_id, gen = self._reserve(name)
         wt, branch = home / "wt" / job_id, f"job/{job_id}"
@@ -152,6 +163,7 @@ class Launcher:
         self.api.lease.release(job_id, gen)
         if state not in KEEP_WORKTREE:
             git(["worktree", "remove", "--force", str(self.api.home / "wt" / job_id)], self.repo, check=False)
+        self.api.registry.bump("finished:" + state)
         return state
 
     def _running(self):

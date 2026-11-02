@@ -263,3 +263,29 @@ def test_step7_no_marker_or_no_doc_means_no_index_change(tmp_path):
     assert mq.add_index_line(wt, "job-2") is False
     (wt / "README.md").write_text("<!-- change-index:end -->\n", encoding="utf-8")
     assert mq.add_index_line(wt, "job-missing") is False
+
+
+# ---------------------------------------------------------------- step 8: counters in the registry, shown by loop_status
+def test_step8_counters_are_kept_apart_from_the_request_rows(tmp_path):
+    env = env_for(tmp_path)
+    assert env.api.registry.bump("started") == 1
+    assert env.api.registry.bump("started", by=2) == 3
+    assert env.api.registry.counters() == {"started": 3}
+    assert env.api.registry.recent(10) == []                    # a counter is not a request row
+
+
+def test_step8_launcher_counts_starts_refusals_and_finishes(tmp_path):
+    env = env_for(tmp_path)
+    gen = env.api.lease.acquire("pilot-old")
+    env.api.registry.record("pilot", "pilot-old", gen, "running", "base", None)
+    fl.run_launched(JOB, env.repo, env.api, env.launcher, run=fake_run("passed"))     # refused: request-running
+    env.api.lease.release("pilot-old", gen)
+    fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=fake_run("passed"))
+    assert env.api.registry.counters() == {"refused:request-running": 1, "started": 1, "finished:passed": 1}
+
+
+def test_step8_counter_lines_are_sorted_name_equals_count(tmp_path):
+    env = env_for(tmp_path)
+    env.api.registry.bump("started")
+    env.api.registry.bump("finished:passed", by=2)
+    assert launch.counter_lines(env.home) == ["finished:passed = 2", "started = 1"]

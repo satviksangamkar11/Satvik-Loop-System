@@ -30,6 +30,7 @@ LOCK_OFFSET = 1 << 30                     # lock byte far beyond any content
 STALE_S = 300.0
 HEARTBEAT_S = 30.0
 LOCK_TIMEOUT_S = 30.0
+COUNTER_PREFIX = "counter:"       # registry rows under this prefix are counters, not requests (step 8)
 CAPACITY = {}                             # gate name -> slots; default 1
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$")
 
@@ -305,6 +306,12 @@ class Lease:
             cur = _load(_lease_path(root, job_id), None)
             return cur is not None and not cur.get("released") and _is_stale(cur, time.time())
 
+    def held(self, job_id) -> bool:
+        """The claims' liveness rule: the lease is not released and its process is alive. A missing or released lease is not held."""
+        root = _dir(self._home)
+        with _locked(root):
+            return _live(root, job_id)
+
     def keep_alive(self, job_id, gen, every_s=HEARTBEAT_S):
         """Beat in a daemon thread every `every_s` seconds. Returns the stop function; the thread also stops when the generation is fenced."""
         stop = threading.Event()
@@ -418,7 +425,7 @@ class Registry:
         with _locked(root):
             table = _load(self._path(root), {})
         rows = [{"key": k, "job": e.get("job"), "state": e.get("state"), "started": e.get("started"), "finished": e.get("finished"),
-                 "seq": int(e.get("seq", 0))} for k, e in table.items()]
+                 "seq": int(e.get("seq", 0))} for k, e in table.items() if not k.startswith(COUNTER_PREFIX)]
         rows.sort(key=lambda r: (r["finished"] or r["started"] or 0.0, r["seq"]), reverse=True)
         return [{k: v for k, v in r.items() if k != "seq"} for r in rows[:max(0, int(n))]]
 
@@ -449,6 +456,24 @@ class Registry:
             table[key] = {"job": job_id, "gen": gen, "state": state, "base": base, "result": result,
                           "started": prev.get("started", now), "finished": now, "seq": self._seq(table)}
             _save(self._path(root), table)
+
+    def bump(self, name, by=1) -> int:
+        """Add `by` to the named counter (kept in the registry under "counter:<name>", outside the request rows). Returns the new count."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+            key = COUNTER_PREFIX + name
+            count = int((table.get(key) or {}).get("count", 0)) + int(by)
+            table[key] = {"count": count}
+            _save(self._path(root), table)
+            return count
+
+    def counters(self) -> dict:
+        """Every counter as {name: count}."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+        return {k[len(COUNTER_PREFIX):]: int(e.get("count", 0)) for k, e in table.items() if k.startswith(COUNTER_PREFIX)}
 
 
 class Gate:
