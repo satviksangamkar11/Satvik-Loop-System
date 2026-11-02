@@ -63,3 +63,13 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
 3. **Schema version.** Limited to `status.json` (fix loop writers, earlier step). `lineage.json` is unchanged.
 4. **Profile guard.** The guard that exists: `load_job` refuses a production job whose `production_job_problems` fail, and `main()` refuses a
    non-production job unless `--legacy`. No new guard was added in `run_job`.
+
+## Owner decision (2026-11-02, on 6a47d51): profile guard and budget check
+
+- **Profile guard.** `fix_loop.run_job` refuses a production job when the active roster profile (SATVIK_PROFILE, read through
+  `p1b_routing.oc.PROFILE`) is not production. It returns state `profile-mismatch` with the reason `profile-mismatch: job=<x> roster=<y>`
+  before any folder, status file, sandbox or model call is made. Legacy jobs are not checked: they never read the roster, and under the test
+  default a legacy job would otherwise always be refused.
+- **Budget check (already built).** review_usd must be exactly 0 under test and exactly 0.05 under production. Tests:
+  `test_under_the_test_profile_the_budget_review_usd_must_be_exactly_zero` and
+  `test_under_the_production_profile_the_budget_review_usd_must_be_exactly_0_05`.

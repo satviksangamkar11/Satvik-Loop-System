@@ -217,3 +217,31 @@ def test_under_the_production_profile_the_budget_review_usd_must_be_exactly_0_05
         p1b.check_production_job(_budget_job(0), profile="production")
     assert any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0), profile="production"))
     assert not any("budget" in problem for problem in p0_gates.production_job_problems(_budget_job(0.05), profile="production"))
+
+
+# ---- 8. run_job refuses a production job whose profile is not the active roster profile (owner 2026-11-02)
+
+def _production_job(root, name):
+    return {"name": name, "profile": "production", "visibility": "public", "spec": "specs/missing.md", "files": ["pieces/m.py"],
+            "tests": ["pieces/test_m.py"], "reference": [], "fixers": ["writer_a"], "reviewers": "by_lineage", "review": True,
+            "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}, "deadline_min": 60}
+
+
+def test_run_job_refuses_a_production_job_when_the_roster_profile_is_test_before_any_call_or_write(tmp_path, monkeypatch):
+    from test_fix_loop_review import fl, make_root
+    root = make_root(tmp_path)
+    monkeypatch.setattr(oc, "PROFILE", "test")                 # the active roster profile (SATVIK_PROFILE) is test
+    result = fl.run_job(_production_job(root, "mm"), root, status_dir=root / "_loop", scrub_keys=[])
+    assert result["state"] == "profile-mismatch"
+    assert result["problems"] == ["profile-mismatch: job=production roster=test"]
+    assert result["coder_calls"] == 0
+    assert not (root / "_loop" / "mm").exists()                # no folder, no status.json, nothing written
+
+
+def test_run_job_runs_a_production_job_when_the_roster_profile_matches(tmp_path, monkeypatch):
+    from test_fix_loop_review import fl, make_root
+    root = make_root(tmp_path)
+    monkeypatch.setattr(oc, "PROFILE", "production")           # the roster profile matches the job
+    result = fl.run_job(_production_job(root, "ok"), root, status_dir=root / "_loop", scrub_keys=[])
+    assert result["state"] == "invalid-spec"                   # the guard let it through: the next check (spec) decided, no model call
+    assert result["state"] != "profile-mismatch"
