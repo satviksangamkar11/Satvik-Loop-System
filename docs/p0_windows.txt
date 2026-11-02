@@ -1,0 +1,20 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0 -- C:\Python314\python.exe
+rootdir: D:\aai work\loop_p0
+plugins: anyio-4.14.1
+collecting ... collected 12 items
+
+pieces/test_p0_sandbox.py::test_the_confinement_selftest_passes PASSED   [  8%]
+pieces/test_p0_sandbox.py::test_network_is_unreachable PASSED            [ 16%]
+pieces/test_p0_sandbox.py::test_host_credentials_are_not_visible PASSED  [ 25%]
+pieces/test_p0_sandbox.py::test_protected_folders_and_key_files_are_never_copied_in PASSED [ 33%]
+pieces/test_p0_sandbox.py::test_trusted_test_files_are_read_only_and_the_host_copy_is_unchanged PASSED [ 41%]
+pieces/test_p0_sandbox.py::test_writes_in_the_workspace_never_reach_the_host_checkout PASSED [ 50%]
+pieces/test_p0_sandbox.py::test_the_root_filesystem_is_read_only_and_not_root PASSED [ 58%]
+pieces/test_p0_sandbox.py::test_a_planted_sitecustomize_or_conftest_config_is_not_honoured PASSED [ 66%]
+pieces/test_p0_sandbox.py::test_a_hung_test_with_child_processes_is_killed_with_its_container PASSED [ 75%]
+pieces/test_p0_sandbox.py::test_a_fork_bomb_is_capped_by_the_process_limit PASSED [ 83%]
+pieces/test_p0_sandbox.py::test_production_job_in_docker_rejects_the_constant_return_and_accepts_the_real_fix PASSED [ 91%]
+pieces/test_p0_sandbox.py::test_production_job_stops_when_docker_is_missing PASSED [100%]
+
+============================= 12 passed in 36.55s =============================

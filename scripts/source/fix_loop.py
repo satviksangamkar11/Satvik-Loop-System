@@ -39,6 +39,16 @@ JOB_SCHEMA = {
         "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
         "reviewers": {"type": "array", "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]}, "default": ["lightning", "minimax", "codex", "haiku"]},
         "fixers": {"type": "array", "items": {"type": "string", "enum": ["nemotron", "haiku"]}, "default": ["nemotron", "nemotron", "nemotron"]},
+        # P0 2026-11-02: production jobs (locked acceptance tests, sandboxed pytest, strict review). A job without `profile` is legacy.
+        "profile": {"type": "string", "enum": ["production", "legacy"]},
+        "acceptance_tests": {"type": "array", "items": {"type": "string"}, "default": []},
+        "acceptance_baseline_fail": {"type": "array", "items": {"type": "string"}, "default": []},
+        "negative_controls": {"type": "array", "default": [], "items": {
+            "type": "object", "required": ["name", "replace", "must_fail"], "additionalProperties": False,
+            "properties": {"name": {"type": "string"}, "replace": {"type": "object", "additionalProperties": {"type": "string"}},
+                           "must_fail": {"type": "array", "items": {"type": "string"}, "minItems": 1}}}},
+        "sandbox_image": {"type": "string"},
+        "sandbox_include": {"type": "array", "items": {"type": "string"}},
     },
     "additionalProperties": False,
 }
@@ -137,7 +147,46 @@ def load_job(path: str | Path) -> dict:
             raise ValueError(f"groq_review_files must include every job file; missing: {missing_job}")
     if job["review_prompt"] is not None:
         _validate_path(job["review_prompt"], root, "review_prompt")
+    job.setdefault("profile", "legacy")
+    job.setdefault("acceptance_tests", [])
+    job.setdefault("acceptance_baseline_fail", [])
+    job.setdefault("negative_controls", [])
+    for i, a in enumerate(job["acceptance_tests"]):
+        _validate_path(a, root, f"acceptance_tests[{i}]")
+    for i, c in enumerate(job["negative_controls"]):
+        for target, src in c["replace"].items():
+            _validate_path(target, root, f"negative_controls[{i}].replace target")
+            _validate_path(src, root, f"negative_controls[{i}].replace source")
+    for i, inc in enumerate(job.get("sandbox_include") or []):
+        _validate_path(inc, root, f"sandbox_include[{i}]")
+    if job["profile"] == "production":
+        problems = _p0().production_job_problems(job)
+        if problems:
+            raise ValueError("production job refused: " + "; ".join(problems))
     return job
+
+
+def _sibling_module(name: str):
+    """A P0 helper module next to this file, loaded once and registered (dataclasses need their module in sys.modules)."""
+    path = Path(__file__).resolve().parent / f"{name}.py"
+    mod = sys.modules.get(name)
+    if mod is not None and Path(getattr(mod, "__file__", "") or "").resolve() == path:
+        return mod
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _p0():
+    """The P0 gates module (scripts/source/p0_gates.py)."""
+    return _sibling_module("p0_gates")
+
+
+def _sandbox_mod():
+    """The P0 Docker execution boundary (scripts/source/sandbox_runner.py)."""
+    return _sibling_module("sandbox_runner")
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -477,8 +526,9 @@ def run_pytest(tests: list[str], root: Path, timeout_s: int = 600, python: str |
     if python is None:
         python = sys.executable
     cmd = [python, "-m", "pytest", "-q", "--tb=short"] + tests
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")     # P0: a cached .pyc of the PREVIOUS round (same size, same second) let a wrong module pass
     try:
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout_s)
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout_s, env=env)
         output = proc.stdout + proc.stderr
         if proc.returncode == 0 and not _some_test_passed(output):       # exit 0 with every test skipped or nothing collected proves nothing (Opus F1)
             return False, output + chr(10) + "LOOP: pytest exited 0 but no test PASSED (all skipped, xfailed, or none collected): that is not a pass."
@@ -772,7 +822,11 @@ def run_job(
     pytest_runner: Callable[..., tuple[bool, str]] | None = None,
     status_dir: Path | None = None,
     scrub_keys: list[str] | None = None,
+    sandbox=None,
 ) -> dict:
+    production = job.get("profile") == "production"
+    if production and pytest_runner is not None:
+        raise ValueError("a production job runs pytest only in the sandbox; pytest_runner cannot be replaced (pass sandbox= in tests)")
     # Backward compatibility: if caller is provided, use it for all rounds
     # Otherwise, build callers dict with defaults
     if caller is not None:
@@ -834,6 +888,61 @@ def run_job(
     last_good: dict[str, str] = {}
     original_contents: dict[str, str | None] = _prepare_job_folder(status_dir_job, root, expected_files)
 
+    # ------------------------------------------------------------ P0 2026-11-02: production setup, before any coder call
+    gates = _p0()
+    evidence: dict = {}
+    acceptance_tests = list(job.get("acceptance_tests") or [])
+    protected: list = []
+    acceptance_lock: dict = {}
+
+    def _early_stop(state_: str, filename: str, title: str, lines: list) -> dict:
+        nl = chr(10)
+        (status_dir_job / filename).write_text(f"# {title}" + nl + nl + nl.join(f"- {x}" for x in lines) + nl, encoding="utf-8")
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": state_, "problems": lines, "coder_calls": 0}, indent=2))
+        print(f"{name}: {state_} {lines}")
+        return {"name": name, "state": state_, "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0,
+                "reviewer_calls": {}, "coder_budget": 0, "problems": lines, "evidence": {},
+                "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+
+    if production:
+        if sandbox is None:
+            sbm = _sandbox_mod()
+            include = job.get("sandbox_include") or sorted({Path(p.split("::")[0]).parts[0] for p in
+                                                            expected_files + tests + acceptance_tests + list(job.get("regression") or [])
+                                                            + [s for c in job["negative_controls"] for s in c["replace"].values()]})
+            sandbox = sbm.DockerSandbox(image=job.get("sandbox_image") or sbm.DEFAULT_IMAGE, include=include)
+        sb_problems = sandbox.selftest()
+        if sb_problems:                                   # no unrestricted fallback: generated code never runs outside the boundary
+            return _early_stop("sandbox-unavailable", "SANDBOX_UNAVAILABLE.md", "SANDBOX UNAVAILABLE (no coder call was made)", sb_problems)
+        control_files = [src for c in job["negative_controls"] for src in c["replace"].values()]
+        protected = gates.protected_paths(root, acceptance_tests + list(job.get("regression") or []), control_files)
+        acceptance_lock = gates.hash_paths(root, protected)
+        _atomic_write(status_dir_job / "acceptance_lock.json", json.dumps(acceptance_lock, indent=2))
+        evidence["acceptance_lock"] = {k: v for k, v in acceptance_lock.items() if v is not None}
+        calib: list = []                                  # the acceptance tests must be shown to FAIL on wrong code before they may decide a PASS
+        if job.get("acceptance_baseline_fail"):
+            r = sandbox.run(root, acceptance_tests, readonly=protected, timeout_s=600)
+            calib += [f"baseline: {p}" for p in gates.must_fail_problems(r.junit, job["acceptance_baseline_fail"], r.returncode, r.timed_out)]
+        for c in job["negative_controls"]:
+            overlay = {target: root / src for target, src in c["replace"].items()}
+            r = sandbox.run(root, acceptance_tests, overlay=overlay, readonly=protected, timeout_s=600)
+            calib += [f"negative control {c['name']!r}: {p}" for p in gates.must_fail_problems(r.junit, c["must_fail"], r.returncode, r.timed_out)]
+        if gates.hash_paths(root, protected) != acceptance_lock:
+            calib.append("acceptance files changed during calibration")
+        if calib:
+            return _early_stop("acceptance-invalid", "ACCEPTANCE_INVALID.md",
+                               "ACCEPTANCE INVALID: the acceptance tests did not fail where they must (no coder call was made)", calib)
+        evidence["calibration"] = "passed"
+
+        def pytest_runner(test_list, root_, timeout_s=600, python=None):    # noqa: F811 - production: sandbox + per-test JUnit verdict
+            files_ = sorted({t.split("::")[0] for t in test_list})
+            r = sandbox.run(root_, test_list, readonly=protected, timeout_s=timeout_s)
+            probs = gates.verify_junit(r.junit, gates.expected_test_ids(root_, files_), r.returncode, r.timed_out)
+            out = r.output
+            if probs:
+                out += chr(10) + "LOOP P0 VERDICT: not a pass:" + chr(10) + chr(10).join("- " + p for p in probs)
+            return (not probs), out
+
     rounds_record: list[dict] = []
     coder_calls = 0
     reviewer_calls: dict = {}
@@ -863,11 +972,14 @@ def run_job(
             "tests_passed": tests_passed_,
             "review_verdict": review_verdict,
             "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget,
+            "profile": job.get("profile", "legacy"), "evidence": evidence,
             "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         _atomic_write(status_dir_job / "status.json", json.dumps(status, indent=2))
 
     ever_passed = False
+    tampered = False               # P0: a locked acceptance file changed
+    tested_hash = None             # P0: hash of the job files as last tested green
     job_started = time.monotonic()
     deadline_s = float(job.get("deadline_min", 120)) * 60
     # rounds 0..max_rounds are for making the tests pass; once they have passed, up to review_rounds more rounds exist for review fixes (a job whose tests
@@ -990,6 +1102,19 @@ def run_job(
                 if not reg_passed:
                     passed = False
                     output = "REGRESSION TESTS FAILED (these belong to other modules and cannot be edited; fix the module you were given):" + chr(10) + reg_output
+            if production:
+                if gates.hash_paths(root, protected) != acceptance_lock:
+                    tampered = True
+                    passed = False
+                    output = "LOOP P0: the locked acceptance files changed during the job"
+                elif passed:                               # P0: the coder's own tests are evidence only; the locked acceptance tests decide
+                    acc_passed, acc_output = pytest_runner(acceptance_tests, root, timeout_s=600)
+                    if not acc_passed:
+                        passed = False
+                        output = ("ACCEPTANCE TESTS FAILED (independent tests you cannot see or edit; your own tests passing does not count):"
+                                  + chr(10) + acc_output)
+            if passed:
+                tested_hash = gates.combined_hash(root, expected_files)
             tests_passed = passed
         else:
             passed = False
@@ -1009,6 +1134,8 @@ def run_job(
         _write_status(round_no, coder_status, files_ok, passed, reason)
 
         print(f"{name} round {round_no}: fixer={fixer_name} tests {'pass' if passed else 'fail'} files {'ok' if files_ok else 'bad'}")
+        if tampered:
+            break
 
         if passed:
             fail_sigs.clear()
@@ -1018,6 +1145,7 @@ def run_job(
             last_pytest_output = None
             if review_enabled and review_pass_count < review_rounds:
                 review_files_paths = [root / rf for rf in review_files]
+                _review_start_hash = gates.combined_hash(root, list(review_files) + list(expected_files))   # P0: what the reviewers are given
                 all_ready = True
                 any_fix_first = False
                 test_review_open = False
@@ -1063,9 +1191,12 @@ def run_job(
                     _rp = status_dir_job / f"review_{review_pass_count}_{_rn}.md"
                     if _rp.is_file():
                         _rp.write_text(_scrub(_rp.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
-                _judge_ready = False
+                _judge_verdict = None
+                _review_end_hash = gates.combined_hash(root, list(review_files) + list(expected_files))
+                _code_changed = _review_end_hash != _review_start_hash or gates.combined_hash(root, expected_files) != tested_hash
                 _panel_verdicts = {_review_results.get(_rn, {}).get("verdict") for _rn in reviewers_list if reviewer.get(_rn) is not None}
-                if len({v for v in _panel_verdicts if v in ("READY", "FIX FIRST")}) > 1:   # owner 2026-10-31: reviews that disagree (READY vs FIX FIRST) go to the Haiku 5.5 tie-breaker, which decides: fix or move ahead; a NONE (timeout, error) is no review and blocks as before
+                if (not production and not _code_changed
+                        and len({v for v in _panel_verdicts if v in ("READY", "FIX FIRST")}) > 1):   # owner 2026-10-31 (legacy only, P0): reviews that disagree go to the Haiku 5.5 tie-breaker; it can never stand in for a missing review
                     _judge_fn = (callers or {}).get("judge") or _haiku_cli_caller_factory()
                     _panel = []
                     for _rn in reviewers_list:
@@ -1083,13 +1214,10 @@ def run_job(
                     (status_dir_job / f"review_{review_pass_count}_judge.md").write_text(_jtext or "(judge gave no answer)", encoding="utf-8")
                     rounds_record.append({"round": f"review_{review_pass_count}_judge", "fixer": "judge", "coder_status": "review", "files_ok": True, "tests_passed": True,
                                           "reason": "judge verdict=" + str(_jverdict or "NONE") + " (mixed panel: " + ", ".join(sorted(str(v) for v in _panel_verdicts)) + ")"})
-                    if _jverdict == "READY":
-                        _judge_ready = True
-                    elif _jverdict == "FIX FIRST":
+                    _judge_verdict = _jverdict if _jverdict in ("READY", "FIX FIRST") else None
+                    if _jverdict == "FIX FIRST":
                         new_pending_reports.append(("judge", _jtext))
                         any_fix_first = True
-                    else:
-                        any_missing = True
                 for rname in reviewers_list:
                     rfunc = reviewer.get(rname)
                     if rfunc is None:
@@ -1136,22 +1264,33 @@ def run_job(
                     else:
                         all_ready = False
                         any_missing = True
-                _valid = sum(1 for _r in rounds_record[-len(reviewers_list):] if str(_r.get("reason", "")).startswith(("verdict=READY", "verdict=FIX FIRST")))
-                _quorum = job.get("min_valid_reviews", 0) or len(reviewers_list)
-                if _judge_ready and not test_findings:
-                    any_fix_first = False
-                    any_missing = False
-                    new_pending_reports = []
-                all_ready = (not any_fix_first) and (not test_findings) and (_judge_ready or _valid >= _quorum)          # default quorum = every reviewer; a lower min_valid_reviews tolerates NONE/timeouts
+                # P0 2026-11-02: ONE decision function (p0_gates.decide_review) replaces the flag arithmetic that let a judge READY clear a missing review
+                _verdicts = {_rn: (_review_results.get(_rn) or {}).get("verdict") for _rn in reviewers_list if reviewer.get(_rn) is not None}
+                _decision = gates.decide_review(_verdicts, reviewers_list, judge=_judge_verdict, coder_fix_first=any_fix_first,
+                                                test_findings=bool(test_findings), min_valid=job.get("min_valid_reviews", 0), production=production)
+                if _code_changed:                                   # the files read by the reviewers are not the files that were tested: no review counts
+                    _decision = "changed"
+                evidence.setdefault("review_decisions", []).append({"pass": review_pass_count, "decision": _decision, "verdicts": _verdicts,
+                                                                    "judge": _judge_verdict})
                 review_pass_count += 1
-                pending_review_reports = new_pending_reports
-                if all_ready:
+                pending_review_reports = new_pending_reports if _decision == "fix" else []
+                if production and gates.hash_paths(root, protected) != acceptance_lock:
+                    tampered = True
+                    break
+                if _decision == "accept":
                     state = "passed"
                     review_verdict = "READY"
+                    evidence["reviewed_hash"] = gates.combined_hash(root, expected_files)
                     break
-                elif any_fix_first:
+                elif _decision == "fix":
                     continue
-                elif test_findings:
+                elif _decision == "changed":
+                    state = "integrity-mismatch"                        # restore the version that was tested; never keep code nobody tested
+                    review_verdict = "unavailable"
+                    for rel, content in last_good.items():
+                        _atomic_write(root / rel, content)
+                    break
+                elif _decision == "test-findings":
                     state = "test-review-open"                          # tests pass, only test findings remain: never READY, never a coder repair
                     review_verdict = "FIX FIRST (tests)"
                     break
@@ -1174,6 +1313,26 @@ def run_job(
             else:
                 fail_sigs.clear()
             continue
+
+    if tampered:                                               # P0: the acceptance oracle changed under the job: nothing it produced is trusted
+        state = "acceptance-tampered"
+        _save_attempt(status_dir_job, root, expected_files)
+        for rel, orig in original_contents.items():
+            p = root / rel
+            if orig is None:
+                if p.exists():
+                    p.unlink()
+            else:
+                _atomic_write(p, orig)
+        now_hashes = gates.hash_paths(root, protected)
+        changed = sorted(k for k in protected if now_hashes.get(k) != acceptance_lock.get(k))
+        (status_dir_job / "ACCEPTANCE_TAMPERED.md").write_text("# ACCEPTANCE TAMPERED" + chr(10) + chr(10) + "Locked files that changed:" + chr(10)
+                                                              + chr(10).join(f"- {c}" for c in changed) + chr(10), encoding="utf-8")
+        _write_status(last_round_no, "", False, False, "acceptance files changed")
+        print(f"{name}: {state} {changed}")
+        return {"name": name, "state": state, "round": last_round_no, "tests_passed": False, "review_verdict": None, "rounds": rounds_record,
+                "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "evidence": evidence,
+                "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     if stuck_set:
         _save_attempt(status_dir_job, root, expected_files)
@@ -1204,14 +1363,21 @@ def run_job(
         escalate_md.write_text(escalate_content, encoding="utf-8")
         _write_status(last_round_no, "", False, False, "max rounds exceeded")
         print(f"{name}: {state}")
-        return {"name": name, "state": state, "round": last_round_no, "tests_passed": False, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        return {"name": name, "state": state, "round": last_round_no, "tests_passed": False, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "evidence": evidence, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     if state == "running":
         state = "review-open"                                  # tests pass but a reviewer still says FIX FIRST and no round is left (P1-D23); files are kept
         review_verdict = review_verdict or "FIX FIRST"
+    if state == "passed":                                      # P0: the delivered code must be byte-identical to the code that was tested and reviewed
+        evidence["tested_hash"] = tested_hash
+        evidence["final_hash"] = gates.combined_hash(root, expected_files)
+        lock_ok = (not production) or gates.hash_paths(root, protected) == acceptance_lock
+        if not (tested_hash and evidence["final_hash"] == tested_hash == evidence.get("reviewed_hash") and lock_ok):
+            state = "integrity-mismatch"
+            review_verdict = "unavailable"
     _write_status(last_round_no, "", True, True, "repeated identical failure" if state == "needs_review" else "test findings need observer review" if state == "test-review-open" else "review findings still open" if state == "review-open" else "done")
     print(f"{name}: {state}")
-    return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    return {"name": name, "state": state, "round": last_round_no, "tests_passed": True, "review_verdict": review_verdict, "rounds": rounds_record, "coder_calls": coder_calls, "reviewer_calls": dict(reviewer_calls), "coder_budget": coder_budget, "evidence": evidence, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
 def exit_code_for(state: str, job: dict) -> int:
@@ -1285,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--solo", action="store_true", help="run without the launcher (no file claims, no shared key ledger): one job only")
+    parser.add_argument("--legacy", action="store_true", help="P0: allow a job without profile=production (no locked acceptance tests, no sandbox)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -1292,6 +1459,11 @@ def main(argv: list[str] | None = None) -> int:
         job = load_job(root / args.job)
     except ValueError as e:
         print(f"invalid job: {e}", file=sys.stderr)
+        return 2
+    legacy_ok = args.legacy or os.environ.get("SATVIK_ALLOW_LEGACY") == "1"
+    if job.get("profile") != "production" and not legacy_ok and not args.dry_run:      # P0: an unsafe job is never the default
+        print("refusing to run: this job is not profile=production (no locked acceptance tests, no sandbox, review may be off). "
+              "Make it a production job, or pass --legacy (or SATVIK_ALLOW_LEGACY=1) to run it the old way on purpose.", file=sys.stderr)
         return 2
 
     if not args.dry_run and not args.solo and os.environ.get("P1_LEDGER") != "1":

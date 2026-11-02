@@ -146,4 +146,45 @@ The loop was reviewed by Codex (gpt-6.1-sol and gpt-6-luna, medium) and tested l
 | (owner 2026-10-31) | Two-review rule: `min_valid_reviews: 2` in the job; Nemotron 3.5 Lightning added as a reviewer for the staging job (three reviewers: codex, groq, lightning). |
 | (owner 2026-10-31) | Haiku 5.5 high as coder (job `fixers: ["haiku"]`, through the Claude CLI: `--tools ""`, `--strict-mcp-config` with an empty MCP config, `--no-session-persistence`; a reply counts only with status 200). Haiku also decides when two reviewers contradict. Qwen removed from the loop. Reviewer set of the Step 4 repair: `codex` and `groq`. |
 | 7287a89, 1cbab19 | Added the `groq` and `qwen` compact reviewers on Groq Cloud free tier. |
+| (P0 2026-11-02) | Production profile (`"profile": "production"`): locked acceptance tests, negative controls, sandboxed pytest with per-test JUnit verdicts, strict two-READY review, tested = reviewed = delivered hash. Judge can no longer stand in for a missing review (every profile). Legacy jobs need `--legacy` / `SATVIK_ALLOW_LEGACY=1`. See "Production jobs (P0)" below. |
 | 7ce7465 | Groq key rotation using the NVIDIA pool logic (`p1_claims.LedgerKeyPool`): shared ledger under OS locks (`_loop/groq_ledger`), one request per key per 60 s window, failed key cooled, 401/402/403 retire key, 429/5xx move to next key, other errors return at once, runner waits for a free key. |
+
+## Production jobs (P0, 2026-11-02)
+
+A job with `"profile": "production"` closes the false-pass and execution holes. A job without `profile` is **legacy** and the CLI refuses it unless
+`--legacy` is passed (or `SATVIK_ALLOW_LEGACY=1` is set), so the unsafe mode is never the default.
+
+```json
+{
+ "name": "calc", "profile": "production", "spec": "specs/calc.md",
+ "files": ["pieces/calc.py", "pieces/test_calc.py"], "tests": ["pieces/test_calc.py"],
+ "reviewers": ["codex", "groq"],
+ "acceptance_tests": ["tests/acceptance/test_calc_acceptance.py"],
+ "negative_controls": [{"name": "returns None", "replace": {"pieces/calc.py": "tests/controls/calc_returns_none.py"},
+                        "must_fail": ["tests/acceptance/test_calc_acceptance.py::test_sums_two_prices"]}],
+ "acceptance_baseline_fail": []
+}
+```
+
+- **Review.** Every required reviewer must give a valid READY, at least two distinct reviewers, no lowered quorum, `review: false` refused. The
+  tie-breaker is not used in production; in legacy it may settle READY-vs-FIX FIRST only when the quorum is really met, never fill a missing review.
+  One function decides: `p0_gates.decide_review`.
+- **Locked acceptance tests.** `acceptance_tests` are controller-owned: never in `files`, mounted read-only, hash-locked with every `conftest.py`
+  above them, the root pytest config files, the regression tests and the negative-control files (`_loop/<job>/acceptance_lock.json`). A change at
+  any time ends the job `acceptance-tampered` and restores the originals. The coder's own tests are evidence only: a pass needs the acceptance tests.
+- **Proof the tests can fail.** Before any coder call: each `negative_controls` entry replaces job files with a known-wrong implementation and its
+  `must_fail` tests must fail; each `acceptance_baseline_fail` test (bug regressions) must fail on the unchanged code. Only the named tests must
+  fail; valid invariants may pass. A test that is not collected does not count. A `must_fail` test counts only when it fails with an
+  `AssertionError` or pytest's own failure (`pytest.fail`, `DID NOT RAISE`); a NameError, AttributeError, ImportError, SyntaxError or setup error
+  does not count. Otherwise: `acceptance-invalid`, no coder call.
+- **Per-test verdict.** pytest writes JUnit XML; every test defined in the run's files must be collected and pass. A skip, an xfail (run with
+  `--runxfail`), an error, a collection error, a missing test, zero tests, a non-zero exit code or a timeout is not a pass.
+- **Sandbox.** `scripts/source/sandbox_runner.py`: Docker, `--network none`, non-root, `--cap-drop ALL`, `no-new-privileges`, read-only root,
+  CPU/memory/PID limits, a disposable copy of the needed folders (never `_moss/`, `_loop/`, `secrets/`, `.git`, key or `.env` files), no host
+  environment, no Docker socket, controller-owned pytest config (`-c`), `python -I`. A timeout kills the whole container. Before round 0 a
+  confinement self-test runs; if Docker, the image or confinement fails the job ends `sandbox-unavailable` with no coder call. There is no
+  unrestricted fallback. Build the image: `docker build -t satvik-pytest-sandbox:latest tools/sandbox` (add the project's test dependencies).
+- **Evidence.** `result["evidence"]`: `tested_hash == reviewed_hash == final_hash`, the acceptance lock and each review decision. Code that changed
+  while it was reviewed ends `integrity-mismatch` and the tested version is restored.
+
+New states (exit code 1): `acceptance-invalid`, `acceptance-tampered`, `sandbox-unavailable`, `integrity-mismatch`.
