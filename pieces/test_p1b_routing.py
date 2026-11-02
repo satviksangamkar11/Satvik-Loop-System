@@ -171,18 +171,18 @@ def test_pytest_output_fed_back_is_trimmed_to_its_last_32000_characters():
 
 # ---- 4. panels: GLM and North, the backup is the free writer that did not write the code
 
-def test_every_panel_is_glm_then_north_unless_north_wrote_or_is_down():
-    assert p1b.panel_for(DOTS) == [GLM, NORTH]
-    assert p1b.panel_for(XING) == [GLM, NORTH]
+def test_every_panel_is_north_then_glm_unless_north_wrote_or_is_down():
+    assert p1b.panel_for(DOTS) == [NORTH, GLM]
+    assert p1b.panel_for(XING) == [NORTH, GLM]
 
 
 def test_north_wrote_the_code_so_the_backup_is_the_free_writer_that_did_not_and_north_is_never_on_the_panel():
-    assert p1b.panel_for(NORTH) == [GLM, DOTS]
+    assert p1b.panel_for(NORTH) == [DOTS, GLM]
 
 
-def test_north_down_means_the_free_writer_that_did_not_write_the_code_reviews():
-    assert p1b.panel_for(DOTS, unavailable={NORTH}) == [GLM, XING]
-    assert p1b.panel_for(XING, unavailable={NORTH}) == [GLM, DOTS]
+def test_north_down_means_the_free_writer_that_did_not_write_the_code_reviews_before_glm():
+    assert p1b.panel_for(DOTS, unavailable={NORTH}) == [XING, GLM]
+    assert p1b.panel_for(XING, unavailable={NORTH}) == [DOTS, GLM]
 
 
 def test_no_second_independent_reviewer_is_provider_unavailable():
@@ -334,7 +334,7 @@ def test_the_opus_gate_needs_a_confirmed_defect_both_free_writers_failing_on_the
 def test_the_opus_gate_refuses_a_call_the_deadline_cannot_hold():
     clock = Clock()
     models = FakeModels({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()]}, [red(systemic=True), red(), red()])
-    models.on_tests = lambda: setattr(clock, "now", 2000.0) if len(models.tests_results) == 1 else None
+    models.on_tests = lambda: setattr(clock, "now", 2800.0) if len(models.tests_results) == 1 else None      # 800 s left: under the 900 s repair call
     outcome = p1b.walk(JOB, models, p1b.Lineage(), clock)
     assert outcome.status == "escalate" and "deadline" in outcome.reason
     assert models.calls(ANTHROPIC) == []
@@ -352,16 +352,16 @@ def test_the_walk_stops_between_rounds_at_the_deadline():
 # ---- 7. review: GLM first, North second, one backup, a GLM READY always required
 
 def test_a_fix_first_with_evidence_comes_back_as_a_review_fix_and_names_the_reviewer():
-    outcome, _ = run({(DOTS, "write"): [full()], (GLM, "review"): [FIX_WITH_EVIDENCE]}, [green()])
-    assert outcome.status == "review-fix" and "SPEC 3.2" in outcome.reason and GLM in outcome.reason
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE]}, [green()])
+    assert outcome.status == "review-fix" and "SPEC 3.2" in outcome.reason and NORTH in outcome.reason
 
 
-def test_an_unsupported_fix_first_is_re_asked_once_and_stays_open_and_north_is_never_asked():
-    outcome, models = run({(DOTS, "write"): [full()], (GLM, "review"): [FIX_NO_EVIDENCE], (GLM, "review-reask"): [FIX_NO_EVIDENCE],
-                           (NORTH, "review"): [READY]}, [green()])
+def test_an_unsupported_fix_first_is_re_asked_once_and_stays_open_and_glm_is_never_asked():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_NO_EVIDENCE], (NORTH, "review-reask"): [FIX_NO_EVIDENCE],
+                           (GLM, "review"): [READY]}, [green()])
     assert outcome.status == "review-fix"
-    assert len(models.calls(GLM, "review-reask")) == 1
-    assert models.calls(NORTH, "review") == []
+    assert len(models.calls(NORTH, "review-reask")) == 1
+    assert models.calls(GLM, "review") == []
 
 
 def test_a_failed_north_call_goes_to_the_free_writer_that_did_not_write_the_code():
@@ -380,7 +380,7 @@ def test_north_failing_with_its_backup_down_is_provider_unavailable_and_keeps_th
 def test_without_glm_ready_there_is_no_pass_even_when_north_says_ready():
     outcome, models = run({(DOTS, "write"): [full()], (GLM, "review"): [p1b.ModelFailed("GLM down")], (NORTH, "review"): [READY]}, [green()])
     assert outcome.status == "provider-unavailable" and "GLM" in outcome.reason
-    assert models.calls(NORTH, "review") == []
+    assert models.calls(NORTH, "review") == [("review", NORTH)]
 
 
 def test_a_glm_reply_with_no_verdict_line_is_not_a_pass():
@@ -389,15 +389,15 @@ def test_a_glm_reply_with_no_verdict_line_is_not_a_pass():
 
 
 def test_a_glm_call_over_the_review_ceiling_ends_the_job_as_budget_exceeded_and_nothing_else_is_called():
-    outcome, models = run({(DOTS, "write"): [full()], (GLM, "review"): [p1b.BudgetStop("review ceiling")], (NORTH, "review"): [READY]},
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [READY], (GLM, "review"): [p1b.BudgetStop("review ceiling")]},
                           [green()])
     assert outcome.status == "budget-exceeded"
-    assert models.calls(NORTH, "review") == []
+    assert models.calls(GLM, "review") == [("review", GLM)] and models.log[-1] == ("review", GLM)
 
 
 def test_a_glm_re_ask_over_the_ceiling_also_ends_the_job_as_budget_exceeded():
-    outcome, _ = run({(DOTS, "write"): [full()], (GLM, "review"): [FIX_NO_EVIDENCE], (GLM, "review-reask"): [p1b.BudgetStop("ceiling")]},
-                     [green()])
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [READY], (GLM, "review"): [FIX_NO_EVIDENCE],
+                      (GLM, "review-reask"): [p1b.BudgetStop("ceiling")]}, [green()])
     assert outcome.status == "budget-exceeded"
 
 
@@ -412,6 +412,7 @@ def test_the_routing_module_names_no_legacy_model_family_and_no_opus():
 # ---- 9. a failed reviewer keeps its upstream error in the job's reason
 
 def test_a_failed_glm_keeps_its_upstream_error_in_the_outcome_reason():
-    outcome, _ = run({(DOTS, "write"): [full()], (GLM, "review"): [p1b.ModelFailed("HTTP 429 glm pool")]}, [green()])
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [READY], (GLM, "review"): [p1b.ModelFailed("HTTP 429 glm pool")]},
+                     [green()])
     assert outcome.status == "provider-unavailable"
     assert "HTTP 429 glm pool" in outcome.reason

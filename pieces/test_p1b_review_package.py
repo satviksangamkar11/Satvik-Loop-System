@@ -233,14 +233,14 @@ def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_original
 
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", PLANTED), ("pieces/test_calc.py", GOOD_TEST))],
-        GLM: [glm_reviews],                                       # the first reviewer; its FIX FIRST stops the panel
-        NORTH: [ph.READY],
+        NORTH: [glm_reviews],                                     # the first reviewer (North); its FIX FIRST stops the panel before GLM
+        GLM: [ph.READY],
     })
     root, result = run_e2e(tmp_path, provider)
     assert result["state"] == "review-open", result
     assert "CHECK 2" in (root / "_loop" / "calc" / "REVIEW_FIX.md").read_text(encoding="utf-8")
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
-    assert NORTH not in provider.models()
+    assert GLM not in provider.models()                       # GLM is called only after North says READY
 
 
 # ---------------------------------------------------------------- 13. a static warning alone never fails a job
@@ -253,7 +253,7 @@ def test_a_static_warning_alone_never_fails_a_job(tmp_path):
     })
     root, result = run_e2e(tmp_path, provider)
     assert result["state"] == "passed", result
-    warnings = section_text(provider_prompt(provider, GLM), 6, "STATIC WARNINGS")
+    warnings = section_text(provider_prompt(provider, NORTH), 6, "STATIC WARNINGS")
     assert "pieces/calc.py:2" in warnings                           # the warning was there and advisory
 
 
@@ -322,6 +322,7 @@ def test_reviewer_rate_limited_on_every_call_is_provider_unavailable_with_the_or
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
         GLM: [ph.READY],
+        NORTH: [ph.READY],
     })
     transport = Rate429Transport(provider, limited=99)
     client, sleeps = window_client(tmp_path, transport)

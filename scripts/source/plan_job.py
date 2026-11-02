@@ -30,7 +30,7 @@ INSTRUCTIONS = (
     + "- spec_md: the specification. Every line that states a requirement starts with `KNOWN:` (taken from the request or the files) or "
       "`ASSUMED:` (your own assumption). Headings may stay untagged." + NL
     + "- job: a production job object. Roles only: fixers are writer_a and writer_b; reviewers is the string by_lineage; visibility is public; "
-      "budget is {free_requests: 40, paid_usd: 0.15}; deadline_min is 60 or 120; name is the job name; files lists the files the coder may edit "
+      "budget is {free_requests: 40, review_usd: 0.05, paid_usd: 0}; deadline_min is 60 or 120; name is the job name; files lists the files the coder may edit "
       "(never a test file that is locked); tests and acceptance_tests are controller-owned test files; negative_controls show that each "
       "acceptance test can fail on wrong code (or give acceptance_baseline_fail for a bug fix)." + NL
     + "- acceptance: {path: file text} for exactly the job's acceptance_tests." + NL

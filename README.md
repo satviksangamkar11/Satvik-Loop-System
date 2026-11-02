@@ -348,3 +348,15 @@ Owner's final patch, branch `p1-final-roster`: GLM as reviewer only, an isolated
   - The planner's Opus runner was not shared with `opus_repair.py`: `plan_job.py` keeps the OpenRouter variables in its environment and was not touched.
   - Flint and Inkling are not in the code; there was nothing to disable.
   - No live run of any path.
+
+## Patch 6: token settings, review order, planner budget, Opus switch (2026-11-02)
+
+Every change below has a failing-first test (`pieces/test_p6_token_settings.py` and the updated P1b tests). Tests use fakes only.
+
+- **Review order.** North reviews first. GLM is called only after North says READY. A valid North FIX FIRST ends the job review-open and GLM is never called. If North fails, the backup free writer takes its place, then GLM (`p1b_routing.panel_for`).
+- **GLM request.** `reasoning: {effort: "high", exclude: true}`, `temperature: 0.2`, `max_tokens: 16000`, no `reasoning.max_tokens`. A cut-off GLM reply is not retried with more tokens. Free requests keep their settings (`reasoning.max_tokens: 8000`, temperature 0.1; Xing keeps its sampling).
+- **Reviewer prompt.** At most 5 findings, each one line `- file:line [SPEC n|CHECK n]: <under 25 words>`, no code, no praise, one example, the verdict line last (`p1b_production.REVIEW_SYSTEM`).
+- **Repair input.** Only the failing tests of the last JUnit run: id, assertion line and a short traceback. Identical failures are merged. Capped at 3,000 characters (`p1b_production.failing_summary`). The raw pytest output is no longer sent to a writer.
+- **Opus call.** `--system-prompt` (a repair-only prompt), `--no-session-persistence`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000`, timeout 900 s. A repair runs only when at least 900 s (15 minutes) of the unit deadline are left (`p1b_routing.REPAIR_TIMEOUT_S`).
+- **Switch.** `OPUS_ENABLED` stays `False`; the owner decides the production switch. The "Reply OK" check ran on Haiku 5.5 at high effort (`--model haiku --effort high`), not on Opus, once with and once without `--system-prompt` (`input_tokens` 2 in both). `pieces/conftest.py` keeps the switch off during tests, so no test starts the real CLI.
+- **Planner budget.** The `plan_job.py` prompt asks for `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`.

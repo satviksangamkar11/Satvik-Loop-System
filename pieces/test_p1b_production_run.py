@@ -98,8 +98,11 @@ def test_a_job_red_red_red_then_opus_repairs_it_to_green_with_glm_and_north_read
     fake_claude.reply(ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST)))
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0.05)), scrub_keys=[])
 
-    # the free calls: Dots writes and repairs, Xing writes fresh and repairs; then the reviewers: GLM first, North second
-    assert provider.models() == [DOTS, DOTS, XING, XING, GLM, NORTH]
+    # the free calls: Dots writes and repairs, Xing writes fresh and repairs; then the reviewers: North first, GLM second (only after North says READY)
+    assert provider.models() == [DOTS, DOTS, XING, XING, NORTH, GLM]
+    # the Dots repair gets the failing tests from JUnit, never the raw pytest output
+    dots_repair_user = [request for model, request in provider.calls if model == DOTS][1]["messages"][1]["content"]
+    assert "FAILING TESTS" in dots_repair_user and "PYTEST OUTPUT" not in dots_repair_user
     assert len(fake_claude.runs()) == 1                       # the Opus repair is the one fake claude run
     assert result["state"] == "passed", result
     assert result["review_verdict"] == "READY"
@@ -174,12 +177,12 @@ def test_a_production_job_can_never_reach_a_legacy_model(tmp_path, monkeypatch):
         raise AssertionError(f"a production job started a non-docker process: {first}")
 
     monkeypatch.setattr(subprocess, "Popen", only_docker)
-    # Dots writes correct code, so the reviewers are GLM and North
+    # Dots writes correct code, so the reviewers are North, then GLM
     provider = ph.Provider({DOTS: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
                             GLM: [ph.READY], NORTH: [ph.READY]})
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "passed", result
-    assert provider.models() == [DOTS, GLM, NORTH]
+    assert provider.models() == [DOTS, NORTH, GLM]
     assert set(provider.models()) <= {DOTS, XING, NORTH, GLM}
 
 
