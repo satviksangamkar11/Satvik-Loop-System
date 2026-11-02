@@ -16,9 +16,13 @@ DOTS = XING = NORTH = GLM = None      # set per test by the profile fixture belo
 ANTHROPIC = p1b.ANTHROPIC
 JOB = {"files": ["pieces/calc.py", "pieces/test_calc.py"], "deadline_min": 60}
 READY = "Looks right.\n## Verdict: READY"
-PACKAGE = {"files": {"pieces/calc.py": 40, "pieces/test_calc.py": 40}, "spec_count": 5}
+SPEC_LINES = ["Adds two prices.", "Returns an int.", "The total must include tax.", "Empty input returns 0.", "Prices are not negative."]
+CHECK_LINES = ["CHECK 1: every spec clause (SPEC n) has code and a test.", "CHECK 2: no code special-cases test values.",
+               "CHECK 3: edge cases are handled.", "CHECK 4: nothing changed outside the spec.", "CHECK 5: no security or data-loss risk."]
+PACKAGE = {"files": {"pieces/calc.py": 40, "pieces/test_calc.py": 40}, "spec_count": 5, "spec": SPEC_LINES, "checks": CHECK_LINES}
 FIX_NO_EVIDENCE = "This is wrong somewhere.\n## Verdict: FIX FIRST"
 FIX_WITH_EVIDENCE = "pieces/calc.py:12 breaks SPEC 3.2 (sum must include tax)\n## Verdict: FIX FIRST"
+FIX_MIXED = "pieces/calc.py:12 breaks SPEC 3: the sum leaves out tax. Also the tests are weak.\nThe naming feels off to me.\n## Verdict: FIX FIRST"
 
 
 class Clock:
@@ -37,6 +41,7 @@ class FakeModels:
         self.tests_results = list(tests)
         self.log, self.on_tests = [], None
         self.package = PACKAGE
+        self.fixes = []                 # the review findings staged for each repair call, in order
         self.contract = None            # (test ids, Dots files, Xing files) of the contract check, when one was made
 
     def call(self, model_id, mode, files):
@@ -64,6 +69,9 @@ class FakeModels:
 
     def contract_check(self, test_ids, dots_files, xing_files):
         self.contract = (list(test_ids), dict(dots_files), dict(xing_files))
+
+    def stage_fix(self, findings):
+        self.fixes.append(list(findings))
 
     def calls(self, model_id=None, mode=None):
         return [entry for entry in self.log if (model_id is None or entry[1] == model_id) and (mode is None or entry[0] == mode)]
@@ -164,6 +172,10 @@ def test_a_unit_over_1500_lines_is_refused():
 ])
 def test_fix_first_needs_a_valid_file_line_and_a_valid_spec_or_check(text, ok):
     assert p1b.evidence_ok(text, PACKAGE) is ok
+
+
+def test_the_file_line_and_the_spec_or_check_must_be_on_the_same_line():
+    assert p1b.evidence_ok("pieces/calc.py:12 is wrong\nSPEC 3 says so", PACKAGE) is False
 
 
 def test_the_verdict_is_the_last_line():
@@ -358,9 +370,48 @@ def test_the_walk_stops_between_rounds_at_the_deadline():
 
 # ---- 7. review: GLM first, North second, one backup, a GLM READY always required
 
-def test_a_fix_first_with_evidence_comes_back_as_a_review_fix_and_names_the_reviewer():
-    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE]}, [green()])
-    assert outcome.status == "review-fix" and "SPEC 3.2" in outcome.reason and NORTH in outcome.reason
+def test_a_valid_fix_first_is_repaired_by_the_current_writer_then_tested_and_reviewed_again_and_passes():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE, READY], (DOTS, "repair"): [full("x = 2\n")],
+                           (GLM, "review"): [READY]}, [green(), green()])
+    assert outcome.status == "passed", outcome
+    assert models.calls(DOTS, "repair") == [("repair", DOTS)]
+    assert models.calls(NORTH, "review") == [("review", NORTH), ("review", NORTH)]     # the panel is recomputed and North reviews the repaired code
+    assert models.calls(GLM, "review") == [("review", GLM)]
+    assert len(models.fixes) == 1
+    assert models.fixes[0] == ["pieces/calc.py:12 | SPEC 3: The total must include tax. | breaks (sum must include tax)"]
+    never_writes_glm(models)
+
+
+def test_a_finding_with_no_evidence_never_reaches_the_writer():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_MIXED, READY], (DOTS, "repair"): [full("x = 2\n")],
+                           (GLM, "review"): [READY]}, [green(), green()])
+    assert outcome.status == "passed", outcome
+    assert len(models.fixes) == 1 and len(models.fixes[0]) == 1               # the valid finding only
+    note = "\n".join(models.fixes[0])
+    assert "pieces/calc.py:12" in note and "the sum leaves out tax." in note
+    assert "naming feels off" not in note and "tests are weak" not in note    # no reviewer opinion, no second sentence, no evidence-free line
+
+
+def test_a_fix_first_with_no_valid_evidence_is_never_sent_to_the_writer_and_stays_open():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_NO_EVIDENCE], (NORTH, "review-reask"): [FIX_NO_EVIDENCE]},
+                          [green()])
+    assert outcome.status == "review-fix" and "without valid evidence" in outcome.reason
+    assert models.fixes == [] and models.calls(DOTS, "repair") == []
+
+
+def test_a_third_fix_first_after_two_repair_rounds_ends_review_open_without_another_repair():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE] * 3,
+                           (DOTS, "repair"): [full("x = 2\n"), full("x = 3\n")]}, [green(), green(), green()])
+    assert outcome.status == "review-fix" and NORTH in outcome.reason and "rounds used up" in outcome.reason
+    assert len(models.fixes) == 2 and len(models.calls(DOTS, "repair")) == 2
+    assert models.calls(GLM) == []
+
+
+def test_a_repair_that_leaves_the_tests_red_escalates_and_is_not_reviewed_again():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE], (DOTS, "repair"): [full("x = 2\n")]},
+                          [green(), red()])
+    assert outcome.status == "escalate" and "FIX FIRST repair round 1" in outcome.reason
+    assert models.calls(NORTH, "review") == [("review", NORTH)]
 
 
 def test_an_unsupported_fix_first_is_re_asked_once_and_stays_open_and_glm_is_never_asked():

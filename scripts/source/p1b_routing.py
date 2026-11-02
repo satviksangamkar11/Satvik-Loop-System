@@ -10,6 +10,7 @@ Injected `models` interface:
   write(reply) -> puts a validated reply's files on disk (walk calls it after take() accepts the reply, before tests).
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
+  stage_fix(findings) -> the stripped FIX FIRST findings ("file:line | requirement | one sentence") the next repair call carries to the writer.
   package -> {"files": {path: lines}, "spec_count": n}: the review package of the last review call (evidence_ok checks a FIX FIRST against it).
 
 Only the roster's exact IDs appear here. The owner's roster is read from openrouter_call, never copied, so there is one place to change it."""
@@ -44,15 +45,17 @@ FREE_REQUESTS = 40
 def budget_for(profile=None):
     """The job budget the profile requires: review_usd is exactly 0 under test and exactly 0.05 under production (owner 2026-11-02)."""
     return {"free_requests": FREE_REQUESTS, "review_usd": oc.JOB_REVIEW_USD_BY_PROFILE[profile or oc.PROFILE], "paid_usd": 0}
-REPAIR_CALLS = 2                    # per job: at most two repair-step calls, and a third is never attempted
+REPAIR_CALLS = 2                    # per job: at most two repair calls (repair step or FIX FIRST repair, one shared budget); a third is never attempted
+FIX_ROUNDS = 2                      # per job: at most two FIX FIRST rounds are repaired; a further FIX FIRST ends review-fix (review-open)
 TRIM_CHARS = 32000                  # pytest output fed back to a writer: about 8K tokens
 LOCALIZED_TESTS, LOCALIZED_FILES = 3, 2
 
 Result = namedtuple("Result", "green failing failing_files systemic")
-Outcome = namedtuple("Outcome", "status reason failing", defaults=((),))
+Outcome = namedtuple("Outcome", "status reason failing findings", defaults=((), ()))
 STREAK = 3                          # the same failing-test set in this many test runs in a row ends the job needs_review
 FILE_LINE = re.compile(r"([\w./\\-]+\.\w+):(\d+)")
 CITE = re.compile(r"\b(SPEC|CHECK) (\d+)\b")
+CITE_TOKEN = re.compile(r"\[?\s*\b(?:SPEC|CHECK) \d+(?:\.\d+)*\s*\]?:?")
 CHECKS = 5                          # CHECK 1 to 5 in the review package
 LINEAGE_SCHEMA_VERSION = 1
 VERDICT = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
@@ -150,13 +153,53 @@ def _path(raw):
     return raw.replace("\\", "/").removeprefix("./")
 
 
-def evidence_ok(text, package):
-    """A FIX FIRST counts only with BOTH: a file:line naming a file in the package, with a line no greater than that file's length, and a
-    SPEC n (n within the spec's requirement count) or CHECK n (n from 1 to 5). `package` is {"files": {path: lines}, "spec_count": n}."""
+def _findings(text, package):
+    """The evidence-backed findings of a review: one (path, line, kind, n, sentence) per valid SPEC n or CHECK n on a line that names a file:line
+    of a file in the package (line within that file's length). A line with no such file:line, or no cite in range, is not evidence and is
+    dropped. `package` is {"files": {path: lines}, "spec_count": n}."""
     files, spec_count = package["files"], package["spec_count"]
-    file_ok = any(_path(path) in files and 1 <= int(line) <= files[_path(path)] for path, line in FILE_LINE.findall(text))
-    cite_ok = any(1 <= int(num) <= (spec_count if kind == "SPEC" else CHECKS) for kind, num in CITE.findall(text))
-    return file_ok and cite_ok
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*").strip()
+        place = next(((_path(p), int(n)) for p, n in FILE_LINE.findall(line) if _path(p) in files and 1 <= int(n) <= files[_path(p)]), None)
+        if place is None:
+            continue
+        for kind, num in CITE.findall(line):
+            if 1 <= int(num) <= (spec_count if kind == "SPEC" else CHECKS):
+                out.append((place[0], place[1], kind, int(num), _sentence(line)))
+    return out
+
+
+def _sentence(line):
+    """The reviewer's first sentence about the defect, with the file:line and the cite tokens removed."""
+    rest = " ".join(CITE_TOKEN.sub(" ", FILE_LINE.sub(" ", line, count=1)).split()).lstrip(" :-[]()")
+    return (re.split(r"(?<=[.!?])\s", rest, maxsplit=1)[0] if rest else "(no description)")[:300]
+
+
+def _requirement(kind, num, package):
+    """The SPEC line (or CHECK line) a finding breaks, from the review package."""
+    if kind == "CHECK":
+        checks = package.get("checks") or []
+        return checks[num - 1] if num <= len(checks) else f"CHECK {num}"
+    spec = package.get("spec") or []
+    return f"SPEC {num}: {spec[num - 1]}" if num <= len(spec) else f"SPEC {num}"
+
+
+def strip_findings(text, package):
+    """The repair note of a review: one line per valid finding, `file:line | the SPEC or CHECK line | one sentence`. Nothing else of the
+    reviewer's text is kept, so no opinion and no evidence-free line reaches the writer."""
+    return [f"{path}:{line} | {_requirement(kind, num, package)} | {sentence}" for path, line, kind, num, sentence in _findings(text, package)]
+
+
+def _path_of(note):
+    """The file of a repair note line (`file:line | ...`)."""
+    return note.split(" | ", 1)[0].rsplit(":", 1)[0]
+
+
+def evidence_ok(text, package):
+    """A FIX FIRST counts only with at least one finding that has BOTH a file:line naming a file in the package (line no greater than that
+    file's length) AND a SPEC n (n within the spec's requirement count) or CHECK n (n from 1 to 5) on the same line (see _findings)."""
+    return bool(_findings(text, package))
 
 
 def verdict_of(text):
@@ -272,6 +315,11 @@ def _verdict(models, reviewer, files):
     return kind, text, ""
 
 
+def _fix(reviewer, text, models):
+    """A valid FIX FIRST: the reason keeps the reviewer's whole text (for the record); `findings` is the stripped repair note the writer gets."""
+    return Outcome("review-fix", f"{reviewer}: {text.strip()}", (), tuple(strip_findings(text, models.package)))
+
+
 def _review(files, models, lineage, down):
     try:
         origin = _origin(lineage, files)
@@ -289,7 +337,7 @@ def _review(files, models, lineage, down):
                 ready.append(slot)
                 continue
             if kind == "FIX":
-                return Outcome("review-fix", f"{slot}: {text.strip()}")
+                return _fix(slot, text, models)
             if kind == "UNSUPPORTED":
                 return Outcome("review-fix", f"{slot}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
             errors[slot] = error
@@ -305,7 +353,7 @@ def _review(files, models, lineage, down):
                 ready.append(f"{backup} (backup for {slot})")
                 continue
             if kind == "FIX":
-                return Outcome("review-fix", f"{backup}: {text.strip()}")
+                return _fix(backup, text, models)
             if kind == "UNSUPPORTED":
                 return Outcome("review-fix", f"{backup}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
             errors[backup] = error
@@ -448,7 +496,33 @@ def _ladder(job, models, lineage, clock):
         except BadReply as exc:
             return Outcome("escalate", str(exc))
 
+    rounds = 0
     try:
-        return _review(files, models, lineage, down)
+        outcome = _review(files, models, lineage, down)
+        while outcome.status == "review-fix" and outcome.findings:
+            if rounds == FIX_ROUNDS:
+                return Outcome("review-fix", f"{FIX_ROUNDS} FIX FIRST repair rounds used up; {outcome.reason}")
+            if repairs == REPAIR_CALLS:
+                return Outcome("review-fix", f"repair calls used up ({REPAIR_CALLS}); {outcome.reason}")
+            if remaining() < REPAIR_TIMEOUT_S:
+                return Outcome("review-fix", f"the deadline does not fit a repair call ({remaining():.0f} s left); {outcome.reason}")
+            mine = [note for note in outcome.findings if lineage.get(_path_of(note)) is not None]     # findings on job files only
+            if not mine:
+                return Outcome("review-fix", f"no finding names a job file; {outcome.reason}")
+            rounds += 1
+            repairs += 1
+            writer = lineage.get(_path_of(mine[0]))["last"]          # the current writer: the one that last wrote the finding's file
+            models.stage_fix(mine)
+            try:
+                result = attempt(writer, "repair", keep_origin=True)
+            except ModelFailed as exc:
+                return Outcome("review-fix", f"repair by {writer} unavailable ({exc}); {outcome.reason}")
+            except BadReply as exc:
+                return Outcome("review-fix", f"repair by {writer} gave a bad reply ({exc}); {outcome.reason}")
+            if not result.green:
+                return Outcome("escalate", f"FIX FIRST repair round {rounds} left the tests red: " + ", ".join(sorted(result.failing)),
+                               tuple(sorted(result.failing)))
+            outcome = _review(files, models, lineage, down)          # tests are green: the panel is recomputed from lineage and reviews again
+        return outcome
     except BudgetStop as exc:
         return Outcome("budget-exceeded", str(exc))

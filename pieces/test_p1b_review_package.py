@@ -225,7 +225,7 @@ def test_a_symlink_into_loop_or_outside_the_repo_never_appears(tmp_path):
 
 # ---------------------------------------------------------------- 12. a planted special-case is caught by a reviewer that reads only the package
 
-def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_originals_come_back(tmp_path):
+def test_a_planted_special_case_is_sent_back_to_dots_as_a_check_2_repair_and_the_repaired_code_passes(tmp_path):
     def glm_reviews(request):
         user = request["messages"][1]["content"]
         if "prices == [20, 30]" in user:
@@ -233,15 +233,16 @@ def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_original
         return ph.READY
 
     provider = ph.Provider({
-        DOTS: [ph.file_reply(("pieces/calc.py", PLANTED), ("pieces/test_calc.py", GOOD_TEST))],
-        NORTH: [glm_reviews],                                     # the first reviewer (North); its FIX FIRST stops the panel before GLM
+        DOTS: [ph.file_reply(("pieces/calc.py", PLANTED), ("pieces/test_calc.py", GOOD_TEST)),      # the write
+               ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],   # the FIX FIRST repair
+        NORTH: [glm_reviews, glm_reviews],                       # the first reviewer (North): FIX FIRST on the planted code, READY on the repair
         GLM: [ph.READY],
     })
     root, result = run_e2e(tmp_path, provider)
-    assert result["state"] == "review-open", result
-    assert "CHECK 2" in (root / "_loop" / "calc" / "REVIEW_FIX.md").read_text(encoding="utf-8")
-    assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
-    assert GLM not in provider.models()                       # GLM is called only after North says READY
+    assert result["state"] == "passed", result
+    repair = [request["messages"][1]["content"] for name, request in provider.calls if name == DOTS][1]
+    assert "CHECK 2: no code special-cases test values." in repair and "pieces/calc.py:2 |" in repair
+    assert provider.models()[-1] == GLM                       # GLM is called only after North says READY
 
 
 # ---------------------------------------------------------------- 13. a static warning alone never fails a job

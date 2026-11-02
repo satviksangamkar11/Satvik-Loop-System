@@ -53,6 +53,7 @@ REVIEW_SYSTEM = ("REVIEW TASK. Review the files against the spec and the checks.
                  "that names file:line of a file in this package and the SPEC n or CHECK n it breaks; without both it is not counted.")
 REPAIR_INPUT_CHARS = 3000           # the failing tests fed back to a repair: at most this many characters
 FAILING_HEAD = "FAILING TESTS (from the JUnit file of the last run, failing tests only):\n"
+FINDINGS_HEAD = "REVIEW FINDINGS (file:line | requirement it breaks | what breaks; the only problems to fix):\n"
 CUT_MARK = "\n[cut at 3000 characters]"
 REASK = ("Your FIX FIRST had no valid file:line and SPEC n or CHECK n, so it is not counted. Reply again with that evidence, or with READY.")
 
@@ -389,7 +390,7 @@ def build_package(root, job, originals, junit, scrub_keys=(), limit=None):
     text = "\n\n".join(sections[k] for k in range(1, 10))
     if len(text) > limit:                         # cannot happen while the reserve above holds; refuse rather than send an oversize request
         raise p1b.Blocked("review package exceeds the prompt limit")
-    info = {"files": shown, "spec_count": len(reqs), "kept": [rel for rel, _ in kept], "omitted": omitted}
+    info = {"files": shown, "spec_count": len(reqs), "spec": reqs, "checks": list(CHECK_LINES), "kept": [rel for rel, _ in kept], "omitted": omitted}
     return _scrubbed(text, scrub_keys), info
 
 
@@ -414,14 +415,27 @@ class Production:
         self.test_runs = 0
         self.tested_hash = None         # hash of the job files at the last green run
         self.green_junit = None         # the JUnit XML of the last green run: the RESULTS section of the review package
-        self.reviewed_hashes = []       # hash of the job files at each review call
+        self.reviewed_hashes = []       # hash of the job files at each review call (the whole job, kept as evidence)
+        self.candidate_reviews = []     # hash of the job files at each review call of the candidate written last: the integrity check reads these
+        self.fix_findings = None        # the stripped FIX FIRST findings the next repair call carries (stage_fix), None otherwise
         self.package = {"files": {}, "spec_count": 0}   # what the last review was given: read by p1b_routing.evidence_ok
         self.failed_calls = 0           # failed calls so far: each is history/failed_call_NN.json and a "failed" step in status.json
         self._seen_attempts = len(client.failed_attempts)   # the adapter's failed attempts before this job's calls belong to nobody here
 
     # ---------------------------------------------------------------- model calls
 
+    def stage_fix(self, findings):
+        """The stripped FIX FIRST findings the next repair call carries to the writer, and nothing else of the review."""
+        self.fix_findings = list(findings)
+
     def call(self, model, mode, files):
+        try:
+            return self._call(model, mode, files)
+        finally:
+            if mode in ("write", "repair"):
+                self.fix_findings = None          # a staged finding goes to one repair call only
+
+    def _call(self, model, mode, files):
         if model == p1b.ANTHROPIC:
             return self._repair_step()
         if mode in ("write", "repair"):
@@ -433,6 +447,7 @@ class Production:
         text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", mode=mode)
         self._check_locked()
         self.reviewed_hashes.append(gates.combined_hash(self.root, self.files))
+        self.candidate_reviews.append(self.reviewed_hashes[-1])
         lines = text.strip().splitlines()
         self._step(model, mode, lines[-1] if lines else "(empty reply)")
         if p1b.verdict_of(text) == "FIX FIRST" and not p1b.evidence_ok(text, self.package):
@@ -523,7 +538,10 @@ class Production:
         for rel in self.files:
             path = self.root / rel
             parts.append(f"{rel}:\n{path.read_text(encoding='utf-8')}" if path.is_file() else f"{rel}: (new file)")
-        if self.last_junit is not None:
+        if self.fix_findings:                       # a FIX FIRST repair: the findings only (never the review text, never a test run of another round)
+            parts.append(FINDINGS_HEAD + "\n".join(self.fix_findings))
+            parts.append("Fix exactly the findings above. Change nothing else.")
+        elif self.last_junit is not None:
             parts.append(FAILING_HEAD + failing_summary(self.last_junit))
             parts.append("Fix exactly the problems shown above. Change nothing else.")
         return "\n\n".join(parts)
@@ -538,6 +556,7 @@ class Production:
     # ---------------------------------------------------------------- files and tests
 
     def write(self, reply):
+        self.candidate_reviews = []             # a new candidate: only the reviews after this write belong to it
         for rel, text in reply.items():
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -687,7 +706,7 @@ def _integrity(files, root, models, protected, acceptance_lock, evidence):
     final = gates.combined_hash(root, files)
     lock_ok = gates.hash_paths(root, protected) == acceptance_lock
     evidence.update(tested_hash=models.tested_hash, final_hash=final, reviewed_hash=models.reviewed_hashes[-1] if models.reviewed_hashes else None)
-    same = bool(models.tested_hash) and final == models.tested_hash and all(h == final for h in models.reviewed_hashes) and lock_ok
+    same = bool(models.tested_hash) and final == models.tested_hash and bool(models.candidate_reviews) and all(h == final for h in models.candidate_reviews) and lock_ok
     if same:
         return None
     return p1b.Outcome("integrity-mismatch", "the files reviewed or delivered are not the files that passed the locked tests")
@@ -700,7 +719,7 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
         state, verdict, tests_passed = "passed", "READY", True
     elif outcome.status == "review-fix":
         state, verdict, tests_passed = "review-open", "FIX FIRST", True
-        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the FIX FIRST repair loop is not built yet)\n\n{outcome.reason}\n", scrub_keys),
+        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the job ends review-open)\n\n{outcome.reason}\n", scrub_keys),
                                                      encoding="utf-8")
     elif outcome.status == "integrity-mismatch":
         state, verdict, tests_passed = "integrity-mismatch", "unavailable", True
