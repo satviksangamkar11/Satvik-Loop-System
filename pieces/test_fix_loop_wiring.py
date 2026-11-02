@@ -126,8 +126,36 @@ def test_step4_a_run_that_raises_is_finished_as_error_and_its_lease_is_released(
 
 def test_step4_ledger_budget_reads_the_account_ledger(tmp_path, monkeypatch):
     monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "shared"))
+    sl = fl._sibling_module("shared_limits")
     budget = fl.ledger_budget()
-    assert budget == {"free_requests": 0, "review_spend_usd": 0.0}
+    assert budget == {"free_requests": sl.FREE_DAILY_CAP, "review_spend_usd": 0.0}      # free_requests is what is left today
+
+
+def ledger_env(tmp_path, monkeypatch):
+    """A launcher whose budget is the real ledger (fix_loop.ledger_budget) under SATVIK_HOME, on temp repos. No model call."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("SATVIK_HOME", str(home))
+    origin, repo = make_repos(tmp_path)
+    api = launch.real_api(home)
+    launcher = launch.Launcher(repo, api, budget=fl.ledger_budget, wait_s=0.0, poll_s=0.01)
+    return SimpleNamespace(repo=repo, api=api, launcher=launcher, home=home)
+
+
+def test_step4_a_fresh_day_lets_the_launcher_start(tmp_path, monkeypatch):
+    env = ledger_env(tmp_path, monkeypatch)
+    res = env.launcher.start("alpha", ["base.txt"])
+    assert res["ok"], res
+
+
+def test_step4_a_day_at_the_free_cap_refuses_the_start_with_free_requests(tmp_path, monkeypatch):
+    env = ledger_env(tmp_path, monkeypatch)
+    sl = fl._sibling_module("shared_limits")
+    monkeypatch.setattr(sl, "FREE_DAILY_CAP", 2)                # two sends fill the day's cap
+    gen = env.api.lease.acquire("filler")
+    sl.reserve_free("filler", gen)
+    sl.reserve_free("filler", gen)
+    assert fl.ledger_budget()["free_requests"] == 0
+    assert env.launcher.start("alpha") == {"ok": False, "reason": "free-requests"}
 
 
 # ---------------------------------------------------------------- step 5: stop switch, files restored
