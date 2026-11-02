@@ -49,7 +49,8 @@ TRIM_CHARS = 32000                  # pytest output fed back to a writer: about 
 LOCALIZED_TESTS, LOCALIZED_FILES = 3, 2
 
 Result = namedtuple("Result", "green failing failing_files systemic")
-Outcome = namedtuple("Outcome", "status reason")
+Outcome = namedtuple("Outcome", "status reason failing", defaults=((),))
+STREAK = 3                          # the same failing-test set in this many test runs in a row ends the job needs_review
 FILE_LINE = re.compile(r"([\w./\\-]+\.\w+):(\d+)")
 CITE = re.compile(r"\b(SPEC|CHECK) (\d+)\b")
 CHECKS = 5                          # CHECK 1 to 5 in the review package
@@ -83,6 +84,18 @@ class BadReply(Exception):
 
 class BudgetStop(Exception):
     """A GLM review would pass the job's review ceiling: nothing was sent. The job ends budget-exceeded."""
+
+
+class QuotaStop(Exception):
+    """The adapter raised QuotaExhausted: the day's free requests are used up. The job ends quota-exhausted; no further call is made."""
+
+
+class _Stop(Exception):
+    """Internal: a rule ended the ladder with this Outcome (needs_review, contract check)."""
+
+    def __init__(self, outcome):
+        super().__init__(outcome.reason)
+        self.outcome = outcome
 
 
 class Lineage:
@@ -309,13 +322,25 @@ def _review(files, models, lineage, down):
 
 
 def walk(job, models, lineage, clock=time.monotonic):
-    """The production ladder for one unit. Returns Outcome(status, reason). Statuses: passed, review-fix, escalate, blocked,
-    provider-unavailable, budget-exceeded, deadline."""
+    """The production ladder for one unit. Returns Outcome(status, reason, failing). Statuses: passed, review-fix, escalate, blocked,
+    provider-unavailable, budget-exceeded, quota-exhausted, needs_review, deadline."""
+    try:
+        return _ladder(job, models, lineage, clock)
+    except _Stop as exc:
+        return exc.outcome
+    except BudgetStop as exc:
+        return Outcome("budget-exceeded", str(exc))
+    except QuotaStop as exc:
+        return Outcome("quota-exhausted", str(exc))
+
+
+def _ladder(job, models, lineage, clock):
     started = clock()
     files = list(job["files"])
     wanted = frozenset(files)
     limit = job["deadline_min"] * 60
     failing, down = {}, set()
+    history, written = [], {}           # every test run's failing set, in order; each writer's last reply (for the contract check)
 
     def remaining():
         return limit - (clock() - started)
@@ -341,9 +366,21 @@ def walk(job, models, lineage, clock=time.monotonic):
     def attempt(model, mode, full=False, keep_origin=False):
         reply = models.call(model, mode, files)
         take(reply, model, full, keep_origin)
+        if model in (_m("writer_a"), _m("writer_b")):
+            written[model] = dict(reply)
         models.write(reply)                      # validated files go to disk before the tests run
         result = models.tests(files)
         failing[model] = result.failing
+        history.append(result.failing)
+        if not result.green and model == _m("writer_b") and _m("writer_a") in failing:
+            shared = sorted(t for t in failing[_m("writer_a")] & failing[_m("writer_b")] if t.split("::")[0] in set(job.get("acceptance_tests") or []))
+            if shared and written[_m("writer_a")] != written[_m("writer_b")]:
+                models.contract_check(shared, written[_m("writer_a")], written[_m("writer_b")])
+                raise _Stop(Outcome("escalate", "CONTRACT_CHECK: Dots and Xing both fail a locked acceptance test with different code: "
+                                    + ", ".join(shared), tuple(shared)))
+        if not result.green and result.failing and len(history) >= STREAK and all(h == result.failing for h in history[-STREAK:]):
+            ids = tuple(sorted(result.failing))
+            raise _Stop(Outcome("needs_review", f"the same failing tests in {STREAK} test runs in a row: " + ", ".join(ids), ids))
         return result
 
     deadline = Outcome("deadline", "the unit deadline passed; stopped between rounds")

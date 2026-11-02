@@ -37,6 +37,7 @@ class FakeModels:
         self.tests_results = list(tests)
         self.log, self.on_tests = [], None
         self.package = PACKAGE
+        self.contract = None            # (test ids, Dots files, Xing files) of the contract check, when one was made
 
     def call(self, model_id, mode, files):
         self.log.append((mode, model_id))
@@ -60,6 +61,9 @@ class FakeModels:
 
     def write(self, reply):
         self.written = getattr(self, "written", []) + [dict(reply)]
+
+    def contract_check(self, test_ids, dots_files, xing_files):
+        self.contract = (list(test_ids), dict(dots_files), dict(xing_files))
 
     def calls(self, model_id=None, mode=None):
         return [entry for entry in self.log if (model_id is None or entry[1] == model_id) and (mode is None or entry[0] == mode)]
@@ -254,7 +258,7 @@ def test_xing_fresh_reply_missing_a_job_file_escalates_without_testing_it():
 def test_xing_repairs_once_after_its_own_red():
     outcome, models = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [full()],
                            (XING, "repair"): [full("x = 4\n")], (GLM, "review"): [READY], (NORTH, "review"): [READY]},
-                          [red(), red(), red(), green()])
+                          [red(), red(("t2",)), red(), green()])
     assert outcome.status == "passed"
     assert [m for m in models.log if m[0] == "repair"] == [("repair", DOTS), ("repair", XING)]
 
@@ -281,7 +285,7 @@ def test_north_writes_the_fresh_round_only_when_xing_is_down_and_then_is_not_on_
 def test_red_red_red_then_opus_repairs_to_green_with_the_glm_north_panel_and_lineage():
     outcome, models = run({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full("x = 4\n")],
                            (ANTHROPIC, "repair"): [full("x = 5\n")], (GLM, "review"): [READY], (NORTH, "review"): [READY]},
-                          [red(systemic=True), red(), red(), green()])
+                          [red(systemic=True), red(("t1", "t2")), red(), green()])
     assert outcome.status == "passed", outcome
     assert models.calls(ANTHROPIC, "repair") == [("repair", ANTHROPIC)]
     assert models.calls(GLM, "review") == [("review", GLM)] and models.calls(NORTH, "review") == [("review", NORTH)]
@@ -292,7 +296,7 @@ def test_opus_repair_keeps_the_origin_and_adds_anthropic_to_the_lineage():
     lineage = p1b.Lineage()
     models = FakeModels({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full("x = 4\n")],
                          (ANTHROPIC, "repair"): [full("x = 5\n")], (GLM, "review"): [READY], (NORTH, "review"): [READY]},
-                        [red(systemic=True), red(), red(), green()])
+                        [red(systemic=True), red(("t1", "t2")), red(), green()])
     outcome = p1b.walk(JOB, models, lineage, Clock())
     assert outcome.status == "passed"
     row = lineage.get("pieces/calc.py")
@@ -302,27 +306,27 @@ def test_opus_repair_keeps_the_origin_and_adds_anthropic_to_the_lineage():
 
 def test_opus_is_called_at_most_twice_and_a_third_repair_is_never_attempted():
     outcome, models = run({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
-                           (ANTHROPIC, "repair"): [full(), full()]}, [red(systemic=True), red(), red(), red(), red()])
+                           (ANTHROPIC, "repair"): [full(), full()]}, [red(systemic=True), red(("t1", "t2")), red(), red(("t1", "t2")), red()])
     assert outcome.status == "escalate" and "repair calls used up" in outcome.reason
     assert len(models.calls(ANTHROPIC, "repair")) == 2
 
 
 def test_an_opus_failure_escalates_with_the_fixed_reason_and_no_other_model_takes_over():
     outcome, models = run({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
-                           (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached", reason="Opus repair unavailable")]}, [red(systemic=True), red(), red()])
+                           (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached", reason="Opus repair unavailable")]}, [red(systemic=True), red(("t1", "t2")), red()])
     assert outcome.status == "escalate" and outcome.reason == "Opus repair unavailable"
     assert models.calls(GLM, "review") == [] and models.calls(mode="write") == [("write", DOTS), ("write", XING)]
 
 
 def test_a_repair_failure_without_a_named_reason_escalates_with_the_generic_reason():
     outcome, _ = run({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
-                      (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached")]}, [red(systemic=True), red(), red()])
+                      (ANTHROPIC, "repair"): [p1b.ModelFailed("usage limit reached")]}, [red(systemic=True), red(("t1", "t2")), red()])
     assert outcome.status == "escalate" and outcome.reason == "repair unavailable"
 
 
 def test_an_opus_reply_with_no_files_escalates_as_a_bad_reply():
     outcome, _ = run({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
-                      (ANTHROPIC, "repair"): [p1b.BadReply("the reply has no FILE blocks")]}, [red(systemic=True), red(), red()])
+                      (ANTHROPIC, "repair"): [p1b.BadReply("the reply has no FILE blocks")]}, [red(systemic=True), red(("t1", "t2")), red()])
     assert outcome.status == "escalate" and "no FILE blocks" in outcome.reason
 
 
@@ -336,7 +340,7 @@ def test_the_opus_gate_needs_a_confirmed_defect_both_free_writers_failing_on_the
 
 def test_the_opus_gate_refuses_a_call_the_deadline_cannot_hold():
     clock = Clock()
-    models = FakeModels({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()]}, [red(systemic=True), red(), red()])
+    models = FakeModels({(DOTS, "write"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()]}, [red(systemic=True), red(("t1", "t2")), red()])
     models.on_tests = lambda: setattr(clock, "now", 2800.0) if len(models.tests_results) == 1 else None      # 800 s left: under the 900 s repair call
     outcome = p1b.walk(JOB, models, p1b.Lineage(), clock)
     assert outcome.status == "escalate" and "deadline" in outcome.reason
@@ -455,3 +459,53 @@ def _production_profile(profile):
     profile("production")
     roles = oc.roster_state()["ROLES"]
     DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]
+
+
+# ---- 7. needs_review, quota-exhausted, CONTRACT_CHECK (WP-H)
+
+def test_the_same_failing_set_in_three_test_runs_in_a_row_ends_needs_review_with_the_ids():
+    outcome, models = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [full()]},
+                          [red(("t1",)), red(("t1",)), red(("t1",))])
+    assert outcome.status == "needs_review", outcome
+    assert outcome.failing == ("t1",) and "t1" in outcome.reason
+    assert models.calls(XING, "repair") == [] and models.calls(ANTHROPIC) == [] and models.calls(GLM) == [] and models.calls(NORTH) == []
+
+
+def test_a_failing_set_that_changes_between_runs_is_not_needs_review():
+    outcome, _ = run({(DOTS, "write"): [full()], (DOTS, "repair"): [full()], (XING, "write"): [full()], (XING, "repair"): [full()],
+                      (ANTHROPIC, "repair"): [full()], (GLM, "review"): [READY], (NORTH, "review"): [READY]},
+                     [red(("t1",)), red(("t2",)), red(("t1",)), red(("t1", "t2"), systemic=True), green()])
+    assert outcome.status == "passed", outcome
+
+
+def test_quota_exhausted_on_a_writer_call_ends_the_job_and_makes_no_further_call():
+    models = FakeModels({(DOTS, "write"): [p1b.QuotaStop("free requests for today are used up")]}, [])
+    outcome = p1b.walk(JOB, models, p1b.Lineage(), Clock())
+    assert outcome.status == "quota-exhausted" and "used up" in outcome.reason
+    assert models.log == [("write", DOTS)] and models.tests_results == []
+
+
+def test_quota_exhausted_on_a_review_call_ends_the_job_and_GLM_is_not_asked():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [p1b.QuotaStop("free requests used up")]}, [green()])
+    assert outcome.status == "quota-exhausted"
+    assert models.calls(GLM, "review") == []
+
+
+ACC = "tests/acceptance/test_calc_acceptance.py::test_sums_two_prices"
+JOB_ACC = dict(JOB, acceptance_tests=["tests/acceptance/test_calc_acceptance.py"])
+
+
+def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_end_with_a_contract_check_and_escalate():
+    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 2\n")]},
+                          [red((ACC,), systemic=True), red((ACC,))], job=JOB_ACC)
+    assert outcome.status == "escalate" and outcome.reason.startswith("CONTRACT_CHECK") and outcome.failing == (ACC,)
+    ids, dots, xing = models.contract
+    assert ids == [ACC] and dots["pieces/calc.py"] == "x = 1\n" and xing["pieces/calc.py"] == "x = 2\n"
+    assert models.calls(XING, "repair") == [] and models.calls(ANTHROPIC) == []
+
+
+def test_the_same_locked_failure_with_the_same_code_is_not_a_contract_check():
+    outcome, models = run({(DOTS, "write"): [full("x = 1\n")], (XING, "write"): [full("x = 1\n")], (XING, "repair"): [full("x = 1\n")]},
+                          [red((ACC,), systemic=True), red((ACC,)), red((ACC,))], job=JOB_ACC)
+    assert models.contract is None
+    assert outcome.status == "needs_review"
