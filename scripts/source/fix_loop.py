@@ -833,6 +833,7 @@ def run_job(
     scrub_keys: list[str] | None = None,
     sandbox=None,
     openrouter=None,
+    stop_check: Callable[[], None] | None = None,
 ) -> dict:
     production = job.get("profile") == "production"
     roster_profile = _p1b().oc.PROFILE                      # SATVIK_PROFILE: the roster the adapter loaded (owner 2026-11-02)
@@ -1019,6 +1020,8 @@ def run_job(
     # rounds 0..max_rounds are for making the tests pass; once they have passed, up to review_rounds more rounds exist for review fixes (a job whose tests
     # first pass in the LAST round used to end review-open with no fix round at all)
     for round_no in range(max_rounds + 1 + (review_rounds if review_enabled else 0)):
+        if stop_check is not None:
+            stop_check()                                        # step 5: raises StopRequested before the round; a call in flight always finishes
         if not ever_passed and round_no > max_rounds:
             break
         if round_no > 0 and time.monotonic() - job_started > deadline_s:      # Opus F11: a job never runs for hours
@@ -1480,6 +1483,28 @@ def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
 
 # ---- close-1 wiring (steps 4-8): a launched job runs in its own worktree, through launch.Launcher and the merge queue
 
+class StopRequested(Exception):
+    """The stop switch (home/STOP) was on before a round. The job stops; its files are restored to the base commit."""
+
+
+def _stop_switch(home: Path):
+    """A stop_check for run_job: raises StopRequested while home/STOP exists."""
+    def check() -> None:
+        if _sibling_module("launch").stop_requested(home):
+            raise StopRequested("stop switch is on")
+    return check
+
+
+def restore_files(wt: Path, files: list[str]) -> None:
+    """Put the job's files back to the base commit: tracked files are checked out again, new files are removed."""
+    git = _sibling_module("launch").git
+    for rel in files:
+        if git(["cat-file", "-e", f"HEAD:{rel}"], wt, check=False).returncode == 0:
+            git(["checkout", "--", rel], wt)
+        else:
+            (Path(wt) / rel).unlink(missing_ok=True)
+
+
 def ledger_budget() -> dict:
     """The launcher's start figures from package E's account ledger (shared_limits.usage): today's free requests and review spend."""
     usage = _sibling_module("shared_limits").usage()
@@ -1495,9 +1520,14 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
         return {"name": name, "state": "refused", "reason": start["reason"]}
     job_id, gen, base = start["job_id"], start["gen"], start["base"]
     stop_beat = api.lease.keep_alive(job_id, gen)
+    wt = Path(start["worktree"])
+    run_kwargs.setdefault("stop_check", _stop_switch(api.home))
     try:
         try:
-            result = (run or run_job)(job, Path(start["worktree"]), **run_kwargs)
+            result = (run or run_job)(job, wt, **run_kwargs)
+        except StopRequested:
+            restore_files(wt, list(job["files"]))
+            result = {"name": name, "state": "stopped", "round": None}
         except BaseException:
             launcher.finish(job_id, gen, "error", base)
             raise

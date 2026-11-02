@@ -128,3 +128,55 @@ def test_step4_ledger_budget_reads_the_account_ledger(tmp_path, monkeypatch):
     monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "shared"))
     budget = fl.ledger_budget()
     assert budget == {"free_requests": 0, "review_spend_usd": 0.0}
+
+
+# ---------------------------------------------------------------- step 5: stop switch, files restored
+def test_step5_stop_switch_before_a_round_stops_the_job_and_restores_its_files(tmp_path):
+    env = env_for(tmp_path)
+    job = {"name": "pilot", "files": ["base.txt", "new.txt"]}
+    seen = {}
+    real_finish = env.launcher.finish
+
+    def finish_spy(job_id, gen, state, base=None, result=None):
+        seen["base"] = (Path(env.home / "wt" / job_id) / "base.txt").read_text(encoding="utf-8")
+        seen["new_exists"] = (Path(env.home / "wt" / job_id) / "new.txt").exists()
+        seen["state"] = state
+        return real_finish(job_id, gen, state, base, result)
+
+    env.launcher.finish = finish_spy
+
+    def run(job, wt, stop_check=None, **kwargs):
+        (Path(wt) / "base.txt").write_text("half-written by a round\n", encoding="utf-8")
+        (Path(wt) / "new.txt").write_text("new\n", encoding="utf-8")
+        (env.home / "STOP").write_text("", encoding="utf-8")       # the operator flips the switch
+        stop_check()                                               # the round loop's check before the next round
+        raise AssertionError("the round must not start")
+
+    res = fl.run_launched(job, env.repo, env.api, env.launcher, run=run)
+    assert res["state"] == "stopped"
+    assert seen == {"base": "base\n", "new_exists": False, "state": "stopped"}
+    assert live_leases(env.home) == []
+
+
+def test_step5_without_the_switch_the_check_does_nothing_and_the_job_finishes(tmp_path):
+    env = env_for(tmp_path)
+    calls = []
+
+    def run(job, wt, stop_check=None, **kwargs):
+        stop_check()                                               # switch off: no raise
+        calls.append("round")
+        return {"name": job["name"], "state": "passed", "round": 0}
+
+    res = fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=run)
+    assert res["state"] == "passed" and calls == ["round"]
+
+
+def test_step5_restore_files_checks_out_tracked_and_removes_new(tmp_path):
+    env = env_for(tmp_path)
+    wt = tmp_path / "wt-direct"
+    git(env.repo, "worktree", "add", "-q", "-b", "job/direct", str(wt), "origin/main")
+    (wt / "base.txt").write_text("changed\n", encoding="utf-8")
+    (wt / "new.txt").write_text("new\n", encoding="utf-8")
+    fl.restore_files(wt, ["base.txt", "new.txt"])
+    assert (wt / "base.txt").read_text(encoding="utf-8") == "base\n"
+    assert not (wt / "new.txt").exists()
