@@ -39,3 +39,13 @@ Base: main 8027d82. Branch: wp-roster-config. Follows `docs/changes/wp-roster-co
 
 - No model call, no paid call, no Opus call. No key under `secrets/` was read or printed.
 - `pieces/prod_harness.py` and `pieces/test_loop_acceptance.py` are at their HEAD versions (both required, see step 3).
+
+## Owner change (2026-11-02, PR #14)
+
+- `config/roster.json`, test profile: `reviewer_a` is now `nvidia/nemotron-3-ultra-550b-a55b:free` (free, `paid` false, no pin, no prices,
+  settings temperature 0.1, reasoning max_tokens 8000, max_tokens 16000, timeout 600 s). `reviewer_b` stays North (`cohere/north-mini-code:free`),
+  free. Its settings were aligned to the same values. The test profile still refuses any paid role at load. Production is unchanged (GLM).
+- The `non_author_writer` sentinel is no longer the test reviewer_a. The sentinel stays in the code and the roster-validity test. The panel rule
+  (the author is never on its own panel, test 3) is unchanged and still passes.
+- `test_without_satvik_profile_the_test_profile_loads_with_every_role_free` now expects the nemotron ID for reviewer_a.
+- Suite after this change: 636 passed, 3 skipped.

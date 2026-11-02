@@ -171,7 +171,7 @@ def test_without_satvik_profile_the_test_profile_loads_with_every_role_free():
     assert {r: roles[r]["model"] for r in ROLE_NAMES} == {
         "writer_a": "dots-studio/dots-3-note-preview:free",
         "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
-        "reviewer_a": "non_author_writer",
+        "reviewer_a": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner 2026-11-02: free test reviewer; the author is still never on the panel (test 3)
         "reviewer_b": "cohere/north-mini-code:free",
         "repair": "off",
         "planner": "fake",
