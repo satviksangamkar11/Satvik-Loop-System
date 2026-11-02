@@ -224,8 +224,8 @@ and `reviewer` are refused for production, and a static test checks that the P1b
   saved answer parses it and makes no call. An intent with no saved answer is `planner-uncertain`; it is never retried automatically. A timed-out
   call is `planner-uncertain` too.
 - **The call.** `claude -p --model opus --effort medium --output-format json --tools "" --mcp-config <empty file> --strict-mcp-config`, from an
-  empty temporary folder, prompt on stdin, `ANTHROPIC_API_KEY` removed from its environment, never `--bare`. These flag names come from the
-  Revision 3 spec and have not been checked against the installed `claude` CLI; that check belongs to the owner's go for the first live call.
+  empty temporary folder, prompt on stdin, `ANTHROPIC_API_KEY` removed from its environment, never `--bare`. The flags were checked against the installed
+  `claude --help` (no model call): `-p`, `--output-format json`, `--tools ""`, `--mcp-config`, `--strict-mcp-config`, `--effort`, `--model`.
 - **Refused.** Any MCP server or plugin reported by the session; more than 30 files sent; an answer that fails the production rules
   (`check_production_job`, `production_job_problems`, the job schema); a spec line without a `KNOWN:` or `ASSUMED:` tag; acceptance files that are
   not exactly the job's acceptance tests; a missing negative control source; a unit over 800 lines per file or 1,500 in total.
