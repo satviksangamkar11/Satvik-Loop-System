@@ -389,3 +389,11 @@ def test_a_crashing_loop_is_still_logged_and_the_claims_are_released(tmp_path):
     assert pc.run_job(job, repo, environ={}) == 1
     assert "exit 1" in (repo / "docs" / "LOOP_LOG.md").read_text(encoding="utf-8")
     pc.ClaimStore(repo / "_loop").claim([job, repo / "m.py"], "later").release()
+
+
+def test_the_launcher_accepts_the_p1b_writer_roles_and_still_refuses_codex():
+    assert pc.fixers_allowed(["writer_a", "writer_b"]) is True
+    assert pc.fixers_allowed(["nemotron", "haiku"]) is True
+    assert pc.fixers_allowed(["writer_a", "codex"]) is False
+    assert pc.fixers_allowed(["writer_a", "nemotron"]) is False
+    assert pc.fixers_allowed([]) is False

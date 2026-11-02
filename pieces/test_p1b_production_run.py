@@ -162,3 +162,11 @@ def test_the_production_runner_names_no_legacy_model_family():
         text = (REPO / "scripts" / "source" / name).read_text(encoding="utf-8").lower()
         for word in ("nemotron", "codex", "haiku", "groq", "sonnet"):
             assert word not in text, f"{name} names {word}"
+
+
+def test_a_production_job_gets_no_legacy_review_prompt(tmp_path):
+    """docs/REVIEW_PROMPT.md is the legacy HIGH/MED/LOW prompt; a production job must not inherit it as its review prompt."""
+    job = p1b_job()
+    del job["review_prompt"]
+    (tmp_path / "_loop" / "jobs").mkdir(parents=True)
+    assert load(tmp_path, job)["review_prompt"] is None
