@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -70,9 +71,23 @@ def _inside(child, parent) -> bool:
     return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
 
 
+def _git_worktree(path):
+    """The top folder of the git worktree that holds `path` (the nearest existing folder is asked), or None when it is in none."""
+    probe = Path(path)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        res = subprocess.run(["git", "-C", str(probe), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None                       # no git here: nothing to check against
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip() or None
+
+
 def home(loops=1, fallback=None, worktrees=()) -> Path:
     """The SATVIK_HOME folder. More than one loop needs it set (HomeRequired otherwise); one loop may use `fallback` when it is unset.
-    A home inside any of `worktrees` is refused."""
+    A home inside any git worktree is refused (git asks where the folder lives), as is a home inside any of `worktrees`."""
     raw = os.environ.get(ENV, "").strip()
     if not raw:
         if loops > 1:
@@ -86,6 +101,9 @@ def home(loops=1, fallback=None, worktrees=()) -> Path:
     for wt in worktrees:
         if _inside(path, wt):
             raise LoopHomeError(f"the loop home {path} is inside the worktree {wt}")
+    top = _git_worktree(path)
+    if top:
+        raise LoopHomeError(f"the loop home {path} is inside the git worktree {top}; a checkout or merge can wipe it. Use a folder outside every worktree")
     path.mkdir(parents=True, exist_ok=True)
     return path
 

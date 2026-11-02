@@ -107,6 +107,15 @@ def key_reply(usage=0.0):
                                          "limit_remaining": None, "rate_limit": {"requests": 20, "interval": "10s"}}}).encode()
 
 
+@pytest.fixture(autouse=True)
+def shared_home(tmp_path, monkeypatch):
+    """Track L: every free call counts on the loop home (SATVIK_HOME); each test gets its own folder."""
+    folder = tmp_path / "satvik_home"
+    folder.mkdir()
+    monkeypatch.setenv("SATVIK_HOME", str(folder))
+    return folder
+
+
 def client(tmp_path, fake, clock=None, keys=KEYS, **options):
     clock = clock or Clock()
     built = oc.OpenRouter(keys, tmp_path / "ledger", transport=fake, clock=clock.time, sleep=clock.sleep, rand=lambda: 0.0, **options)
@@ -250,13 +259,13 @@ def test_per_minute_429_waits_retry_after_and_is_not_a_provider_error(tmp_path):
 
 def test_daily_429_is_quota_exhausted_and_stays_so_without_a_new_snapshot(tmp_path):
     fake = Fake()
-    fake.on("/chat/completions", fail(429, "Rate limit exceeded: free-models-per-day"))
+    fake.on("/chat/completions", fail(429, "Rate limit exceeded: free-models-per-day"), fail(429, "Rate limit exceeded: free-models-per-day"))
     built, _ = client(tmp_path, fake)
     with pytest.raises(oc.QuotaExhausted):
         built.call("writer_a", "system", "user")
     with pytest.raises(oc.QuotaExhausted):
         built.call("writer_a", "system", "user")
-    assert len(fake.posts()) == 1
+    assert len(fake.posts()) == 2     # Track L: a daily 429 no longer caps the next call locally; the provider answers it
 
 
 def test_upstream_429_is_a_provider_error_with_backoff(tmp_path):
@@ -352,10 +361,11 @@ def test_client_error_is_not_retried(tmp_path):
 
 # ---- 5. account-wide free ledger
 
-def test_daily_cap_stops_the_next_call_before_it_is_sent(tmp_path):
+def test_daily_cap_stops_the_next_call_before_it_is_sent(tmp_path, monkeypatch):
+    monkeypatch.setattr(oc._shared_limits(), "FREE_DAILY_CAP", 3)
     fake = Fake()
     fake.on("/chat/completions", ok("a"), ok("b"), ok("c"))
-    built, _ = client(tmp_path, fake, daily_cap=3)
+    built, _ = client(tmp_path, fake)
     for _ in range(3):
         built.call("writer_a", "system", "user")
     with pytest.raises(oc.QuotaExhausted):
@@ -370,15 +380,15 @@ def test_failed_attempts_count_against_the_ledger(tmp_path):
     with pytest.raises(oc.OpenRouterError):
         built.call("writer_a", "system", "user")
     built.call("writer_a", "system", "user")
-    used = json.loads((tmp_path / "ledger" / "openrouter_free_ledger.json").read_text(encoding="utf-8"))["used"]
-    assert used == len(fake.posts()) == 3
+    assert oc._shared_limits().usage()["free_today"] == len(fake.posts()) == 3
 
 
-def test_both_free_keys_draw_on_one_account_ledger(tmp_path):
+def test_both_free_keys_draw_on_one_account_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(oc._shared_limits(), "FREE_DAILY_CAP", 2)
     fake = Fake()
     fake.on("/chat/completions", ok("a"), ok("b"), ok("c"))
-    first, clock = client(tmp_path, fake, daily_cap=2)
-    second, _ = client(tmp_path, fake, clock=clock, daily_cap=2, keys={"free": "sk-or-v1-SECONDFREE000000"})
+    first, clock = client(tmp_path, fake)
+    second, _ = client(tmp_path, fake, clock=clock, keys={"free": "sk-or-v1-SECONDFREE000000"})
     first.call("writer_a", "system", "user")
     second.call("writer_b", "system", "user")
     with pytest.raises(oc.QuotaExhausted):
@@ -386,51 +396,35 @@ def test_both_free_keys_draw_on_one_account_ledger(tmp_path):
     assert len(fake.posts()) == 2
 
 
-def test_fifteen_a_minute_then_the_window_is_waited_out(tmp_path):
+def test_fifteen_a_minute_then_the_window_is_refused_at_the_unit_deadline(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", *[ok("x") for _ in range(16)])
     built, clock = client(tmp_path, fake)
     for _ in range(15):
         built.call("writer_a", "system", "user")
-    assert clock.slept == []
-    built.call("writer_a", "system", "user")
-    assert clock.slept == [60.0] and len(fake.posts()) == 16
+    built.set_job_deadline(5)
+    with pytest.raises(oc.ProviderUnavailable, match="minute window"):
+        built.call("writer_a", "system", "user")
+    assert len(fake.posts()) == 15
 
 
-def test_snapshot_from_the_provider_caps_the_day(tmp_path):
-    ledger = oc.FreeLedger(tmp_path / "ledger", clock=Clock().time)
-    ledger.set_snapshot(1)
-    assert ledger.reserve() == 0.0
-    with pytest.raises(oc.QuotaExhausted):
-        ledger.reserve()
-
-
-def test_a_new_utc_day_resets_the_count(tmp_path):
-    fake = Fake()
-    fake.on("/chat/completions", ok("a"), ok("b"))
-    built, clock = client(tmp_path, fake, daily_cap=1)
-    built.call("writer_a", "system", "user")
-    clock.now += 86400
-    built.call("writer_a", "system", "user")
-    assert len(fake.posts()) == 2
-
-
-def test_ledger_uses_the_shared_key_ledger_lock(tmp_path):
+def test_free_calls_count_on_the_shared_ledger_not_the_key_file(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", ok("a"))
     built, _ = client(tmp_path, fake)
     built.call("writer_a", "system", "user")
-    assert (tmp_path / "ledger" / "key_ledger.lock").exists()
+    assert oc._shared_limits().usage()["free_today"] == 1
+    assert not (tmp_path / "ledger" / "openrouter_free_ledger.json").exists()
 
 
-def test_unreadable_ledger_refuses_instead_of_guessing(tmp_path):
+def test_an_unreadable_key_file_does_not_stop_a_call(tmp_path):
     fake = Fake()
+    fake.on("/chat/completions", ok("a"))
     built, _ = client(tmp_path, fake)
     (tmp_path / "ledger").mkdir(parents=True, exist_ok=True)
     (tmp_path / "ledger" / "openrouter_free_ledger.json").write_text("{not json", encoding="utf-8")
-    with pytest.raises(oc.OpenRouterError, match="unreadable"):
-        built.call("writer_a", "system", "user")
-    assert fake.calls == []
+    text, _ = built.call("writer_a", "system", "user")
+    assert text == "a" and len(fake.posts()) == 1
 
 
 def test_job_free_ceiling_is_enforced_before_the_ledger(tmp_path):
@@ -772,26 +766,17 @@ def test_begin_job_saves_the_full_key_json_and_uses_the_provider_quota(tmp_path)
     summary = built.begin_job()
     saved = list((tmp_path / "ledger" / "key_snapshots").glob("key_snapshot_free_*.json"))
     assert len(saved) == 1 and json.loads(saved[0].read_text(encoding="utf-8")) == body
-    ledger = json.loads((tmp_path / "ledger" / "openrouter_free_ledger.json").read_text(encoding="utf-8"))
-    assert ledger["snapshot"] == 991 and built.ledger.daily_cap == 1000
+    assert not (tmp_path / "ledger" / "openrouter_free_ledger.json").exists()     # the snapshot is evidence only
     assert summary["free"]["quota"] == "provider"
 
 
-def test_without_a_quota_field_a_paid_account_uses_the_local_cap_of_1000(tmp_path):
+def test_without_a_quota_field_a_paid_account_is_saved_with_a_local_note(tmp_path):
     fake = Fake()
     fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()))
     built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
     summary = built.begin_job()
-    assert built.ledger.daily_cap == 1000 and summary["free"]["quota"] == "local"
+    assert summary["free"]["quota"] == "local"
     assert "free_model_daily_requests absent" in summary["free"]["note"]
-
-
-def test_without_a_quota_field_a_free_tier_account_uses_the_local_cap_of_50(tmp_path):
-    fake = Fake()
-    fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": True}}).encode()))
-    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
-    built.begin_job()
-    assert built.ledger.daily_cap == 50
 
 
 def test_begin_job_saves_the_paid_key_state_without_touching_the_free_ledger(tmp_path):
@@ -874,11 +859,11 @@ def test_only_two_free_requests_left_in_the_job_allow_two_retries_then_the_slot_
     assert len(built.retry_log) == 2
 
 
-def test_a_retry_is_not_sent_when_the_daily_count_has_no_room(tmp_path):
+def test_a_retry_is_not_sent_when_the_daily_count_has_no_room(tmp_path, monkeypatch):
+    monkeypatch.setattr(oc._shared_limits(), "FREE_DAILY_CAP", 1)
     fake = Fake()
     fake.on("/chat/completions", upstream_429(), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
-    built.ledger.daily_cap = 1
     with pytest.raises(oc.QuotaExhausted):
         built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 1 and clock.slept == []
