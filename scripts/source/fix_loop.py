@@ -894,7 +894,7 @@ def run_job(
     if spec_problems:                                          # owner 2026-10-30: no coder call is made on an invalid spec
         nl = chr(10)
         (status_dir_job / "INVALID_SPEC.md").write_text("# INVALID_SPEC" + nl + nl + nl.join(f"- {p}" for p in spec_problems) + nl, encoding="utf-8")
-        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": "invalid-spec", "problems": spec_problems, "coder_calls": 0}, indent=2))
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "schema_version": 1, "state": "invalid-spec", "problems": spec_problems, "coder_calls": 0}, indent=2))
         print(f"{name}: invalid-spec {spec_problems}")
         return {"name": name, "state": "invalid-spec", "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0, "reviewer_calls": {},
                 "coder_budget": 0, "problems": spec_problems, "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
@@ -912,7 +912,7 @@ def run_job(
     def _early_stop(state_: str, filename: str, title: str, lines: list) -> dict:
         nl = chr(10)
         (status_dir_job / filename).write_text(f"# {title}" + nl + nl + nl.join(f"- {x}" for x in lines) + nl, encoding="utf-8")
-        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "state": state_, "problems": lines, "coder_calls": 0}, indent=2))
+        _atomic_write(status_dir_job / "status.json", json.dumps({"name": name, "schema_version": 1, "state": state_, "problems": lines, "coder_calls": 0}, indent=2))
         print(f"{name}: {state_} {lines}")
         return {"name": name, "state": state_, "round": 0, "tests_passed": False, "review_verdict": None, "rounds": [], "coder_calls": 0,
                 "reviewer_calls": {}, "coder_budget": 0, "problems": lines, "evidence": {},
@@ -992,6 +992,7 @@ def run_job(
         nonlocal state, review_verdict
         status = {
             "name": name,
+            "schema_version": 1,
             "state": state,
             "round": round_no,
             "tests_passed": tests_passed_,
