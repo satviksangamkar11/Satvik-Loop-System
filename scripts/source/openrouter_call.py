@@ -864,6 +864,13 @@ PROBE_SYSTEM = "You are a connectivity check. Answer exactly as instructed."
 PROBE_USER = "Reply with the single word OK."
 
 
+def probe_roles() -> list[str]:
+    """The probe names, from the active roster profile (read per call): every writer and reviewer role whose model is a real free model (no
+    sentinel, no paid role). The paid reviewer (GLM in production) is never probed, so the probe spends nothing."""
+    state = roster_state()
+    return [r for r in WRITER_ROLES + REVIEWER_ROLES if state["ROLES"][r] not in SENTINELS and not state["ROLE_SPECS"][r]["paid"]]
+
+
 def probe(client, out_path=None, names=None):
     """One live call per roster model (kind text), plus each loaded key's state before and after. `names` limits the run to some of the
     probe names. The summary holds no key value; every failed attempt is kept in full (status and first 500 characters)."""
@@ -872,7 +879,7 @@ def probe(client, out_path=None, names=None):
 
     before = key_states()
     results = {}
-    targets = ["writer_a", "writer_b", "reviewer_b"]        # the free roles; the paid role is never probed
+    targets = probe_roles()
     if names is not None:
         targets = [t for t in targets if t in names]
     for name in targets:
@@ -895,13 +902,16 @@ def main(argv=None):
     ap.add_argument("command", choices=["probe"])
     ap.add_argument("--out", help="also write the JSON summary to this file")
     ap.add_argument("--ledger", default=str(REPO / "_loop" / "openrouter"))
-    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer_b); default all")
+    ap.add_argument("--models", help="comma list of probe names to run (the probe roles of the active profile); default all")
     args = ap.parse_args(argv)
+    names = [m.strip() for m in args.models.split(",") if m.strip()] if args.models else None
+    if names is not None and not set(names) & set(probe_roles()):
+        print(f"no matching role: {args.models!r}; probe roles in the {active_profile()} profile: {', '.join(probe_roles())}", file=sys.stderr)
+        return 2
     keys = load_keys()
     if not keys:
         print("no key found: set OPENROUTER_FREE_KEY and/or OPENROUTER_PAID_KEY, or put them in secrets/", file=sys.stderr)
         return 2
-    names = [m.strip() for m in args.models.split(",") if m.strip()] if args.models else None
     try:
         summary = probe(OpenRouter(keys, args.ledger), args.out, names)
     except OpenRouterError as exc:

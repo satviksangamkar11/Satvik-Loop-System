@@ -124,7 +124,8 @@ def test_a_dropped_model_error_carries_the_raw_status_and_text(tmp_path):
     assert len(fake.posts()) == 2
 
 
-def test_probe_keeps_the_failed_attempts_of_a_dropped_model_in_full(tmp_path):
+def test_probe_keeps_the_failed_attempts_of_a_dropped_model_in_full(tmp_path, profile):
+    profile("production")                       # the three probe roles of the production roster (reviewer_a is paid, never probed)
     fake = Fake()
     fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
     # writer_a and writer_b each fail twice (the breaker drops them), then reviewer_b answers
