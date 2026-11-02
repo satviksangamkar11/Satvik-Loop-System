@@ -169,3 +169,21 @@ def test_the_word_opus_appears_in_no_p1b_module_but_opus_repair(name):
 def test_opus_is_a_model_name_only_in_opus_repair():
     text = (REPO / "scripts" / "source" / "opus_repair.py").read_text(encoding="utf-8")
     assert '"opus"' in text
+
+
+# ---- 9. the test guard: a real Claude command never starts under pytest (2026-11-02)
+
+def test_a_real_opus_command_under_pytest_is_refused_before_any_process_starts(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("a process was started under pytest")
+
+    monkeypatch.setattr(opus, "OPUS_ENABLED", True)           # the switch on, as in production
+    monkeypatch.setattr(opus, "CLAUDE_CMD", ["claude"])        # the real command, not the fake
+    monkeypatch.setattr(subprocess, "run", refuse)
+    with pytest.raises(opus.RepairFailed, match="refused"):
+        opus.ask("prompt")
+
+
+def test_the_guard_lets_the_fake_claude_through_under_pytest():
+    assert opus.real_call_refused(["claude"]) is True
+    assert opus.real_call_refused([sys.executable, str(FAKE)]) is False
