@@ -12,7 +12,26 @@ import loop_home
 from launch import git
 
 MERGE_KEY = "merge"
+INDEX_END = "<!-- change-index:end -->"
 MAX_ATTEMPTS = 3              # the first try plus 2 retries
+
+
+def add_index_line(wt, job_id) -> bool:
+    """Add `- docs/changes/<job_id>.md` above the change-index end marker in README.md. Returns True when README changed. Nothing is
+    added when the marker is missing, the change doc is missing, or the line is already there (a retry after a rebase)."""
+    readme, doc = Path(wt) / "README.md", Path(wt) / "docs" / "changes" / f"{job_id}.md"
+    if not readme.is_file() or not doc.is_file():
+        return False
+    lines = readme.read_text(encoding="utf-8").splitlines(keepends=True)
+    line = f"- docs/changes/{job_id}.md"
+    if line in [x.rstrip("\r\n") for x in lines]:
+        return False
+    ends = [i for i, x in enumerate(lines) if x.strip() == INDEX_END]
+    if not ends:
+        return False
+    lines.insert(ends[0], line + "\n")
+    readme.write_text("".join(lines), encoding="utf-8")
+    return True
 
 
 def default_suite(wt):
@@ -66,6 +85,9 @@ class MergeQueue:
             if git(["rebase", base], wt, check=False).returncode != 0:
                 git(["rebase", "--abort"], wt, check=False)
                 return self.launcher.finish(job_id, gen, "merge-conflict", base)
+            if add_index_line(wt, job_id):                     # the index line goes in during the merge, before the suite
+                git(["add", "README.md"], wt)
+                git(["commit", "-q", "-m", f"index: {job_id}"], wt)
             ok, text = self.run_suite(wt)
             if not ok:
                 return self.launcher.finish(job_id, gen, "tests-failed", base, {"tail": text[-2000:]})

@@ -1534,10 +1534,35 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     finally:
         stop_beat()
     state = result["state"]
+    try:
+        write_change_doc(wt, job_id, job, dict(result, state=state), base)
+    except BaseException:
+        launcher.finish(job_id, gen, "error", base)
+        raise
     launcher.finish(job_id, gen, state, base, {"round": result.get("round")})
     if state == "passed" and merge_queue is not None:
         merge_queue.submit(job_id, gen)
     return dict(result, job_id=job_id)
+
+
+def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
+    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it."""
+    doc = Path(wt) / "docs" / "changes" / f"{job_id}.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("\n".join([
+        f"# {job_id}", "",
+        f"- Job name: {job['name']}",
+        f"- Base: {base}",
+        f"- State: {result.get('state')}",
+        f"- Files: {', '.join(job['files'])}",
+        f"- Round: {result.get('round')}",
+        f"- Review verdict: {result.get('review_verdict')}",
+        "",
+    ]), encoding="utf-8")
+    git = _sibling_module("launch").git
+    git(["add", doc.relative_to(wt).as_posix()], wt)
+    git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
+    return doc
 
 
 def queue_dir(home: Path) -> Path:

@@ -228,3 +228,38 @@ def test_step6_an_unreadable_job_file_is_reported_and_the_drain_goes_on(tmp_path
 
     out = fl.drain_queue(env.api, env.launcher, run=fake_run("tests-failed"), loader=loader)
     assert [state for _, state in out] == ["tests-failed", "invalid"]      # good was queued first
+
+
+# ---------------------------------------------------------------- step 7: docs/changes/<job_id>.md and the README index
+def test_step7_a_kept_worktree_carries_its_change_doc_committed_on_the_job_branch(tmp_path):
+    env = env_for(tmp_path)
+    res = fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=fake_run("passed"))
+    wt = env.home / "wt" / res["job_id"]
+    doc = wt / "docs" / "changes" / f"{res['job_id']}.md"
+    assert "- State: passed" in doc.read_text(encoding="utf-8")
+    assert git(wt, "log", "-1", "--format=%s") == f"change doc: {res['job_id']} (passed)"
+    assert git(wt, "status", "--porcelain") == ""
+
+
+def test_step7_the_index_line_goes_above_the_end_marker_once(tmp_path):
+    import merge_queue as mq
+    wt = tmp_path / "wt"
+    (wt / "docs" / "changes").mkdir(parents=True)
+    (wt / "docs" / "changes" / "job-1.md").write_text("# job-1\n", encoding="utf-8")
+    (wt / "README.md").write_text("intro\n\n<!-- change-index:start -->\n<!-- change-index:end -->\n", encoding="utf-8")
+    assert mq.add_index_line(wt, "job-1") is True
+    assert mq.add_index_line(wt, "job-1") is False                  # retry after a rebase: no duplicate
+    text = (wt / "README.md").read_text(encoding="utf-8")
+    assert text.index("- docs/changes/job-1.md") < text.index("<!-- change-index:end -->")
+    assert text.count("- docs/changes/job-1.md") == 1
+
+
+def test_step7_no_marker_or_no_doc_means_no_index_change(tmp_path):
+    import merge_queue as mq
+    wt = tmp_path / "wt"
+    (wt / "docs" / "changes").mkdir(parents=True)
+    (wt / "docs" / "changes" / "job-2.md").write_text("# job-2\n", encoding="utf-8")
+    (wt / "README.md").write_text("no markers here\n", encoding="utf-8")
+    assert mq.add_index_line(wt, "job-2") is False
+    (wt / "README.md").write_text("<!-- change-index:end -->\n", encoding="utf-8")
+    assert mq.add_index_line(wt, "job-missing") is False

@@ -360,3 +360,10 @@ Every change below has a failing-first test (`pieces/test_p6_token_settings.py` 
 - **Opus call.** `--system-prompt` (a repair-only prompt), `--no-session-persistence`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000`, timeout 900 s. A repair runs only when at least 900 s (15 minutes) of the unit deadline are left (`p1b_routing.REPAIR_TIMEOUT_S`).
 - **Switch.** `OPUS_ENABLED` stays `False`; the owner decides the production switch. The "Reply OK" check ran on Haiku 5.5 at high effort (`--model haiku --effort high`), not on Opus, once with and once without `--system-prompt` (`input_tokens` 2 in both). `pieces/conftest.py` keeps the switch off during tests, so no test starts the real CLI.
 - **Planner budget.** The `plan_job.py` prompt asks for `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`.
+
+## Change index (close-1 step 7)
+
+Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge queue adds one line per merged job between the markers below.
+
+<!-- change-index:start -->
+<!-- change-index:end -->
