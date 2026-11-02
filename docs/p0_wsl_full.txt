@@ -1,0 +1,201 @@
+.......................................................F.FF............. [ 25%]
+..............................................F......................... [ 51%]
+..FF..F...F............................................................. [ 77%]
+...............................s..FFsFF...F....................          [100%]
+=================================== FAILURES ===================================
+E   FileNotFoundError: [Errno 2] No such file or directory: '/root/p0_v2/pieces/p3_audio_evidence.py'
+/usr/lib/python3.12/pathlib.py:1015: FileNotFoundError: [Errno 2] No such file or directory: '/root/p0_v2/pieces/p3_audio_evidence.py'
+E   FileNotFoundError: [Errno 2] No such file or directory: '/root/p0_v2/docs/AGENT_RULES.md'
+/usr/lib/python3.12/pathlib.py:1015: FileNotFoundError: [Errno 2] No such file or directory: '/root/p0_v2/docs/AGENT_RULES.md'
+E   AssertionError: no job files found: this guard would pass vacuously
+    assert []
+/root/p0_v2/pieces/test_guards.py:119: AssertionError: no job files found: this guard would pass vacuously
+E   Failed: DID NOT RAISE ClaimConflict
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/root/p0_v2/pieces/p1_claims.py", line 497, in run_job
+    runpy.run_path(script, run_name="__main__")
+  File "<frozen runpy>", line 285, in run_path
+  File "<frozen runpy>", line 254, in _get_code_from_file
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/pytest-of-root/pytest-3/test_a_job_cannot_start_while_0/never_runs.py'
+/root/p0_v2/pieces/test_loop_acceptance.py:279: Failed: DID NOT RAISE ClaimConflict
+E   Failed: DID NOT RAISE ClaimConflict
+/root/p0_v2/pieces/test_loop_races.py:48: Failed: DID NOT RAISE ClaimConflict
+E   Failed: DID NOT RAISE ClaimConflict
+/root/p0_v2/pieces/test_loop_races.py:60: Failed: DID NOT RAISE ClaimConflict
+E   Failed: DID NOT RAISE ClaimConflict
+/root/p0_v2/pieces/test_loop_races.py:92: Failed: DID NOT RAISE ClaimConflict
+E   AssertionError: assert ['dead', 'live'] == ['dead']
+      
+      Left contains one more item: 'live'
+      Use -v to get more diff
+/root/p0_v2/pieces/test_loop_races.py:178: AssertionError: assert ['dead', 'live'] == ['dead']
+E   Failed: DID NOT RAISE ClaimConflict
+/root/p0_v2/pieces/test_p1_claims.py:216: Failed: DID NOT RAISE ClaimConflict
+E   Failed: DID NOT RAISE ClaimConflict
+/root/p0_v2/pieces/test_p1_claims.py:234: Failed: DID NOT RAISE ClaimConflict
+E   AssertionError: assert 'no conflict' == 'conflict'
+      
+      - conflict
+      + no conflict
+      ? +++
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 441, in __str__
+    return self._str
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 555, in drive
+    return self._drv
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_drv'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/p0_v2/pieces/p1_claims.py", line 497, in run_job
+    runpy.run_path(script, run_name="__main__")
+  File "<frozen runpy>", line 286, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/pytest-of-root/pytest-3/test_run_job_holds_claims_and_0/repo/scripts/source/fix_loop.py", line 8, in <module>
+    pc.run_job(job, '/tmp/pytest-of-root/pytest-3/test_run_job_holds_claims_and_0/repo', claims_dir='/tmp/pytest-of-root/pytest-3/test_run_job_holds_claims_and_0/repo/_loop', loop_script=sys.argv[0], environ={})
+  File "/root/p0_v2/pieces/p1_claims.py", line 474, in run_job
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1029, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 448, in __fspath__
+    return str(self)
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 443, in __str__
+    self._str = self._format_parsed_parts(self.drive, self.root,
+                                          ^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 557, in drive
+    self._load_parts()
+  File "/usr/lib/python3.12/pathlib.py", line 415, in _load_parts
+    drv, root, tail = self._parse_path(path)
+                      ^^^^^^^^^^^^^^^^^^^^^^
+RecursionError: maximum recursion depth exceeded
+/root/p0_v2/pieces/test_p1_claims.py:298: AssertionError: assert 'no conflict' == 'conflict'
+E   Failed: DID NOT RAISE ClaimConflict
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 441, in __str__
+    return self._str
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 555, in drive
+    return self._drv
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_drv'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/p0_v2/pieces/p1_claims.py", line 497, in run_job
+    runpy.run_path(script, run_name="__main__")
+  File "<frozen runpy>", line 286, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/pytest-of-root/pytest-3/test_run_job_conflict_before_t0/repo/scripts/source/fix_loop.py", line 8, in <module>
+    pc.run_job(job, '/tmp/pytest-of-root/pytest-3/test_run_job_conflict_before_t0/repo', claims_dir='/tmp/pytest-of-root/pytest-3/test_run_job_conflict_before_t0/repo/_loop', loop_script=sys.argv[0], environ={})
+  File "/root/p0_v2/pieces/p1_claims.py", line 474, in run_job
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1029, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 448, in __fspath__
+    return str(self)
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 443, in __str__
+    self._str = self._format_parsed_parts(self.drive, self.root,
+                                          ^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 557, in drive
+    self._load_parts()
+  File "/usr/lib/python3.12/pathlib.py", line 415, in _load_parts
+    drv, root, tail = self._parse_path(path)
+                      ^^^^^^^^^^^^^^^^^^^^^^
+RecursionError: maximum recursion depth exceeded
+/root/p0_v2/pieces/test_p1_claims.py:309: Failed: DID NOT RAISE ClaimConflict
+E   Failed: DID NOT RAISE ClaimConflict
+----------------------------- Captured stderr call -----------------------------
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 441, in __str__
+    return self._str
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/pathlib.py", line 555, in drive
+    return self._drv
+           ^^^^^^^^^
+AttributeError: 'PosixPath' object has no attribute '_drv'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/p0_v2/pieces/p1_claims.py", line 497, in run_job
+    runpy.run_path(script, run_name="__main__")
+  File "<frozen runpy>", line 286, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/tmp/pytest-of-root/pytest-3/test_run_job_claims_the_status0/repo/scripts/source/fix_loop.py", line 8, in <module>
+    pc.run_job(job, '/tmp/pytest-of-root/pytest-3/test_run_job_claims_the_status0/repo', claims_dir='/tmp/pytest-of-root/pytest-3/test_run_job_claims_the_status0/repo/_loop', loop_script=sys.argv[0], environ={})
+  File "/root/p0_v2/pieces/p1_claims.py", line 474, in run_job
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1029, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 448, in __fspath__
+    return str(self)
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 443, in __str__
+    self._str = self._format_parsed_parts(self.drive, self.root,
+                                          ^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 557, in drive
+    self._load_parts()
+  File "/usr/lib/python3.12/pathlib.py", line 415, in _load_parts
+    drv, root, tail = self._parse_path(path)
+                      ^^^^^^^^^^^^^^^^^^^^^^
+RecursionError: maximum recursion depth exceeded
+/root/p0_v2/pieces/test_p1_claims.py:356: Failed: DID NOT RAISE ClaimConflict
+=========================== short test summary info ============================
+FAILED pieces/test_guards.py::test_the_audio_module_really_sets_hf_hub_offline
+FAILED pieces/test_guards.py::test_agent_rules_list_the_known_coder_traps - F...
+FAILED pieces/test_guards.py::test_every_real_job_file_is_consistent - Assert...
+FAILED pieces/test_loop_acceptance.py::test_a_job_cannot_start_while_another_job_rewrites_its_reference_file
+FAILED pieces/test_loop_races.py::test_a_reader_blocks_a_writer_and_the_writer_then_gets_in
+FAILED pieces/test_loop_races.py::test_a_writer_blocks_a_reader - Failed: DID...
+FAILED pieces/test_loop_races.py::test_a_failed_claim_leaves_no_locks_or_reader_files
+FAILED pieces/test_loop_races.py::test_reconcile_stale_marks_dead_jobs_stopped_and_leaves_live_and_finished_ones
+FAILED pieces/test_p1_claims.py::test_claim_overlap_rollback_and_release - Fa...
+FAILED pieces/test_p1_claims.py::test_claim_spellings_conflict - Failed: DID ...
+FAILED pieces/test_p1_claims.py::test_run_job_holds_claims_and_returns_exit_code
+FAILED pieces/test_p1_claims.py::test_run_job_conflict_before_the_loop_runs
+FAILED pieces/test_p1_claims.py::test_run_job_claims_the_status_folder_name_too
+SKIPPED [1] pieces/test_p1_claims.py:168: same-process lock conflict is a Windows handle rule
+SKIPPED [1] pieces/test_p1_claims.py:239: OS byte-range locks are the Windows rule
+13 failed, 264 passed, 2 skipped in 49.32s

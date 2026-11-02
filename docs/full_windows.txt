@@ -1,0 +1,81 @@
+﻿.......................................................F.FF............. [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+...............................................................          [100%]
+================================== FAILURES ===================================
+______________ test_the_audio_module_really_sets_hf_hub_offline _______________
+
+    def test_the_audio_module_really_sets_hf_hub_offline():
+        """The spec requires it so that nothing is ever downloaded; the first generated version only had a comment about it."""
+>       text = (REPO / "pieces" / "p3_audio_evidence.py").read_text(encoding="utf-8")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pieces\test_guards.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Python314\Lib\pathlib\__init__.py:787: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('D:/aai work/loop_p0/pieces/p3_audio_evidence.py')
+mode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'D:\\aai work\\loop_p0\\pieces\\p3_audio_evidence.py'
+
+C:\Python314\Lib\pathlib\__init__.py:771: FileNotFoundError
+_________________ test_agent_rules_list_the_known_coder_traps _________________
+
+    def test_agent_rules_list_the_known_coder_traps():
+>       text = (REPO / "docs" / "AGENT_RULES.md").read_text(encoding="utf-8")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pieces\test_guards.py:110: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Python314\Lib\pathlib\__init__.py:787: in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('D:/aai work/loop_p0/docs/AGENT_RULES.md'), mode = 'r'
+buffering = -1, encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'D:\\aai work\\loop_p0\\docs\\AGENT_RULES.md'
+
+C:\Python314\Lib\pathlib\__init__.py:771: FileNotFoundError
+___________________ test_every_real_job_file_is_consistent ____________________
+
+    def test_every_real_job_file_is_consistent():
+        """Learned 2026-10-30: job files copied from another job kept its review_files, so reviewers judged the wrong files."""
+        import json
+        repo = Path(__file__).resolve().parents[1]
+        jobs = sorted((repo / "_loop" / "jobs").glob("*.json"))
+>       assert jobs, "no job files found: this guard would pass vacuously"
+E       AssertionError: no job files found: this guard would pass vacuously
+E       assert []
+
+pieces\test_guards.py:119: AssertionError
+=========================== short test summary info ===========================
+FAILED pieces/test_guards.py::test_the_audio_module_really_sets_hf_hub_offline
+FAILED pieces/test_guards.py::test_agent_rules_list_the_known_coder_traps - F...
+FAILED pieces/test_guards.py::test_every_real_job_file_is_consistent - Assert...
+3 failed, 276 passed in 105.56s (0:01:45)
