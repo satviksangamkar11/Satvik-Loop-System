@@ -4,6 +4,7 @@ for writer_a (Dots), writer_b (Xing), reviewer_a (GLM, reviews only) and reviewe
 
 The real sandbox needs Docker and the sandbox image. Without them the end-to-end tests are skipped with the reason (never a silent pass)."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ import prod_harness as ph  # noqa: E402
 from test_p0_acceptance import make_prod_root, CONSTANT_CODE, CONSTANT_TEST, GOOD_CODE, GOOD_TEST  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+DOTS = XING = NORTH = GLM = None      # set per test by the profile fixture below (the roster is read per test, never at import)
 ANTHROPIC = p1b.ANTHROPIC
 FAKE_CLAUDE = REPO / "pieces" / "fake_claude.py"
 # Xing's wrong code: its own test agrees with it (passes), the locked acceptance tests fail on the same two tests Dots fails.
@@ -263,3 +264,13 @@ def test_a_key_in_a_reviewer_error_is_redacted_in_status_json_and_in_the_result(
     assert "shared pool" in status_text
     assert LEAK not in status_text and "[REDACTED]" in status_text
     assert LEAK not in json.dumps(result)
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster (the paid GLM reviewer lives there). Set per test, never at import: the role
+    names below are read from the roster here, after the profile is set."""
+    global DOTS, XING, NORTH, GLM
+    profile("production")
+    roles = oc.roster_state()["ROLES"]
+    DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]

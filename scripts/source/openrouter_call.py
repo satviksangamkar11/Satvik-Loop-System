@@ -165,15 +165,41 @@ def load_profile(name=None, path=None):
     return roles
 
 
-PROFILE = (os.environ.get(PROFILE_VAR) or "test").strip()
-ROLE_SPECS = load_profile(PROFILE)
-ROLES = {role: spec["model"] for role, spec in ROLE_SPECS.items()}
-_API_ROLES = [role for role in WRITER_ROLES + REVIEWER_ROLES if ROLES[role] not in SENTINELS]
-PAID = frozenset(ROLES[role] for role in _API_ROLES if ROLE_SPECS[role]["paid"])
-ALLOWED = frozenset(ROLES[role] for role in _API_ROLES if not ROLE_SPECS[role]["paid"])
-PINS = {ROLES[role]: ROLE_SPECS[role]["provider"] for role in _API_ROLES if ROLE_SPECS[role]["paid"]}     # paid model -> {name, slug}
-PRICING = {ROLES[role]: ROLE_SPECS[role]["pricing"] for role in _API_ROLES if ROLE_SPECS[role]["paid"]}    # paid model -> USD per token
-SETTINGS = {ROLES[role]: ROLE_SPECS[role]["settings"] for role in _API_ROLES}                              # model -> its role's settings
+_ROSTER_STATE = {}                  # profile name -> the tables derived from its roster; keyed by the name, so a changed SATVIK_PROFILE is read again
+
+
+def active_profile():
+    """The profile named by SATVIK_PROFILE, read now (default test). Never cached: the roster is read per call, not at import."""
+    return (os.environ.get(PROFILE_VAR) or "test").strip()
+
+
+def roster_state(profile=None):
+    """The tables for a profile (default: the active one): ROLE_SPECS, ROLES, PAID, ALLOWED, PINS, PRICING, SETTINGS, PROFILE. Loaded inside
+    this function and cached by profile name, so each profile's roster is checked once and a test can switch profiles with the environment."""
+    name = profile or active_profile()
+    if name not in _ROSTER_STATE:
+        specs = load_profile(name)
+        roles = {role: spec["model"] for role, spec in specs.items()}
+        api = [role for role in WRITER_ROLES + REVIEWER_ROLES if roles[role] not in SENTINELS]
+        _ROSTER_STATE[name] = {
+            "PROFILE": name, "ROLE_SPECS": specs, "ROLES": roles,
+            "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]),
+            "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]),
+            "PINS": {roles[r]: specs[r]["provider"] for r in api if specs[r]["paid"]},       # paid model -> {name, slug}
+            "PRICING": {roles[r]: specs[r]["pricing"] for r in api if specs[r]["paid"]},     # paid model -> USD per token
+            "SETTINGS": {roles[r]: specs[r]["settings"] for r in api},                       # model -> its role's settings
+        }
+    return _ROSTER_STATE[name]
+
+
+_ROSTER_NAMES = frozenset({"PROFILE", "ROLE_SPECS", "ROLES", "PAID", "ALLOWED", "PINS", "PRICING", "SETTINGS"})
+
+
+def __getattr__(name):
+    """Module attributes for the roster tables, read from the active profile at each access (PEP 562)."""
+    if name in _ROSTER_NAMES:
+        return roster_state()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def redact(text, secrets=()):
@@ -192,10 +218,11 @@ def resolve(name):
     """The roster model for a writer or reviewer role name, or an exact free roster ID. Anything else (a list, a comma list, an alias, a
     bare paid ID, the repair or planner role, a sentinel such as non_author_writer) is refused before a request is built."""
     if isinstance(name, str) and name in WRITER_ROLES + REVIEWER_ROLES:
-        if ROLES[name] in SENTINELS:
-            raise ModelRefused(f"{name} is {ROLES[name]!r} in the {PROFILE} profile, not a model: nothing is called")
-        return ROLES[name]
-    if isinstance(name, str) and name in ALLOWED:
+        roles = roster_state()["ROLES"]
+        if roles[name] in SENTINELS:
+            raise ModelRefused(f"{name} is {roles[name]!r} in the {active_profile()} profile, not a model: nothing is called")
+        return roles[name]
+    if isinstance(name, str) and name in roster_state()["ALLOWED"]:
         return name
     raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster IDs only; no fallback lists)")
 
@@ -515,7 +542,7 @@ class OpenRouter:
         A reply from any other provider is refused in call()."""
         if model in self._endpoints:
             return self._endpoints[model]
-        pin = PINS.get(model)
+        pin = roster_state()["PINS"].get(model)
         if pin is None:
             raise self._err(ModelRefused, f"{model} has no pinned provider in the roster; nothing is sent")
         status, _, raw = self.transport("GET", f"{API}/models/{model}/endpoints", {}, None, 60)
@@ -588,12 +615,12 @@ class OpenRouter:
         model = resolve(name)
         if private and model not in self.approved_private:
             raise self._err(ModelRefused, f"private code is blocked: no approved non-training route for {model}")
-        slot = "paid" if model in PAID else "free"
+        slot = "paid" if model in roster_state()["PAID"] else "free"
         if slot == "paid" and kind != "reviewer":
             raise self._err(ModelRefused, f"{model} is the GLM reviewer: it takes reviewer calls only, so this {kind} call is refused before any request")
         if slot not in self.keys:
             raise self._err(ModelRefused, f"no {slot} key loaded, so {model} is not called")
-        settings = SETTINGS[model]
+        settings = roster_state()["SETTINGS"][model]
         retry = settings if kind == "writer" else {}           # retry values belong to writer calls only
         started = self.clock()
         tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
@@ -622,10 +649,11 @@ class OpenRouter:
                 if data is None:
                     self._note(model, 200, "malformed reply: not a JSON object")
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
-                if slot == "paid" and data.get("provider") != PINS[model]["name"]:
+                pin_name = roster_state()["PINS"][model]["name"] if slot == "paid" else None
+                if slot == "paid" and data.get("provider") != pin_name:
                     self._note(model, 200, f"reply came from provider {data.get('provider')!r}")
                     self.breaker.failed(model)
-                    raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {PINS[model]['name']!r}")
+                    raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {pin_name!r}")
                 try:
                     text = check_reply(kind, model, data)
                 except _Truncated as exc:
@@ -681,7 +709,7 @@ class OpenRouter:
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, PRICING[model])
+            estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
             self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
             self.endpoint(model)
             self.budget.reserve_review(estimate)
@@ -700,14 +728,14 @@ class OpenRouter:
         reply costs; with no reply, the whole reservation is kept as spent."""
         if slot == "free":
             return _reported_cost(data) or 0.0
-        spent = review_cost(data, PRICING[model]) if data is not None else None
+        spent = review_cost(data, roster_state()["PRICING"][model]) if data is not None else None
         if spent is None:
             spent = reserved
         self.budget.settle_review(reserved, spent)
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):
-        settings = SETTINGS[model]
+        settings = roster_state()["SETTINGS"][model]
         body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "max_tokens": tokens, "temperature": settings["temperature"]}
         if settings["reasoning"] is not None:

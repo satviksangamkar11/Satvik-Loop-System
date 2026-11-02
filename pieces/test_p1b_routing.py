@@ -9,11 +9,10 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
-os.environ.setdefault("SATVIK_PROFILE", "production")   # the GLM panel is the production roster; the test profile has no paid reviewer
 import openrouter_call as oc  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
+DOTS = XING = NORTH = GLM = None      # set per test by the profile fixture below (the roster is read per test, never at import)
 ANTHROPIC = p1b.ANTHROPIC
 JOB = {"files": ["pieces/calc.py", "pieces/test_calc.py"], "deadline_min": 60}
 READY = "Looks right.\n## Verdict: READY"
@@ -195,8 +194,9 @@ def test_no_second_independent_reviewer_is_provider_unavailable():
         p1b.panel_for(DOTS, unavailable={NORTH, XING})
 
 
-@pytest.mark.parametrize("origin", [DOTS, XING, NORTH])
-def test_the_code_writer_is_never_on_its_own_panel(origin):
+@pytest.mark.parametrize("role", ["writer_a", "writer_b", "reviewer_b"])     # the role names; the models are read inside the test
+def test_the_code_writer_is_never_on_its_own_panel(role, profile):
+    origin = oc.roster_state()["ROLES"][role]
     assert origin not in p1b.panel_for(origin)
 
 
@@ -445,3 +445,13 @@ def test_a_lineage_file_written_before_the_version_still_loads(tmp_path):
     path = tmp_path / "lineage.json"
     path.write_text(json.dumps({"pieces/calc.py": {"last": DOTS, "origin": DOTS, "chain": [DOTS]}}), encoding="utf-8")
     assert p1b.Lineage.load(path).get("pieces/calc.py")["origin"] == DOTS
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster (the paid GLM reviewer lives there). Set per test, never at import: the role
+    names below are read from the roster here, after the profile is set."""
+    global DOTS, XING, NORTH, GLM
+    profile("production")
+    roles = oc.roster_state()["ROLES"]
+    DOTS, XING, NORTH, GLM = roles["writer_a"], roles["writer_b"], roles["reviewer_b"], roles["reviewer_a"]

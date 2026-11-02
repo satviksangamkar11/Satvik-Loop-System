@@ -289,3 +289,9 @@ def test_load_job_accepts_the_planned_job_once_its_files_are_in_the_repo(repo, t
     (jobs / "calc.json").write_text((plan_dir / "job.json").read_text(encoding="utf-8"), encoding="utf-8")
     job = fl.load_job(jobs / "calc.json")
     assert job["profile"] == "production" and job["reviewers"] == "by_lineage"
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import."""
+    profile("production")

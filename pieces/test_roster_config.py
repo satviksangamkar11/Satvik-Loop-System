@@ -14,7 +14,6 @@ REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "scripts" / "source"
 ROSTER = REPO / "config" / "roster.json"
 sys.path.insert(0, str(SRC))
-os.environ.setdefault("SATVIK_PROFILE", "production")      # this module's in-process roles are the production ones; the test profile is loaded explicitly
 import openrouter_call as oc  # noqa: E402
 import p0_gates  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
@@ -227,10 +226,10 @@ def _production_job(root, name):
             "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}, "deadline_min": 60}
 
 
-def test_run_job_refuses_a_production_job_when_the_roster_profile_is_test_before_any_call_or_write(tmp_path, monkeypatch):
+def test_run_job_refuses_a_production_job_when_the_roster_profile_is_test_before_any_call_or_write(tmp_path, profile):
     from test_fix_loop_review import fl, make_root
     root = make_root(tmp_path)
-    monkeypatch.setattr(oc, "PROFILE", "test")                 # the active roster profile (SATVIK_PROFILE) is test
+    profile("test")                                              # the active roster profile (SATVIK_PROFILE) is test
     result = fl.run_job(_production_job(root, "mm"), root, status_dir=root / "_loop", scrub_keys=[])
     assert result["state"] == "profile-mismatch"
     assert result["problems"] == ["profile-mismatch: job=production roster=test"]
@@ -238,10 +237,10 @@ def test_run_job_refuses_a_production_job_when_the_roster_profile_is_test_before
     assert not (root / "_loop" / "mm").exists()                # no folder, no status.json, nothing written
 
 
-def test_run_job_runs_a_production_job_when_the_roster_profile_matches(tmp_path, monkeypatch):
+def test_run_job_runs_a_production_job_when_the_roster_profile_matches(tmp_path, profile):
     from test_fix_loop_review import fl, make_root
     root = make_root(tmp_path)
-    monkeypatch.setattr(oc, "PROFILE", "production")           # the roster profile matches the job
+    profile("production")                                        # the roster profile matches the job
     result = fl.run_job(_production_job(root, "ok"), root, status_dir=root / "_loop", scrub_keys=[])
     assert result["state"] == "invalid-spec"                   # the guard let it through: the next check (spec) decided, no model call
     assert result["state"] != "profile-mismatch"

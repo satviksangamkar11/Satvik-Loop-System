@@ -82,3 +82,9 @@ def test_similar_but_unprotected_paths_are_not_refused(path):
 
 def test_the_pilot_job_is_still_accepted():
     assert gates.production_job_problems(json.loads(PILOT.read_text(encoding="utf-8"))) == []
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster. Set per test, never at import."""
+    profile("production")

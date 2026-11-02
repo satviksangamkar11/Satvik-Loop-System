@@ -15,7 +15,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
-os.environ.setdefault("SATVIK_PROFILE", "production")   # the test profile refuses the paid reviewer, so these tests load production
 import openrouter_call as oc  # noqa: E402
 
 FREE_KEY = "sk-or-v1-FREETEST000000000000"
@@ -909,3 +908,9 @@ def test_a_writer_upstream_429_keeps_the_old_schedule(tmp_path):
         built.call("writer_a", "system", "user", kind="writer")
     assert oc.BACKOFF_S == (2, 8, 30)
     assert clock.slept == [2, 8] and len(fake.posts()) == 2
+
+
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """Every test in this file runs on the production roster (the paid GLM reviewer lives there). Set per test, never at import."""
+    profile("production")
