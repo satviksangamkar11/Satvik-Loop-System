@@ -945,3 +945,73 @@ def test_step9_models_matching_no_role_exit_nonzero_without_a_call(tmp_path, mon
     assert code != 0
     assert "no matching role" in capsys.readouterr().err
     assert fake.posts() == []
+
+
+# ---- 11. every per-role setting comes from config/roster.json: a changed roster value changes the call (fakes only, no network)
+
+def _roster_with(tmp_path, monkeypatch, edit):
+    """A copy of the roster with `edit` applied, read by the adapter in place of the repo's file. The per-profile cache is emptied so the copy
+    is read; monkeypatch undoes both."""
+    data = json.loads(oc.ROSTER_PATH.read_text(encoding="utf-8"))
+    edit(data)
+    path = tmp_path / "roster_copy.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(oc, "ROSTER_PATH", path)
+    monkeypatch.setattr(oc, "_ROSTER_STATE", {})
+
+
+def test_a_changed_roster_value_changes_the_request_settings(tmp_path, monkeypatch):
+    def edit(data):
+        data["profiles"]["production"]["roles"]["writer_a"]["settings"].update(
+            temperature=0.33, reasoning={"max_tokens": 1234}, max_tokens=4321, timeout_s=77)
+    _roster_with(tmp_path, monkeypatch, edit)
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="text")
+    post = fake.posts()[0]
+    assert post["body"]["max_tokens"] == 4321
+    assert post["body"]["temperature"] == 0.33
+    assert post["body"]["reasoning"] == {"max_tokens": 1234}
+    assert post["timeout"] == 77
+
+
+def test_a_changed_reviewer_cap_and_timeout_change_the_truncation_retry(tmp_path, monkeypatch):
+    def edit(data):
+        data["profiles"]["production"]["roles"]["reviewer_b"]["settings"].update(max_tokens=1000, max_tokens_cap=1500, timeout_s=300)
+    _roster_with(tmp_path, monkeypatch, edit)
+    fake = Fake()
+    fake.on("/chat/completions", ok(REVIEW_OK[:10], finish="length"), ok(REVIEW_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("reviewer_b", "system", "user", kind="reviewer")
+    assert [p["body"]["max_tokens"] for p in fake.posts()] == [1000, 1500]      # the retry doubles 1000 but stops at the roster cap 1500
+    assert [p["timeout"] for p in fake.posts()] == [300, 300]
+
+
+def test_the_reviewer_429_window_ends_at_the_roster_timeout(tmp_path, monkeypatch):
+    _roster_with(tmp_path, monkeypatch, lambda data: data["profiles"]["production"]["roles"]["reviewer_b"]["settings"].update(timeout_s=300))
+    fake = Fake()
+    fake.on("/chat/completions", upstream_429({"retry-after": "280"}), upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="review timeout"):      # 280 s wait, then the next 30 s wait would pass 300 s
+        built.call("reviewer_b", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 2 and clock.slept == [280.0]
+
+
+def test_the_probe_token_cap_comes_from_the_roster(tmp_path, monkeypatch):
+    _roster_with(tmp_path, monkeypatch, lambda data: data["profiles"]["production"].update(probe_max_tokens=99))
+    fake = Fake()
+    fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
+    fake.on("/chat/completions", ok("OK"))
+    built, _ = client(tmp_path, fake)
+    oc.probe(built, None, names=["writer_a"])
+    assert fake.posts()[0]["body"]["max_tokens"] == 99
+
+
+def test_a_role_without_max_tokens_cap_is_refused_when_the_roster_loads(tmp_path):
+    data = json.loads(oc.ROSTER_PATH.read_text(encoding="utf-8"))
+    del data["profiles"]["production"]["roles"]["reviewer_b"]["settings"]["max_tokens_cap"]
+    path = tmp_path / "roster_copy.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(oc.RosterRefused, match="settings must hold"):
+        oc.load_profile("test", path=path)

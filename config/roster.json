@@ -2,6 +2,7 @@
   "schema_version": 1,
   "profiles": {
     "test": {
+      "probe_max_tokens": 256,
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",
@@ -9,7 +10,7 @@
           "paid": false,
           "pricing": null,
           "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200, "sampling": null,
-                       "retry_max_tokens": 72000, "retry_timeout_s": 1800}
+                       "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "writer_b": {
           "model": "xingchen-agi/xing4.0-29b-a4b:free",
@@ -17,39 +18,40 @@
           "paid": false,
           "pricing": null,
           "settings": {"temperature": 0.8, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
-                       "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800}
+                       "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "reviewer_a": {
           "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null}
+          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null, "max_tokens_cap": 72000}
         },
         "reviewer_b": {
           "model": "cohere/north-mini-code:free",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null}
+          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null, "max_tokens_cap": 72000}
         },
         "repair": {
           "model": "off",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null}
+          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null, "max_tokens_cap": null}
         },
         "planner": {
           "model": "fake",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null}
+          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null, "max_tokens_cap": null}
         }
       }
     },
     "production": {
+      "probe_max_tokens": 256,
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",
@@ -57,7 +59,7 @@
           "paid": false,
           "pricing": null,
           "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200, "sampling": null,
-                       "retry_max_tokens": 72000, "retry_timeout_s": 1800}
+                       "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "writer_b": {
           "model": "xingchen-agi/xing4.0-29b-a4b:free",
@@ -65,35 +67,35 @@
           "paid": false,
           "pricing": null,
           "settings": {"temperature": 0.8, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
-                       "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800}
+                       "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "reviewer_a": {
           "model": "z-ai/glm-5.3-flash",
           "provider": {"name": "Z.AI", "slug": "z-ai"},
           "paid": true,
           "pricing": {"prompt": 1.5e-07, "completion": 5e-07},
-          "settings": {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": true}, "max_tokens": 16000, "timeout_s": 600, "sampling": null}
+          "settings": {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": true}, "max_tokens": 16000, "timeout_s": 600, "sampling": null, "max_tokens_cap": 72000}
         },
         "reviewer_b": {
           "model": "cohere/north-mini-code:free",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null}
+          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": null, "max_tokens_cap": 72000}
         },
         "repair": {
           "model": "opus",
           "provider": null,
           "paid": true,
           "pricing": null,
-          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null}
+          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null, "max_tokens_cap": null}
         },
         "planner": {
           "model": "opus",
           "provider": null,
           "paid": true,
           "pricing": null,
-          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null}
+          "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null, "max_tokens_cap": null}
         }
       }
     }

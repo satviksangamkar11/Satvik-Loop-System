@@ -29,7 +29,7 @@ PROFILE_VAR = "SATVIK_PROFILE"      # "test" (the default) or "production"
 WRITER_ROLES = ("writer_a", "writer_b")
 REVIEWER_ROLES = ("reviewer_b", "reviewer_a")     # the review panel's order: the free reviewer first, the paid one last (after a READY)
 ROLE_NAMES = ("writer_a", "writer_b", "reviewer_a", "reviewer_b", "repair", "planner")
-SETTING_KEYS = ("temperature", "reasoning", "max_tokens", "timeout_s", "sampling")
+SETTING_KEYS = ("temperature", "reasoning", "max_tokens", "timeout_s", "sampling", "max_tokens_cap")   # every role's numbers live in config/roster.json
 NON_AUTHOR_WRITER = "non_author_writer"  # reviewer_a under the test profile: the free writer that did not write the code
 SENTINELS = frozenset({NON_AUTHOR_WRITER, "off", "fake"})   # roster values that are not model IDs
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
@@ -43,10 +43,8 @@ BACKOFF_S = (2, 8, 30)              # plus up to 1 s of jitter
 MINUTE_WAIT_DEFAULT_S = 5.0
 MAX_WAIT_S = 120.0                  # a longer wait than this ends the call instead of sleeping
 REVIEWER_429_WAITS_S = (15, 30, 60, 120, 180)   # an upstream 429 on a reviewer call: these waits, plus up to 1 s of jitter (Retry-After when longer)
-REVIEW_TIMEOUT_S = 600              # the review timeout: the reviewer's 429 window must end before it, counted from the call's start
 BREAKER_LIMIT = 2                   # consecutive provider errors drop a model for the job
 TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
-MAX_TOKENS_CAP = 72000              # the largest max_tokens any retry asks for
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
@@ -165,9 +163,17 @@ def load_roster_file(path=None):
         roles = profile.get("roles") if isinstance(profile, dict) else None
         if not isinstance(roles, dict) or set(roles) != set(ROLE_NAMES):
             raise RosterRefused(f"profile {name}: roles must be exactly {', '.join(ROLE_NAMES)}")
+        cap = profile.get("probe_max_tokens")
+        if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+            raise RosterRefused(f"profile {name}: probe_max_tokens must be a positive whole number")
         for role, spec in roles.items():
             _check_role(name, role, spec)
     return profiles
+
+
+def probe_max_tokens(profile=None):
+    """The probe's output cap for a profile (default: the active one), from config/roster.json."""
+    return load_roster_file()[profile or active_profile()]["probe_max_tokens"]
 
 
 def load_profile(name=None, path=None):
@@ -538,15 +544,16 @@ class OpenRouter:
 
     def _reviewer_window_wait(self, model, started, used, floor, message, attempt):
         """One upstream 429 on a reviewer call: wait the next step of REVIEWER_429_WAITS_S (plus jitter, or Retry-After when longer), then retry.
-        The window is used up after its last step, or when the next wait would pass REVIEW_TIMEOUT_S from the call's start; the model is then
-        dropped for the job. A stop for the unit deadline, or for the job's free-request or daily count, raises without dropping the model."""
+        The window is used up after its last step, or when the next wait would pass the model's roster timeout_s from the call's start; the model
+        is then dropped for the job. A stop for the unit deadline, or for the job's free-request or daily count, raises without dropping the model."""
+        review_timeout = roster_state()["SETTINGS"][model]["timeout_s"]
         if used >= len(REVIEWER_429_WAITS_S):
             self.breaker.drop(model)
             raise self._err(ProviderUnavailable, f"{model}: still rate-limited upstream (429) after {used} retries; the window is used up; last 429: {message[:300]}")
         seconds = max(REVIEWER_429_WAITS_S[used] + self.rand(), floor or 0.0)
-        if self.clock() - started + seconds > REVIEW_TIMEOUT_S:
+        if self.clock() - started + seconds > review_timeout:
             self.breaker.drop(model)
-            raise self._err(ProviderUnavailable, f"{model}: the next wait ({seconds:.0f} s) would pass the {REVIEW_TIMEOUT_S} s review timeout; the window is used up; last 429: {message[:300]}")
+            raise self._err(ProviderUnavailable, f"{model}: the next wait ({seconds:.0f} s) would pass the {review_timeout} s review timeout; the window is used up; last 429: {message[:300]}")
         if self.deadline_at is not None and self.clock() + seconds > self.deadline_at:
             raise self._err(ProviderUnavailable, f"{model}: the next retry would start after the unit deadline; last 429: {message[:300]}")
         self._check_retry_fits(model, message)
@@ -692,7 +699,7 @@ class OpenRouter:
                     if truncations == TRUNCATION_RETRIES or slot == "paid":
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens}")
                     truncations += 1
-                    tokens = retry.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
+                    tokens = retry.get("retry_max_tokens") or min(tokens * 2, settings["max_tokens_cap"])
                     continue
                 except _Mismatch as exc:
                     self._note(model, 200, str(exc))
@@ -899,7 +906,7 @@ def probe(client, out_path=None, names=None):
     for name in targets:
         model = resolve(name)
         try:
-            text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256)
+            text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=probe_max_tokens())
             results[name] = dict(info, ok=True, reply=text.strip()[:60], failed_attempts=client.failures_for(model))
         except OpenRouterError as exc:
             results[name] = {"model": model, "ok": False, "error": str(exc), "failed_attempts": client.failures_for(model)}
