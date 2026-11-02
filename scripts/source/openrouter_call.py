@@ -54,6 +54,15 @@ VERDICT_LINE = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 SECRET_SHAPES = re.compile(r"sk-or-[A-Za-z0-9_\-]+|Bearer\s+\S+")
 
 
+def _shared_limits():
+    """package E's account ledger (scripts/source/shared_limits.py), imported on first use."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import shared_limits
+    return shared_limits
+
+
 def _load_p1_claims():
     spec = importlib.util.spec_from_file_location("p1_claims_for_openrouter", REPO / "pieces" / "p1_claims.py")
     module = importlib.util.module_from_spec(spec)
@@ -488,10 +497,19 @@ class OpenRouter:
         self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 500 chars of its message
         self.retry_log = []                 # every retry: model, the attempt it starts, the wait in seconds, the error (scrubbed); the job's status keeps it
         self.deadline_at = None             # the unit deadline on this client's clock; no retry may start after it (set_job_deadline)
+        self.shared = None                  # (job_id, generation) once set_job puts this client on the account ledger (package E)
 
     def set_job_deadline(self, seconds):
         """The unit deadline, `seconds` from now. p1b_production sets it just before the unit's walk starts."""
         self.deadline_at = self.clock() + seconds
+
+    def set_job(self, job_id, gen):
+        """Puts every request on the account ledger (shared_limits, package E) under this job and generation: reserve, pace and the model
+        slot are taken there. Without it the client keeps its own ledger (the probe and the older tests use that)."""
+        self.shared = (job_id, gen)
+
+    def _deadline_left(self):
+        return None if self.deadline_at is None else self.deadline_at - self.clock()
 
     def _err(self, cls, message):
         return cls(redact(message, self._secrets))
@@ -635,7 +653,7 @@ class OpenRouter:
             attempts += 1
             reserved = self._reserve(model, slot, system, user, tokens)
             try:
-                status, headers, raw = self._post(model, slot, system, user, tokens, private, timeout)
+                status, headers, raw = self._send(model, slot, system, user, tokens, private, timeout)
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
                 self._note(model, None, f"{type(exc).__name__}: {exc}")
                 self.breaker.failed(model)
@@ -708,6 +726,8 @@ class OpenRouter:
     def _reserve(self, model, slot, system, user, tokens):
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
+        if self.shared is not None:
+            return self._reserve_shared(model, slot, system, user, tokens)
         if slot == "paid":
             estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
             self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
@@ -723,6 +743,66 @@ class OpenRouter:
         self.budget.free_used += 1
         return 0.0
 
+    def _reserve_shared(self, model, slot, system, user, tokens):
+        """The account ledger (package E). A wait for the minute window or the pace counts against the unit deadline: it is cut off there."""
+        sl = _shared_limits()
+        job_id, gen = self.shared
+        if slot == "paid":
+            estimate = review_reservation(system, user, tokens, PRICING[model])
+            self.budget.check_review(estimate)
+            self.endpoint(model)
+            self.budget.reserve_review(estimate)
+            try:
+                sl.reserve_review(job_id, gen, estimate)
+            except sl.ReviewCapReached as exc:
+                self.budget.settle_review(estimate, 0.0)
+                raise self._err(ReviewBudgetExceeded, str(exc))
+            try:
+                sl.pace(timeout_s=self._deadline_left())
+            except TimeoutError as exc:
+                sl.settle_review(job_id, gen, estimate, 0.0)
+                self.budget.settle_review(estimate, 0.0)
+                raise self._err(ProviderUnavailable, f"{model}: no send pace before the unit deadline ({exc})")
+            return estimate
+        self.budget.check_free()
+        while True:
+            try:
+                sl.reserve_free(job_id, gen)
+                break
+            except sl.DailyCapReached as exc:
+                raise self._err(QuotaExhausted, str(exc))
+            except sl.MinuteFull:
+                left = self._deadline_left()
+                if left is not None and left <= 0:
+                    raise self._err(ProviderUnavailable, f"{model}: the account minute window stayed full until the unit deadline")
+                self.sleep(1.0 if left is None else min(1.0, left))
+        self.budget.free_used += 1
+        return 0.0
+
+    def _send(self, model, slot, system, user, tokens, private, timeout_s):
+        """_post, inside the model's slot on the account ledger when the client is on it. The wait for the slot is bounded by the unit
+        deadline, so it counts against the job's time."""
+        if self.shared is None:
+            return self._post(model, slot, system, user, tokens, private, timeout_s)
+        sl = _shared_limits()
+        job_id, gen = self.shared
+        try:
+            sl.slot_name(model)
+        except ValueError as exc:
+            raise self._err(ModelDenied, str(exc))
+        left = self._deadline_left()
+        if left is not None and left <= 0:
+            raise self._err(ProviderUnavailable, f"{model}: the unit deadline passed before a slot was free")
+        slot_cm = sl.model_slot(model, gen, timeout_s if left is None else left)
+        try:
+            slot_cm.__enter__()
+        except TimeoutError as exc:
+            raise self._err(ProviderUnavailable, f"{model}: no free model slot before the unit deadline ({exc})")
+        try:
+            return self._post(model, slot, system, user, tokens, private, timeout_s)
+        finally:
+            slot_cm.__exit__(None, None, None)
+
     def _settle(self, slot, model, reserved, data):
         """A free attempt costs what its reply reports (0 when it reports nothing). A GLM attempt releases its reservation and keeps what the
         reply costs; with no reply, the whole reservation is kept as spent."""
@@ -732,6 +812,9 @@ class OpenRouter:
         if spent is None:
             spent = reserved
         self.budget.settle_review(reserved, spent)
+        if self.shared is not None:
+            job_id, gen = self.shared
+            _shared_limits().settle_review(job_id, gen, reserved, spent)
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):

@@ -118,10 +118,12 @@ def settle_review(job_id, gen, reserved, spent):
         _save_state(root, st)
 
 
-def pace() -> float:
+def pace(timeout_s=None) -> float:
     """Wait until fewer than PER_MINUTE requests were sent in the last 60 s, then record this send. Returns the send time.
-    Call it before every paid send (after reserve_review). reserve_free records its own send, so do not call pace for a free request."""
+    Call it before every paid send (after reserve_review). reserve_free records its own send, so do not call pace for a free request.
+    TimeoutError, without recording a send, when the wait would pass `timeout_s` (the unit deadline's time left)."""
     root = lh.home()
+    end = None if timeout_s is None else time.time() + timeout_s
     while True:
         with lh._locked(root):
             now = time.time()
@@ -131,6 +133,8 @@ def pace() -> float:
                 _save_state(root, st)
                 return now
             wait = min(st["minute"]) + WINDOW_S - now
+        if end is not None and time.time() + max(wait, 0.01) > end:
+            raise TimeoutError(f"the account pace is full for another {wait:.1f} s")
         time.sleep(max(wait, 0.01))
 
 
