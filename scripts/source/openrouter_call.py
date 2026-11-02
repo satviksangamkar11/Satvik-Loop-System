@@ -1,8 +1,8 @@
 """OpenRouter adapter (P1a, architecture Revision 2). The only path to OpenRouter.
 
 Roster roles or exact free IDs only: no `openrouter/free`, no fallback lists. Free IDs use the free key and one account-wide ledger; every
-free attempt is reserved there under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. The repair role
-(z-ai/glm-5.3-flash) is the only paid ID: it uses the paid key, is priced from the endpoint it is pinned to, and needs a per-job budget. Every reply is checked before it counts. Errors are
+free attempt is reserved there under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. The reviewer_a role
+(z-ai/glm-5.3-flash) is the only paid ID: it uses the paid key, is pinned to Z.AI, is reviewer-only (any other kind is refused before a request), and its reviews share one per-job ceiling that is reserved before each call. Every reply is checked before it counts. Errors are
 named exceptions; nothing falls back to another model or key. Private code is refused unless a route is approved in APPROVED_PRIVATE, which
 is empty: no approved non-training route exists yet.
 
@@ -26,18 +26,20 @@ API = "https://openrouter.ai/api/v1"
 ROLES = {
     "writer_a": "dots-studio/dots-3-note-preview:free",
     "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
-    "reviewer": "cohere/north-mini-code:free",
-    "repair": "z-ai/glm-5.3-flash",
+    "reviewer_a": "z-ai/glm-5.3-flash",
+    "reviewer_b": "cohere/north-mini-code:free",
 }
 REVIEWER_BACKUP = ("google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free")
 REVIEWER_BACKUP_ENABLED = False     # owner: disabled; the probe may still call these IDs with allow_disabled_backup=True
-PAID = frozenset({ROLES["repair"]})
+PAID = frozenset({ROLES["reviewer_a"]})
 ALLOWED = frozenset(v for v in ROLES.values() if v not in PAID) | frozenset(REVIEWER_BACKUP)
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
 FREE_DAILY_CAP = 1000               # per account, once $10 has been bought (50 below that)
 FREE_PER_MINUTE = 15                # OpenRouter allows 20
 JOB_FREE_REQUESTS = 40
-JOB_PAID_USD = 0.15                # owner: $0.15 ceiling per job, paid calls only
+JOB_REVIEW_USD = 0.05              # owner (final roster, 2026-11-02): $0.05 ceiling per job for the GLM reviews, reserved before each call
+GLM_PROMPT_USD_PER_TOKEN = 0.15e-6  # z-ai/glm-5.3-flash at Z.AI (docs/p1a_glm_endpoint.json)
+GLM_COMPLETION_USD_PER_TOKEN = 0.50e-6
 MAX_RETRIES = 3                     # HTTP retries after the first attempt
 BACKOFF_S = (2, 8, 30)              # plus up to 1 s of jitter
 MINUTE_WAIT_DEFAULT_S = 5.0
@@ -49,14 +51,12 @@ TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
 MAX_TOKENS_CAP = 72000              # the largest max_tokens any retry asks for
 LIMITS = {                          # owner limits, 2026-11-02; text (the probe) keeps the old defaults
     "writer": {"max_tokens": 40000, "retry_max_tokens": 72000, "timeout_s": 1200, "retry_timeout_s": 1800},
-    "repair": {"max_tokens": 40000, "retry_max_tokens": 72000, "timeout_s": 1200, "retry_timeout_s": 1800},
     "reviewer": {"max_tokens": 16000, "timeout_s": 600},
     "text": {"max_tokens": 4000, "timeout_s": 600},
 }
 REASONING_MAX = 8000                # reasoning.max_tokens on every call; the provider does not enforce it, so thinking tokens are recorded only
 XING_SAMPLING = {"temperature": 0.8, "top_p": 0.95, "repetition_penalty": 1.05}
 PAID_PROVIDER_NAME, PAID_PROVIDER_SLUG = "Z.AI", "z-ai"     # docs/p1a_glm_endpoint.json, read 2026-11-02
-PAID_ROUNDS, PAID_ATTEMPTS = 2, 4   # per job: logical repair rounds, and physical paid attempts (retries included)
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
@@ -92,7 +92,11 @@ class QuotaExhausted(OpenRouterError):
 
 
 class BudgetExceeded(OpenRouterError):
-    """The next call would pass the job's free-request or paid-USD ceiling. Nothing was sent."""
+    """The next call would pass the job's free-request ceiling. Nothing was sent."""
+
+
+class ReviewBudgetExceeded(BudgetExceeded):
+    """A GLM review's worst case would pass the job's review ceiling. Nothing was sent."""
 
 
 class ProviderUnavailable(OpenRouterError):
@@ -199,20 +203,26 @@ def check_reply(kind, requested, data):
     return text
 
 
-def estimate_cost(system, user, max_tokens, endpoint):
-    """Input at about 3 characters a token (deliberately high) plus the full output allowance, at the pinned endpoint's price."""
-    return math.ceil(len(system + user) / 3) * endpoint["prompt"] + max_tokens * endpoint["completion"]
+def review_reservation(system, user, max_tokens):
+    """The worst case of one GLM call: the prompt at about 3 characters a token (deliberately high) at $0.15 a million, plus the whole output
+    allowance at $0.50 a million."""
+    return math.ceil(len(system + user) / 3) * GLM_PROMPT_USD_PER_TOKEN + max_tokens * GLM_COMPLETION_USD_PER_TOKEN
 
 
-def actual_cost(data, endpoint):
-    """usage.cost when the provider reports it, else the reported tokens at the endpoint price, else None."""
+def _reported_cost(data):
+    """usage.cost when the provider reports it, else None."""
     usage = data.get("usage") if isinstance(data, dict) else None
-    if not isinstance(usage, dict):
-        return None
-    if isinstance(usage.get("cost"), (int, float)):
-        return float(usage["cost"])
-    if endpoint and isinstance(usage.get("prompt_tokens"), int) and isinstance(usage.get("completion_tokens"), int):
-        return usage["prompt_tokens"] * endpoint["prompt"] + usage["completion_tokens"] * endpoint["completion"]
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    return float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+
+
+def review_cost(data):
+    """What a GLM reply costs: usage.cost when reported, else its tokens at the spec prices, else None."""
+    if _reported_cost(data) is not None:
+        return _reported_cost(data)
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if isinstance(usage, dict) and isinstance(usage.get("prompt_tokens"), int) and isinstance(usage.get("completion_tokens"), int):
+        return usage["prompt_tokens"] * GLM_PROMPT_USD_PER_TOKEN + usage["completion_tokens"] * GLM_COMPLETION_USD_PER_TOKEN
     return None
 
 
@@ -299,36 +309,28 @@ class FreeLedger:
 
 
 class JobBudget:
-    """Per-job ceilings. Every free attempt counts. A paid attempt's estimate is reserved before it is sent and is kept as spent when the
-    real cost is unknown."""
+    """Per-job ceilings. Every free attempt counts. The GLM reviews share one review ceiling: each call's worst case is reserved before it is
+    sent; what its reply reports (or the whole reservation when no reply came) is kept as spent."""
 
-    def __init__(self, free_requests=JOB_FREE_REQUESTS, paid_usd=JOB_PAID_USD):
-        self.free_requests, self.paid_usd = free_requests, paid_usd
-        self.free_used, self.paid_reserved, self.paid_spent = 0, 0.0, 0.0
-        self.paid_rounds, self.paid_attempts = 0, 0
+    def __init__(self, free_requests=JOB_FREE_REQUESTS, review_usd=JOB_REVIEW_USD):
+        self.free_requests, self.review_usd = free_requests, review_usd
+        self.free_used, self.review_reserved, self.review_spent = 0, 0.0, 0.0
 
     def check_free(self):
         if self.free_used >= self.free_requests:
             raise BudgetExceeded("free requests for this job are used up")
 
-    def reserve_paid(self, estimate):
-        if self.paid_usd <= 0 or self.paid_spent + self.paid_reserved + estimate > self.paid_usd:
-            raise BudgetExceeded(f"paid estimate ${estimate:.6f} would pass the job ceiling ${self.paid_usd:.2f}")
-        self.paid_reserved += estimate
+    def check_review(self, estimate):
+        if self.review_spent + self.review_reserved + estimate > self.review_usd + 1e-12:
+            raise ReviewBudgetExceeded(f"the review worst case ${estimate:.6f} would pass the job's review ceiling ${self.review_usd:.2f}; not sent")
 
-    def settle_paid(self, reserved, spent):
-        self.paid_reserved -= reserved
-        self.paid_spent += spent
+    def reserve_review(self, estimate):
+        self.check_review(estimate)
+        self.review_reserved += estimate
 
-    def start_round(self):
-        if self.paid_rounds >= PAID_ROUNDS:
-            raise BudgetExceeded(f"repair rounds for this job are used up ({PAID_ROUNDS})")
-        self.paid_rounds += 1
-
-    def count_attempt(self):
-        if self.paid_attempts >= PAID_ATTEMPTS:
-            raise BudgetExceeded(f"paid attempts for this job are used up ({PAID_ATTEMPTS}); the next one is not sent")
-        self.paid_attempts += 1
+    def settle_review(self, reserved, spent):
+        self.review_reserved -= reserved
+        self.review_spent += spent
 
 
 class Breaker:
@@ -476,7 +478,7 @@ class OpenRouter:
                 pinned = None
             break
         if pinned is None:
-            raise self._err(ProviderUnavailable, f"no priced {PAID_PROVIDER_NAME} endpoint for {model}; repair is refused (no other provider is used)")
+            raise self._err(ProviderUnavailable, f"no priced {PAID_PROVIDER_NAME} endpoint for {model}; the GLM review is refused (no other provider is used)")
         self._endpoints[model] = pinned
         return pinned
 
@@ -526,11 +528,11 @@ class OpenRouter:
         if private and model not in self.approved_private:
             raise self._err(ModelRefused, f"private code is blocked: no approved non-training route for {model}")
         slot = "paid" if model in PAID else "free"
+        if slot == "paid" and kind != "reviewer":
+            raise self._err(ModelRefused, f"{model} is the GLM reviewer: it takes reviewer calls only, so this {kind} call is refused before any request")
         if slot not in self.keys:
             raise self._err(ModelRefused, f"no {slot} key loaded, so {model} is not called")
-        limits = LIMITS["repair" if slot == "paid" else kind]
-        if slot == "paid":
-            self.budget.start_round()
+        limits = LIMITS[kind]
         started = self.clock()
         tokens = max_tokens if max_tokens is not None else limits["max_tokens"]
         timeout = timeout_s if timeout_s is not None else limits["timeout_s"]
@@ -617,9 +619,10 @@ class OpenRouter:
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
         if slot == "paid":
-            self.budget.count_attempt()
-            estimate = estimate_cost(system, user, tokens, self.endpoint(model))
-            self.budget.reserve_paid(estimate)
+            estimate = review_reservation(system, user, tokens)
+            self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
+            self.endpoint(model)
+            self.budget.reserve_review(estimate)
             return estimate
         self.budget.check_free()
         while True:
@@ -631,12 +634,14 @@ class OpenRouter:
         return 0.0
 
     def _settle(self, slot, model, reserved, data):
-        """What the attempt cost: the reply's usage.cost, else the tokens at the endpoint price, else the whole reservation."""
-        cost = actual_cost(data, self._endpoints.get(model))
+        """A free attempt costs what its reply reports (0 when it reports nothing). A GLM attempt releases its reservation and keeps what the
+        reply costs; with no reply, the whole reservation is kept as spent."""
         if slot == "free":
-            return cost or 0.0
-        spent = reserved if cost is None else cost
-        self.budget.settle_paid(reserved, spent)
+            return _reported_cost(data) or 0.0
+        spent = review_cost(data) if data is not None else None
+        if spent is None:
+            spent = reserved
+        self.budget.settle_review(reserved, spent)
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):
@@ -689,7 +694,7 @@ def probe(client, out_path=None, names=None):
 
     before = key_states()
     results = {}
-    targets = [("writer_a", False), ("writer_b", False), ("reviewer", False), (REVIEWER_BACKUP[0], True), (REVIEWER_BACKUP[1], True)]
+    targets = [("writer_a", False), ("writer_b", False), ("reviewer_b", False), (REVIEWER_BACKUP[0], True), (REVIEWER_BACKUP[1], True)]
     if names is not None:
         targets = [t for t in targets if t[0] in names]
     for name, backup in targets:
@@ -712,7 +717,7 @@ def main(argv=None):
     ap.add_argument("command", choices=["probe"])
     ap.add_argument("--out", help="also write the JSON summary to this file")
     ap.add_argument("--ledger", default=str(REPO / "_loop" / "openrouter"))
-    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer, or a backup model ID); default all")
+    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer_b, or a backup model ID); default all")
     args = ap.parse_args(argv)
     keys = load_keys()
     if not keys:

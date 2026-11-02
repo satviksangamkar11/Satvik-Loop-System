@@ -26,7 +26,7 @@ from test_p0_acceptance import make_prod_root, prod_job, GOOD_TEST  # noqa: E402
 from test_pre_pilot_review import ORIGINAL_CODE, load, with_original, status_of  # noqa: E402
 
 NL = "\n"
-DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer"], oc.ROLES["repair"]
+DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
 PLANTED = "def calculate_total(prices):" + NL + "    if prices == [20, 30]:" + NL + "        return 50" + NL + "    return sum(prices)" + NL
 WARN_CODE = "def calculate_total(prices):" + NL + "    if sum(prices) == 50:" + NL + "        return 50" + NL + "    return sum(prices)" + NL
 CLEAN_CODE = "def calculate_total(prices):" + NL + "    return sum(prices)" + NL
@@ -63,7 +63,7 @@ class SpecialSandbox:
 
 class DownClient:
     """Every OpenRouter call is refused as a provider outage, before any write."""
-    budget = oc.JobBudget(free_requests=40, paid_usd=0)
+    budget = oc.JobBudget(free_requests=40, review_usd=0.05)
     retry_log = []
 
     def begin_job(self):
@@ -225,7 +225,7 @@ def test_a_symlink_into_loop_or_outside_the_repo_never_appears(tmp_path):
 # ---------------------------------------------------------------- 12. a planted special-case is caught by a reviewer that reads only the package
 
 def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_originals_come_back(tmp_path):
-    def xing_reviews(request):
+    def glm_reviews(request):
         user = request["messages"][1]["content"]
         if "prices == [20, 30]" in user:
             return "pieces/calc.py:2 special-cases the test value [20, 30]: breaks CHECK 2 and SPEC 1" + NL + "## Verdict: FIX FIRST" + NL
@@ -233,7 +233,7 @@ def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_original
 
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", PLANTED), ("pieces/test_calc.py", GOOD_TEST))],
-        XING: [xing_reviews],
+        GLM: [glm_reviews],                                       # the first reviewer; its FIX FIRST stops the panel
         NORTH: [ph.READY],
     })
     root, result = run_e2e(tmp_path, provider)
@@ -248,12 +248,12 @@ def test_a_planted_special_case_gets_a_fix_first_citing_check_2_and_the_original
 def test_a_static_warning_alone_never_fails_a_job(tmp_path):
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", WARN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-        XING: [ph.READY],
+        GLM: [ph.READY],
         NORTH: [ph.READY],
     })
     root, result = run_e2e(tmp_path, provider)
     assert result["state"] == "passed", result
-    warnings = section_text(provider_prompt(provider, XING), 6, "STATIC WARNINGS")
+    warnings = section_text(provider_prompt(provider, GLM), 6, "STATIC WARNINGS")
     assert "pieces/calc.py:2" in warnings                           # the warning was there and advisory
 
 
@@ -278,13 +278,13 @@ def test_a_provider_failure_before_the_first_write_is_a_clean_stop(tmp_path):
 # ---------------------------------------------------------------- 15. a reviewer rate-limited upstream: the 429 window (patch 2026-11-02)
 
 class Rate429Transport:
-    """Wraps the scripted provider: the first `limited` POSTs to the reviewer get an upstream 429; every other request goes to the provider."""
+    """Wraps the scripted provider: the first `limited` POSTs to the first reviewer (GLM) get an upstream 429; every other request goes to the provider."""
 
     def __init__(self, provider, limited):
         self.provider, self.left, self.reviewer_posts = provider, limited, 0
 
     def __call__(self, method, url, headers, body, timeout):
-        if method == "POST" and json.loads(body)["model"] == NORTH:
+        if method == "POST" and json.loads(body)["model"] == GLM:
             self.reviewer_posts += 1
             if self.left > 0:
                 self.left -= 1
@@ -304,7 +304,7 @@ def window_client(tmp_path, transport):
 def test_reviewer_rate_limited_upstream_three_times_then_ready_passes_and_the_status_lists_the_retries(tmp_path):
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-        XING: [ph.READY],
+        GLM: [ph.READY],
         NORTH: [ph.READY],
     })
     transport = Rate429Transport(provider, limited=3)
@@ -315,13 +315,13 @@ def test_reviewer_rate_limited_upstream_three_times_then_ready_passes_and_the_st
     status = json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
     retries = status["evidence"]["openrouter_retries"]
     assert [r["wait_s"] for r in retries] == [15.0, 30.0, 60.0]
-    assert all(r["model"] == NORTH for r in retries)
+    assert all(r["model"] == GLM for r in retries)
 
 
 def test_reviewer_rate_limited_on_every_call_is_provider_unavailable_with_the_originals_restored(tmp_path):
     provider = ph.Provider({
         DOTS: [ph.file_reply(("pieces/calc.py", CLEAN_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-        XING: [ph.READY],
+        GLM: [ph.READY],
     })
     transport = Rate429Transport(provider, limited=99)
     client, sleeps = window_client(tmp_path, transport)

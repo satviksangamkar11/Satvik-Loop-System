@@ -1,5 +1,6 @@
 """P1b production runner (2026-11-02, Revision 3): runs one production unit through p1b_routing.walk(). Every model call goes through
-openrouter_call by role (writer_a, writer_b, reviewer, repair). The sandbox runs the job's tests and the locked acceptance tests, and those
+openrouter_call by role (writer_a, writer_b, reviewer_a for GLM, reviewer_b for North). The repair step is a separate isolated call (opus_repair,
+off by default), made at most twice per job and checked like any writer reply. The sandbox runs the job's tests and the locked acceptance tests, and those
 decide. This module writes and restores the job files and records the evidence. It names no legacy model family (a static test checks it).
 
 Pre-pilot review (2026-11-02): a fresh writer never receives a previous attempt's pytest output (the output goes to the job history instead);
@@ -19,11 +20,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import openrouter_call as oc
+import opus_repair
 import p0_gates as gates
 import p1b_routing as p1b
 import sandbox_runner as sr
 
-ROLE_BY_MODEL = {p1b.DOTS: "writer_a", p1b.XING: "writer_b", p1b.NORTH: "reviewer", p1b.GLM: "repair"}
+ROLE_BY_MODEL = {p1b.DOTS: "writer_a", p1b.XING: "writer_b", p1b.NORTH: "reviewer_b", p1b.GLM: "reviewer_a"}
 PACKAGE_LIMIT = 100000              # characters: the whole review request (the owner's prompt limit for one reviewer call)
 EXCLUDED_DIRS = set(gates.NEVER_INCLUDED) | set(sr.EXCLUDED_NAMES)
 EXCLUDED_SUFFIXES = tuple(sr.EXCLUDED_SUFFIXES)
@@ -55,7 +57,7 @@ def client_for(root, job, keys=None):
     and the ledger under _loop/openrouter."""
     budget = job["budget"]
     return oc.OpenRouter(oc.load_keys() if keys is None else keys, Path(root) / "_loop" / "openrouter",
-                         budget=oc.JobBudget(free_requests=budget["free_requests"], paid_usd=budget["paid_usd"]))
+                         budget=oc.JobBudget(free_requests=budget["free_requests"], review_usd=budget["review_usd"]))
 
 
 def restore_files(root, originals):
@@ -357,11 +359,12 @@ class Production:
     """The models object walk() drives: calls through openrouter_call, writes and restores the job files, runs the sandbox."""
 
     def __init__(self, job, root, client, sandbox, *, protected, acceptance_lock, originals, parse_files, check_path, content_problem,
-                 history=None, scrub_keys=()):
+                 history=None, scrub_keys=(), repair_ask=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
         self.files, self.protected, self.acceptance_lock, self.originals = list(job["files"]), protected, acceptance_lock, originals
         self.parse_files, self.check_path, self.content_problem = parse_files, check_path, content_problem
         self.history, self.scrub_keys = history, tuple(scrub_keys)
+        self.repair_ask, self.repair_calls = repair_ask, 0     # repair_ask(prompt, raw_sink) -> reply text; the default is opus_repair.ask
         self.test_targets = sorted(set(job["tests"]) | set(job["acceptance_tests"]) | set(job.get("regression") or []))
         self.spec = (self.root / job["spec"]).read_text(encoding="utf-8")
         self.review_text = ""           # the production review prompt is built in: a job's review_prompt is never read (the legacy docs/REVIEW_PROMPT.md is never used)
@@ -377,25 +380,53 @@ class Production:
     # ---------------------------------------------------------------- model calls
 
     def call(self, model, mode, files):
+        if model == p1b.ANTHROPIC:
+            return self._repair_step()
         if mode in ("write", "repair"):
             text = self._ask(model, WRITER_SYSTEM, self._writer_user(), kind="writer")
             reply = self._parse(text)
             self._step(model, mode, f"{len(reply)} file(s) returned")
             return reply
         user = self._review_package(reask=(mode == "review-reask"))
-        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", backup=model in oc.REVIEWER_BACKUP)
+        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer")
         self._check_locked()
         self.reviewed_hashes.append(gates.combined_hash(self.root, self.files))
         lines = text.strip().splitlines()
         self._step(model, mode, lines[-1] if lines else "(empty reply)")
         return text
 
-    def _ask(self, model, system, user, kind, backup=False):
+    def _ask(self, model, system, user, kind):
         try:
-            text, _info = self.client.call(model if backup else ROLE_BY_MODEL[model], system, user, kind=kind, allow_disabled_backup=backup)
+            text, _info = self.client.call(ROLE_BY_MODEL[model], system, user, kind=kind)
+        except oc.ReviewBudgetExceeded as exc:     # the GLM review would pass the job's review ceiling: nothing was sent
+            raise p1b.BudgetStop(str(exc)) from exc
         except oc.OpenRouterError as exc:          # refused, dropped, quota, budget, account: this model is down for this job
             raise p1b.ModelFailed(str(exc)) from exc
         return text
+
+    def _repair_step(self):
+        """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
+        reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model."""
+        self.repair_calls += 1
+        number = self.repair_calls
+        prompt = WRITER_SYSTEM + "\n\n" + self._writer_user()
+
+        def keep_raw(raw):
+            if self.history is not None:
+                (self.history / f"repair_step_{number:02d}_raw.json").write_text(_scrubbed(raw, self.scrub_keys), encoding="utf-8")
+
+        ask = self.repair_ask or (lambda text, raw_sink=None: opus_repair.ask(text, raw_sink=raw_sink))
+        try:
+            text = ask(prompt, raw_sink=keep_raw)
+        except opus_repair.RepairFailed as exc:
+            self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
+            raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
+        except opus_repair.RepairBadReply as exc:
+            self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
+            raise p1b.BadReply(str(exc)) from exc
+        reply = self._parse(_scrubbed(text, self.scrub_keys))
+        self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
+        return reply
 
     def _parse(self, text):
         ok, refused = self.parse_files(text)
@@ -476,16 +507,12 @@ class Production:
             out |= {f"{rel}::{tid}" for tid in ids - seen}
         return out
 
-    def paid_fits(self):
-        b = self.client.budget
-        return b.paid_rounds < oc.PAID_ROUNDS and b.paid_attempts < oc.PAID_ATTEMPTS and b.paid_spent + b.paid_reserved < b.paid_usd
-
     def _step(self, model, mode, note):
         self.steps.append({"model": model, "mode": mode, "note": note})
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-        content_problem, scrub_keys=()):
+        content_problem, scrub_keys=(), repair_ask=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""
@@ -500,7 +527,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
                        originals)
     (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
-                        parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys)
+                        parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys, repair_ask=repair_ask)
     lineage = p1b.Lineage()
     try:
         client.set_job_deadline(job["deadline_min"] * 60)     # the unit deadline: no retry (openrouter_call) starts after it
@@ -515,8 +542,18 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     except Exception as exc:                        # any other failure: the job does not pass, its files are restored (see _finish)
         outcome = p1b.Outcome("exception", f"{type(exc).__name__}: {exc}")
     evidence["review_hashes"] = list(models.reviewed_hashes)
+    evidence["budget"] = _budget_summary(client, models)
     evidence["openrouter_retries"] = list(client.retry_log)   # every retry of the job: model, attempt, wait, error (scrubbed in _finish)
     return _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, models.evidence_output, originals)
+
+
+def _budget_summary(client, models):
+    """What the job spent of its budget: free requests used, review dollars spent, and the repair step's calls (attempts; a switched-off step
+    starts no process)."""
+    budget = client.budget
+    return {"free_requests_used": budget.free_used, "free_requests": budget.free_requests,
+            "review_usd_spent": round(budget.review_spent, 6), "review_usd": budget.review_usd,
+            "repair_calls": models.repair_calls if models is not None else 0, "repair_enabled": opus_repair.switched_on()}
 
 
 def _integrity(files, root, models, protected, acceptance_lock, evidence):
@@ -541,7 +578,7 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
                                                      encoding="utf-8")
     elif outcome.status == "integrity-mismatch":
         state, verdict, tests_passed = "integrity-mismatch", "unavailable", True
-    elif outcome.status in ("escalate", "blocked", "provider-unavailable", "deadline", "acceptance-tampered", "exception"):
+    elif outcome.status in ("escalate", "blocked", "provider-unavailable", "budget-exceeded", "deadline", "acceptance-tampered", "exception"):
         state = outcome.status
     if state != "passed":                           # nothing that did not pass stays in the checkout: keep the candidate if one was produced, then restore
         if _produced(root, job["files"], originals):

@@ -34,7 +34,7 @@ class Provider:
         self.http.append((method, url, headers))
         if method == "GET" and url.endswith("/key"):
             return 200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()
-        if method == "GET" and url.endswith("/models/" + oc.ROLES["repair"] + "/endpoints"):
+        if method == "GET" and url.endswith("/models/" + oc.ROLES["reviewer_a"] + "/endpoints"):
             return 200, {}, json.dumps(GLM_ENDPOINT).encode()
         if method == "POST" and url.endswith("/chat/completions"):
             request = json.loads(body)
@@ -45,7 +45,7 @@ class Provider:
                 raise AssertionError(f"no scripted reply left for {model}")
             item = queue.pop(0)
             text = item(request) if callable(item) else item
-            payload = {"model": model, "provider": oc.PAID_PROVIDER_NAME if model == oc.ROLES["repair"] else "Fake",
+            payload = {"model": model, "provider": oc.PAID_PROVIDER_NAME if model == oc.ROLES["reviewer_a"] else "Fake",
                        "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
                        "usage": {"prompt_tokens": 10, "completion_tokens": 10}}
             return 200, {}, json.dumps(payload).encode()
