@@ -1618,14 +1618,10 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
         out.append((path.name, res["state"]))
 
 
-def _no_calibration(job: dict, plan_dir: Path) -> list:
-    """The default calibration. No sandbox is wired for planned jobs yet, so no acceptance test has been shown to fail: it fails closed."""
-    return ["calibration needs a sandbox, and none is wired for planned jobs yet: no acceptance test was shown to fail"]
-
-
-def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner=None, calibrate=None) -> dict:
-    """A plain-language request becomes a validated planned job: one planner call (plan_job.plan), load_job on the planned job file, then
-    calibration. It starts nothing. The state is `validated`, or `awaiting-approval` with the SPEC's ASSUMED lines listed. approve_job starts it."""
+def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner=None, api=None, launcher=None, merge_queue=None, run=None) -> dict:
+    """A plain-language request becomes a planned job: one planner call (plan_job.plan; refused under the test profile, whose planner is fake),
+    then load_job on the planned job file. Calibration is NOT run here: run_job runs it before any coder call (gate 1). A job with no ASSUMED
+    lines starts at once through the launcher. A job with ASSUMED lines stops at `awaiting-approval`, and approve_job starts it after --approve."""
     root = Path(root)
     plan_dir = root / "_loop" / name / "plan"
     planned = _sibling_module("plan_job").plan(root=root, job_name=name, plan_dir=plan_dir, request=request, files=list(files),
@@ -1633,48 +1629,56 @@ def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner
     if planned["state"] != "planned":
         return {"name": name, "state": planned["state"], "reason": planned["reason"]}
     try:
-        job = load_job(plan_dir / "job.json")
+        load_job(plan_dir / "job.json")
     except ValueError as exc:
         return {"name": name, "state": "job-invalid", "reason": str(exc)}
-    problems = (calibrate or _no_calibration)(job, plan_dir)
-    if problems:
-        return {"name": name, "state": "calibration-failed", "reason": "; ".join(problems)}
     state = "awaiting-approval" if planned["assumed"] else "validated"
     _atomic_write(plan_dir / "STATE.json", json.dumps({"state": state, "job_sha256": planned["job_sha256"], "assumed": planned["assumed"]}, indent=2))
-    return {"name": name, "state": state, "reason": None, "assumed": planned["assumed"], "job": job, "job_sha256": planned["job_sha256"]}
+    if state == "awaiting-approval":
+        return {"name": name, "state": state, "reason": None, "assumed": planned["assumed"], "job_sha256": planned["job_sha256"]}
+    return _start_planned(name, root, api, launcher, merge_queue, run)
 
 
 def approve_job(name: str, root, api, launcher, merge_queue=None, run=None) -> dict:
-    """The approval gate. Starts a planned job through the launcher as a normal job, but only when its job file is unchanged since request_job
-    recorded the hash. Approval covers the ASSUMED lines that STATE.json lists."""
-    root = Path(root)
-    plan_dir = root / "_loop" / name / "plan"
+    """The --approve gate: starts an `awaiting-approval` job through the launcher as a normal job. A validated job whose start was refused
+    may be started again here too. Refused unless the job file still matches the hash request_job recorded."""
     try:
-        recorded = json.loads((plan_dir / "STATE.json").read_text(encoding="utf-8"))
+        recorded = json.loads((Path(root) / "_loop" / name / "plan" / "STATE.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"name": name, "state": "refused", "reason": "no-planned-job"}
     if recorded.get("state") not in ("validated", "awaiting-approval"):
         return {"name": name, "state": "refused", "reason": "not-validated"}
+    return _start_planned(name, Path(root), api, launcher, merge_queue, run)
+
+
+def _start_planned(name: str, root: Path, api, launcher, merge_queue, run) -> dict:
+    """Starts a planned job through the launcher once its job file matches the recorded hash. STATE.json then records the start."""
+    plan_dir = root / "_loop" / name / "plan"
+    recorded = json.loads((plan_dir / "STATE.json").read_text(encoding="utf-8"))
     if _sibling_module("plan_job").file_sha256(plan_dir / "job.json") != recorded["job_sha256"]:
         return {"name": name, "state": "refused", "reason": "job-changed"}
     job = load_job(plan_dir / "job.json")
     approved = {"job_sha256": recorded["job_sha256"], "assumed": recorded["assumed"], "approved": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     _atomic_write(plan_dir / "APPROVED.json", json.dumps(approved, indent=2))
-    return run_launched(job, root, api, launcher, merge_queue=merge_queue, run=run)
+    res = run_launched(job, root, api, launcher, merge_queue=merge_queue, run=run)
+    if res["state"] != "refused":
+        _atomic_write(plan_dir / "STATE.json", json.dumps(dict(recorded, state="started", result=res["state"]), indent=2))
+    return res
 
 
 def _planner_main(args) -> int:
     root = Path(args.root).resolve()
+    launch = _sibling_module("launch")
+    api = launch.real_api(_sibling_module("loop_home").home(loops=1, fallback=root / "_loop"))
+    launcher = launch.Launcher(root, api, budget=ledger_budget)
     if args.request is not None:
         if not args.name:
             print("--name is required with --request", file=sys.stderr)
             return 2
-        res = request_job(root, args.name, args.request, files=args.file)
-        print(json.dumps({k: v for k, v in res.items() if k != "job"}, indent=2))
-        return 0 if res["state"] in ("validated", "awaiting-approval") else 2
-    launch = _sibling_module("launch")
-    api = launch.real_api(_sibling_module("loop_home").home(loops=1, fallback=root / "_loop"))
-    res = approve_job(args.approve, root, api, launch.Launcher(root, api, budget=ledger_budget))
+        res = request_job(root, args.name, args.request, files=args.file, api=api, launcher=launcher)
+        print(json.dumps(res, indent=2, default=str))
+        return 0 if res["state"] in ("validated", "awaiting-approval", "passed") else 2
+    res = approve_job(args.approve, root, api, launcher)
     print(json.dumps(res, indent=2, default=str))
     return 0 if res["state"] == "passed" else 1
 

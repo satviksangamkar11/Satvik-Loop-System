@@ -17,6 +17,7 @@ import jsonschema
 
 import fix_loop as fl
 import p0_gates as gates
+import openrouter_call as oc
 import opus_repair as opus
 import p1b_routing as p1b
 
@@ -62,6 +63,14 @@ def claude_runner(prompt, cwd, claude_cmd, timeout_s):
 def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None, timeout_s=PLAN_TIMEOUT_S):
     """Plans one job. Returns {state, reason, job_sha256, assumed}. States: planned, planner-uncertain, planner-refused, planner-invalid,
     planner-failed. The only call is made after INTENT.json is written; a restart never makes a second call."""
+    try:                                                                  # the active roster names the planner: fake under test (no call), opus under production
+        planner_model = oc.roster_state()["ROLE_SPECS"]["planner"]["model"]
+    except oc.RosterRefused as exc:
+        return _outcome("planner-refused", str(exc))
+    if planner_model == "fake":
+        return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner=fake)")
+    if planner_model != MODEL:
+        return _outcome("planner-refused", f"the roster planner is {planner_model!r}, but this planner is {MODEL!r}")
     root, plan_dir = Path(root), Path(plan_dir)
     intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
     if intent_path.is_file():
