@@ -1,17 +1,18 @@
-"""WP3 merge queue (Revision 4): one job at a time into main, under the merge lease (key "merge").
+"""WP3 merge queue (Revision 4): one job at a time into main, under home/merge.lock and the lease "merge".
 
 Per job: fetch origin/main, rebase the job branch onto it (a conflict ends merge-conflict, the worktree stays for the owner), run the
 sandbox suite (every acceptance test, then the full suite), and push only if origin/main is still the commit that was tested. If main
-moved, start again from the rebase, at most MAX_REPEATS times. On success: record, release claims and lease, remove the worktree.
+moved, test again from the new main. At most MAX_ATTEMPTS tries in all (the first try plus 2 retries), then main-moved.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+import loop_home
 from launch import git
 
 MERGE_KEY = "merge"
-MAX_REPEATS = 3               # after the first try, so at most MAX_REPEATS + 1 tests of one job
+MAX_ATTEMPTS = 3              # the first try plus 2 retries
 
 
 def default_suite(wt):
@@ -44,20 +45,21 @@ class MergeQueue:
         self.pending.append((job_id, gen))
 
     def drain(self):
-        """Merge every pending job in submit order, under the merge lease. Returns [(job_id, state)]."""
+        """Merge every pending job in submit order. Returns [(job_id, state)]. Holds home/merge.lock for the whole drain."""
         out = []
-        merge_gen = self.api.lease.acquire(MERGE_KEY)
-        try:
-            while self.pending:
-                job_id, gen = self.pending.pop(0)
-                out.append((job_id, self._merge(job_id, gen, merge_gen)))
-        finally:
-            self.api.lease.release(MERGE_KEY, merge_gen)
+        with loop_home.merge_lock(self.api.home):
+            merge_gen = self.api.lease.acquire(MERGE_KEY)
+            try:
+                while self.pending:
+                    job_id, gen = self.pending.pop(0)
+                    out.append((job_id, self._merge(job_id, gen, merge_gen)))
+            finally:
+                self.api.lease.release(MERGE_KEY, merge_gen)
         return out
 
     def _merge(self, job_id, gen, merge_gen):
-        wt = Path(self.api.home()) / "wt" / job_id
-        for attempt in range(MAX_REPEATS + 1):
+        wt = self.api.home / "wt" / job_id
+        for attempt in range(MAX_ATTEMPTS):
             self.api.lease.beat(MERGE_KEY, merge_gen)
             self.api.lease.beat(job_id, gen)
             base = self._fetch_main()
