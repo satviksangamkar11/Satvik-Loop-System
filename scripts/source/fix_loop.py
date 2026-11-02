@@ -1618,15 +1618,84 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
         out.append((path.name, res["state"]))
 
 
+def _no_calibration(job: dict, plan_dir: Path) -> list:
+    """The default calibration. No sandbox is wired for planned jobs yet, so no acceptance test has been shown to fail: it fails closed."""
+    return ["calibration needs a sandbox, and none is wired for planned jobs yet: no acceptance test was shown to fail"]
+
+
+def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner=None, calibrate=None) -> dict:
+    """A plain-language request becomes a validated planned job: one planner call (plan_job.plan), load_job on the planned job file, then
+    calibration. It starts nothing. The state is `validated`, or `awaiting-approval` with the SPEC's ASSUMED lines listed. approve_job starts it."""
+    root = Path(root)
+    plan_dir = root / "_loop" / name / "plan"
+    planned = _sibling_module("plan_job").plan(root=root, job_name=name, plan_dir=plan_dir, request=request, files=list(files),
+                                               runner=runner, claude_cmd=claude_cmd)
+    if planned["state"] != "planned":
+        return {"name": name, "state": planned["state"], "reason": planned["reason"]}
+    try:
+        job = load_job(plan_dir / "job.json")
+    except ValueError as exc:
+        return {"name": name, "state": "job-invalid", "reason": str(exc)}
+    problems = (calibrate or _no_calibration)(job, plan_dir)
+    if problems:
+        return {"name": name, "state": "calibration-failed", "reason": "; ".join(problems)}
+    state = "awaiting-approval" if planned["assumed"] else "validated"
+    _atomic_write(plan_dir / "STATE.json", json.dumps({"state": state, "job_sha256": planned["job_sha256"], "assumed": planned["assumed"]}, indent=2))
+    return {"name": name, "state": state, "reason": None, "assumed": planned["assumed"], "job": job, "job_sha256": planned["job_sha256"]}
+
+
+def approve_job(name: str, root, api, launcher, merge_queue=None, run=None) -> dict:
+    """The approval gate. Starts a planned job through the launcher as a normal job, but only when its job file is unchanged since request_job
+    recorded the hash. Approval covers the ASSUMED lines that STATE.json lists."""
+    root = Path(root)
+    plan_dir = root / "_loop" / name / "plan"
+    try:
+        recorded = json.loads((plan_dir / "STATE.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"name": name, "state": "refused", "reason": "no-planned-job"}
+    if recorded.get("state") not in ("validated", "awaiting-approval"):
+        return {"name": name, "state": "refused", "reason": "not-validated"}
+    if _sibling_module("plan_job").file_sha256(plan_dir / "job.json") != recorded["job_sha256"]:
+        return {"name": name, "state": "refused", "reason": "job-changed"}
+    job = load_job(plan_dir / "job.json")
+    approved = {"job_sha256": recorded["job_sha256"], "assumed": recorded["assumed"], "approved": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    _atomic_write(plan_dir / "APPROVED.json", json.dumps(approved, indent=2))
+    return run_launched(job, root, api, launcher, merge_queue=merge_queue, run=run)
+
+
+def _planner_main(args) -> int:
+    root = Path(args.root).resolve()
+    if args.request is not None:
+        if not args.name:
+            print("--name is required with --request", file=sys.stderr)
+            return 2
+        res = request_job(root, args.name, args.request, files=args.file)
+        print(json.dumps({k: v for k, v in res.items() if k != "job"}, indent=2))
+        return 0 if res["state"] in ("validated", "awaiting-approval") else 2
+    launch = _sibling_module("launch")
+    api = launch.real_api(_sibling_module("loop_home").home(loops=1, fallback=root / "_loop"))
+    res = approve_job(args.approve, root, api, launch.Launcher(root, api, budget=ledger_budget))
+    print(json.dumps(res, indent=2, default=str))
+    return 0 if res["state"] == "passed" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--job", required=True)
+    parser.add_argument("--job")
+    parser.add_argument("--request", help="a plain-language request: plans one job (one planner call) and stops for approval")
+    parser.add_argument("--name", help="the job name for --request")
+    parser.add_argument("--file", action="append", default=[], help="a repo file the planner may read (repeatable)")
+    parser.add_argument("--approve", metavar="JOB", help="start a planned job through the launcher")
     parser.add_argument("--root", default=".")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--solo", action="store_true", help="run without the launcher (no file claims, no shared key ledger): one job only")
     parser.add_argument("--legacy", action="store_true", help="P0: allow a job without profile=production (no locked acceptance tests, no sandbox)")
     args = parser.parse_args(argv)
+    if args.request is not None or args.approve:
+        return _planner_main(args)
+    if not args.job:
+        parser.error("--job, --request or --approve is required")
 
     root = Path(args.root).resolve()
     try:
