@@ -81,7 +81,8 @@ def test_daily_cap_refuses_before_anything_is_sent(home, tmp_path, monkeypatch):
     assert fake.posts == 0
 
 
-def test_paid_send_whose_pace_wait_passes_the_deadline_is_refused_before_the_post(home, tmp_path, monkeypatch):
+def test_paid_send_whose_pace_wait_passes_the_deadline_is_refused_before_the_post(home, tmp_path, monkeypatch, profile):
+    profile("production")                                 # the paid reviewer is GLM only in the production roster
     monkeypatch.setattr(sl, "PER_MINUTE", 1)
     sl.reserve_free("step3-filler", 1)                    # one request sent this minute: the account pace is full
     endpoints = {"data": {"endpoints": [{"tag": "z-ai/fp8", "provider_name": "Z.AI",

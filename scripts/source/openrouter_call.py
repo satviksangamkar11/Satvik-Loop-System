@@ -748,7 +748,7 @@ class OpenRouter:
         sl = _shared_limits()
         job_id, gen = self.shared
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, PRICING[model])
+            estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
             self.budget.check_review(estimate)
             self.endpoint(model)
             self.budget.reserve_review(estimate)

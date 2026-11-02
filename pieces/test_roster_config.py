@@ -31,7 +31,9 @@ MODEL_ID_EXCEPTIONS = {
     "scripts/source/review_run.py": "remove in follow-up: the two nemotron IDs are still literals",
     "scripts/source/fix_loop.py": "remove in follow-up: the legacy loop (outside the job schema) still has literal IDs; openai/v1 is a URL path",
     "scripts/source/opus_repair.py": "remove in follow-up: MODEL is the literal \"opus\" and should read the roster's repair role",
-    "scripts/source/plan_job.py": "remove in follow-up: the planner is the literal \"opus\" and should read the roster's planner role",
+    "scripts/source/shared_limits.py": "remove in follow-up: the gate table names the Opus slot as the literal \"opus\" (a gate name, not a model ID)",
+    "scripts/source/plan_job.py":"remove in follow-up: the planner is the literal \"opus\" and should read the roster's planner role",
+    "scripts/source/shared_limits.py": "remove in follow-up: the gate table names the Opus slot as the literal \"opus\" (a gate name, not a model ID)",
 }
 # Model IDs written out in any family's own form: a vendor path, or a family name with a version or a tier.
 FAMILY_ID = re.compile(
