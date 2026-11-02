@@ -1015,3 +1015,49 @@ def test_a_role_without_max_tokens_cap_is_refused_when_the_roster_loads(tmp_path
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(oc.RosterRefused, match="settings must hold"):
         oc.load_profile("test", path=path)
+
+
+# ---- 9. every request is kept (2026-11-03, Track G2): usage, finish_reason, seconds, failed or not
+
+def test_every_request_is_kept_with_its_usage_finish_reason_and_seconds(tmp_path):
+    fake, clock = Fake(), Clock()
+
+    def slow(method, url, headers, body, timeout):
+        clock.now += 2.5
+        return fake(method, url, headers, body, timeout)
+
+    usage = {"prompt_tokens": 12, "completion_tokens": 7, "completion_tokens_details": {"reasoning_tokens": 3}}
+    fake.on("/chat/completions", ok("hi", usage=usage))
+    built = oc.OpenRouter(KEYS, tmp_path / "ledger", transport=slow, clock=clock.time, sleep=clock.sleep, rand=lambda: 0.0)
+    built.call("writer_a", "s", "u")
+    assert built.requests == [{"model": DOTS, "status": 200, "failed": False, "seconds": 2.5, "finish_reason": "stop",
+                               "usage": {"prompt_tokens": 12, "completion_tokens": 7}, "reasoning_tokens": 3}]
+
+
+def test_a_failed_request_is_kept_as_a_request_too(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", fail(503, "upstream down"), ok("hi"))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "s", "u")
+    assert [r["status"] for r in built.requests] == [503, 200]
+    assert [r["failed"] for r in built.requests] == [True, False]
+
+
+def test_a_reply_with_no_message_text_keeps_its_finish_reason_usage_keys_and_reasoning_lengths_but_no_text(tmp_path):
+    fake = Fake()
+
+    def no_text(request):
+        payload = {"model": request["model"], "provider": "Z.AI", "usage": {"prompt_tokens": 9, "completion_tokens": 4, "completion_tokens_details": {"reasoning_tokens": 4}},
+                   "choices": [{"index": 0, "finish_reason": "stop",
+                                "message": {"role": "assistant", "reasoning": "thinking!", "reasoning_content": "more", FREE_KEY: "x"}}]}
+        return 200, {}, json.dumps(payload).encode()
+
+    fake.on("/chat/completions", no_text)
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ReplyRejected):
+        built.call("writer_a", "s", "u")
+    facts = built.failed_attempts[0]["facts"]
+    assert facts["finish_reason"] == "stop" and facts["usage"] == {"prompt_tokens": 9, "completion_tokens": 4}
+    assert sorted(facts["message_keys"]) == ["[REDACTED]", "reasoning", "reasoning_content", "role"]
+    assert facts["reasoning_len"] == len("thinking!") and facts["reasoning_content_len"] == len("more")
+    assert "thinking!" not in json.dumps(built.failed_attempts[0]) and FREE_KEY not in json.dumps(built.failed_attempts[0])

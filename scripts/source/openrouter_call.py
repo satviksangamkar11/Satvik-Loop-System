@@ -270,6 +270,30 @@ def parse_response(status, raw):
     return status, data, text[:FAILURE_CHARS]
 
 
+def _length(value):
+    return len(value) if isinstance(value, (str, list, dict)) else None
+
+
+def reply_facts(data, secrets=()):
+    """What a reply says about itself, never its text: finish_reason, the integer usage fields and the reasoning tokens. A reply with no
+    message text (choices[0].message.content is not a string) also keeps the keys of that message (redacted) and the lengths of its reasoning
+    and reasoning_content fields. {} when there is no reply object."""
+    if not isinstance(data, dict):
+        return {}
+    choices = data.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    facts = {"finish_reason": choice.get("finish_reason"), "usage": {k: v for k, v in usage.items() if isinstance(v, int)},
+             "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details.get("reasoning_tokens"), int) else None}
+    if not isinstance(message.get("content"), str):
+        facts["message_keys"] = sorted(redact(str(k), secrets) for k in message)
+        facts["reasoning_len"] = _length(message.get("reasoning"))
+        facts["reasoning_content_len"] = _length(message.get("reasoning_content"))
+    return facts
+
+
 def classify_429(message):
     """Which limit a 429 names. Only a message that names the day is the daily limit; anything unclear is treated as a provider error."""
     text = message.lower()
@@ -511,7 +535,8 @@ class OpenRouter:
         self.clock, self.sleep, self.rand = clock, sleep, rand
         self.approved_private = frozenset(approved_private)
         self._endpoints = {}
-        self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 500 chars of its message
+        self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 2000 chars of its message, reply_facts
+        self.requests = []                  # every request sent, failed or not: model, status, failed, seconds, reply_facts (production writes each as call_NN.json)
         self.retry_log = []                 # every retry: model, the attempt it starts, the wait in seconds, the error (scrubbed); the job's status keeps it
         self.deadline_at = None             # the unit deadline on this client's clock; no retry may start after it (set_job_deadline)
         self.shared = None                  # (job_id, generation) once set_job puts this client on the account ledger (package E)
@@ -560,9 +585,17 @@ class OpenRouter:
         self._log_retry(model, attempt, seconds, message)
         self.sleep(seconds)
 
-    def _note(self, model, status, message):
-        """Keeps one failed attempt: its raw HTTP status (None for a network error) and its message, redacted, cut to FAILURE_CHARS."""
-        self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:FAILURE_CHARS]})
+    def _keep_request(self, model, status, seconds, data=None):
+        """Keeps one request the client sent, failed or not: its raw HTTP status (None for a network error), its seconds, and reply_facts."""
+        self.requests.append({"model": model, "status": status, "failed": False, "seconds": round(float(seconds), 3), **reply_facts(data, self._secrets)})
+
+    def _note(self, model, status, message, data=None, request=True):
+        """Keeps one failed attempt: its raw HTTP status (None for a network error), its message (redacted, cut to FAILURE_CHARS) and reply_facts.
+        A chat attempt comes right after its request (_keep_request), which it marks failed; the endpoint price read is no chat request (request=False)."""
+        self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:FAILURE_CHARS],
+                                     "facts": reply_facts(data, self._secrets)})
+        if request:
+            self.requests[-1]["failed"] = True
 
     def _last_failures(self, model):
         """The last BREAKER_LIMIT raw failures of a model, for the error that drops it."""
@@ -586,7 +619,7 @@ class OpenRouter:
         body = data.get("data") if isinstance(data, dict) else None
         endpoints = body.get("endpoints", []) if isinstance(body, dict) else []
         if status != 200 or not isinstance(endpoints, list):
-            self._note(model, status, message)
+            self._note(model, status, message, request=False)
             raise self._err(ProviderUnavailable, f"endpoint prices for {model} unavailable: HTTP {status} {message[:200]}")
         pinned = None
         for ep in endpoints:
@@ -671,9 +704,11 @@ class OpenRouter:
                                 f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row; last: {self._last_failures(model)}")
             attempts += 1
             reserved = self._reserve(model, slot, system, user, tokens)
+            sent = self.clock()
             try:
                 status, headers, raw = self._send(model, slot, system, user, tokens, private, timeout)
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
+                self._keep_request(model, None, self.clock() - sent)
                 self._note(model, None, f"{type(exc).__name__}: {exc}")
                 self.breaker.failed(model)
                 self._settle(slot, model, reserved, None)
@@ -682,6 +717,7 @@ class OpenRouter:
                 continue
             http_status = status                                  # the raw HTTP status; parse_response may replace it with a body error code
             status, data, message = parse_response(status, raw)
+            self._keep_request(model, http_status, self.clock() - sent, data)
             spent = self._settle(slot, model, reserved, data)
             if status == 200:
                 if data is None:
@@ -689,24 +725,24 @@ class OpenRouter:
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
                 pin_name = roster_state()["PINS"][model]["name"] if slot == "paid" else None
                 if slot == "paid" and data.get("provider") != pin_name:
-                    self._note(model, 200, f"reply came from provider {data.get('provider')!r}")
+                    self._note(model, 200, f"reply came from provider {data.get('provider')!r}", data)
                     self.breaker.failed(model)
                     raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {pin_name!r}")
                 try:
                     text = check_reply(kind, model, data)
                 except _Truncated as exc:
-                    self._note(model, 200, str(exc))
+                    self._note(model, 200, str(exc), data)
                     if truncations == TRUNCATION_RETRIES or slot == "paid":
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens}")
                     truncations += 1
                     tokens = retry.get("retry_max_tokens") or min(tokens * 2, settings["max_tokens_cap"])
                     continue
                 except _Mismatch as exc:
-                    self._note(model, 200, str(exc))
+                    self._note(model, 200, str(exc), data)
                     self.breaker.failed(model)
                     raise self._err(ProviderUnavailable, f"{model}: {exc}")
                 except ReplyRejected as exc:
-                    self._note(model, 200, str(exc))
+                    self._note(model, 200, str(exc), data)
                     raise self._err(ReplyRejected, f"{model}: {exc}")
                 self.breaker.ok(model)
                 return text, self._info(model, data, spent, attempts, tokens, started)

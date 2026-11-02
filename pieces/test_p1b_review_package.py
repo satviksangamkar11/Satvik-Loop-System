@@ -66,6 +66,7 @@ class DownClient:
     budget = oc.JobBudget(free_requests=40, review_usd=0.05)
     retry_log = []
     failed_attempts = []
+    requests = []
 
     def begin_job(self):
         return None
