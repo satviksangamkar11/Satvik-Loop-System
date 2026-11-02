@@ -28,9 +28,11 @@ GLM_PAID = "z-ai/glm-5.3-flash"
 REMOVED = ("deepseek/deepseek-v4.1-flash-1017", "z-ai/glm-5.3-flash:free", "qwen/qwen3.8-27b:free", "thinkingmachines/inkling-small:free")
 WRITER_OK = "FILE: pieces/calc.py\n```python\nx = 1\n```\n"
 REVIEW_OK = "Looks fine.\n## Verdict: READY"
+ZAI_PRICE = {"prompt": 0.00000015, "completion": 0.0000005}   # docs/p1a_glm_endpoint.json, read 2026-11-02
+# The cheaper Relace entry is listed first on purpose: the pin must ignore it (cheapest-endpoint logic is removed).
 ENDPOINTS = {"data": {"endpoints": [
-    {"tag": "deepseek/fp8", "provider_name": "DeepSeek", "pricing": {"prompt": "0.0000002", "completion": "0.0000004"}},
-    {"tag": "novita/fp8", "provider_name": "Novita", "pricing": {"prompt": "0.0000003", "completion": "0.0000009"}},
+    {"tag": "relace/fp4", "provider_name": "Relace", "pricing": {"prompt": "0.0000000285", "completion": "0.0000000923"}},
+    {"tag": "z-ai/fp8", "provider_name": "Z.AI", "pricing": {"prompt": "0.00000015", "completion": "0.0000005"}},
 ]}}
 
 
@@ -77,9 +79,9 @@ class Fake:
         return [c for c in self.calls if c["method"] == "POST"]
 
 
-def ok(text, finish="stop", usage=None, model=None):
+def ok(text, finish="stop", usage=None, model=None, provider="Z.AI"):
     def build(request):
-        payload = {"id": "gen-1", "model": model or request["model"], "provider": "Fake",
+        payload = {"id": "gen-1", "model": model or request["model"], "provider": provider,
                    "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": finish}],
                    "usage": usage or {"prompt_tokens": 10, "completion_tokens": 5}}
         return 200, {}, json.dumps(payload).encode()
@@ -227,14 +229,14 @@ def test_reviewer_accepts_ready_or_fix_first(tmp_path, verdict):
     assert built.call("reviewer", "system", "user", kind="reviewer")[0].endswith(verdict)
 
 
-def test_truncated_reply_is_retried_once_with_double_max_tokens(tmp_path):
+def test_truncated_reply_is_retried_once_at_the_retry_limit(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", ok(WRITER_OK[:10], finish="length"), ok(WRITER_OK))
     built, _ = client(tmp_path, fake)
     text, info = built.call("writer_a", "system", "user", kind="writer", max_tokens=1000)
     posts = fake.posts()
     assert text == WRITER_OK and info["attempts"] == 2
-    assert [p["body"]["max_tokens"] for p in posts] == [1000, 2000]
+    assert [p["body"]["max_tokens"] for p in posts] == [1000, 72000]
 
 
 def test_truncated_twice_is_rejected(tmp_path):
@@ -450,15 +452,15 @@ def paid_fake(reply):
     return fake
 
 
-def test_repair_uses_the_paid_key_pinned_to_the_cheapest_endpoint(tmp_path):
+def test_repair_is_pinned_to_z_ai_even_when_a_cheaper_endpoint_exists(tmp_path):
     fake = paid_fake(ok("hi", usage={"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.00005}))
     built, _ = client(tmp_path, fake)
     _, info = built.call("repair", "system", "user", max_tokens=500)
     post = fake.posts()[0]
     assert post["headers"]["Authorization"] == "Bearer " + PAID_KEY
     assert post["body"]["model"] == GLM_PAID
-    assert post["body"]["provider"] == {"order": ["deepseek"], "allow_fallbacks": False}
-    assert info["endpoint"] == "deepseek" and info["cost_usd"] == 0.00005
+    assert post["body"]["provider"] == {"order": ["z-ai"], "allow_fallbacks": False}
+    assert info["endpoint"] == "z-ai" and info["provider"] == "Z.AI" and info["cost_usd"] == 0.00005
     assert built.budget.paid_spent == pytest.approx(0.00005) and built.budget.paid_reserved == pytest.approx(0.0)
 
 
@@ -472,7 +474,7 @@ def test_repair_budget_is_reserved_before_the_request_is_sent(tmp_path):
     fake = paid_fake(check)
     built, _ = client(tmp_path, fake)
     built.call("repair", "system", "user", max_tokens=500)
-    expected = oc.estimate_cost("system", "user", 500, {"prompt": 0.0000002, "completion": 0.0000004})
+    expected = oc.estimate_cost("system", "user", 500, ZAI_PRICE)
     assert seen["reserved"] == pytest.approx(expected)
 
 
@@ -480,7 +482,7 @@ def test_cost_falls_back_to_tokens_at_the_endpoint_price(tmp_path):
     fake = paid_fake(ok("hi", usage={"prompt_tokens": 100, "completion_tokens": 20}))
     built, _ = client(tmp_path, fake)
     built.call("repair", "system", "user")
-    assert built.budget.paid_spent == pytest.approx(100 * 0.0000002 + 20 * 0.0000004)
+    assert built.budget.paid_spent == pytest.approx(100 * ZAI_PRICE["prompt"] + 20 * ZAI_PRICE["completion"])
 
 
 def test_a_failed_paid_attempt_keeps_its_estimate_as_spent(tmp_path):
@@ -488,8 +490,8 @@ def test_a_failed_paid_attempt_keeps_its_estimate_as_spent(tmp_path):
     fake.on("/chat/completions", ok("hi", usage={"prompt_tokens": 1, "completion_tokens": 1}))
     built, _ = client(tmp_path, fake)
     built.call("repair", "system", "user", max_tokens=500)
-    first = oc.estimate_cost("system", "user", 500, {"prompt": 0.0000002, "completion": 0.0000004})
-    assert built.budget.paid_spent == pytest.approx(first + 1 * 0.0000002 + 1 * 0.0000004)
+    first = oc.estimate_cost("system", "user", 500, ZAI_PRICE)
+    assert built.budget.paid_spent == pytest.approx(first + 1 * ZAI_PRICE["prompt"] + 1 * ZAI_PRICE["completion"])
 
 
 def test_paid_estimate_over_the_job_ceiling_sends_nothing(tmp_path):
@@ -508,11 +510,11 @@ def test_zero_paid_budget_authorizes_no_paid_call(tmp_path):
     assert fake.posts() == []
 
 
-def test_repair_without_a_live_price_is_refused(tmp_path):
+def test_repair_without_a_z_ai_endpoint_is_refused(tmp_path):
     fake = Fake()
-    fake.on("/endpoints", (200, {}, json.dumps({"data": {"endpoints": []}}).encode()))
+    fake.on("/endpoints", (200, {}, json.dumps({"data": {"endpoints": [ENDPOINTS["data"]["endpoints"][0]]}}).encode()))
     built, _ = client(tmp_path, fake)
-    with pytest.raises(oc.ProviderUnavailable, match="no priced endpoint"):
+    with pytest.raises(oc.ProviderUnavailable, match="Z.AI"):
         built.call("repair", "system", "user")
     assert fake.posts() == []
 
@@ -547,7 +549,7 @@ def test_402_is_account_blocked_with_no_retry(tmp_path):
     assert len(fake.posts()) == 1 and clock.slept == []
 
 
-@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("status", [401])
 def test_rejected_key_is_account_blocked(tmp_path, status):
     fake = Fake()
     fake.on("/chat/completions", fail(status, "no"))
@@ -613,3 +615,200 @@ def test_probe_makes_one_free_call_per_probe_model_and_never_calls_repair(tmp_pa
     assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer", GEMMA31, GEMMA26}
     assert all(p["ok"] for p in summary["probes"].values())
     assert FREE_KEY not in out.read_text(encoding="utf-8") and PAID_KEY not in out.read_text(encoding="utf-8")
+
+
+# ---- 9. P1a.2: owner limits, reasoning cap, sampling, reasoning tokens
+
+def test_writer_defaults_are_the_owner_limits(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="writer")
+    post = fake.posts()[0]
+    assert post["body"]["max_tokens"] == 40000 and post["timeout"] == 1200
+
+
+def test_reviewer_defaults_are_the_owner_limits(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(REVIEW_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("reviewer", "system", "user", kind="reviewer")
+    post = fake.posts()[0]
+    assert post["body"]["max_tokens"] == 16000 and post["timeout"] == 600
+
+
+def test_repair_defaults_are_the_owner_limits(tmp_path):
+    fake = paid_fake(ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("repair", "system", "user", kind="writer")
+    post = fake.posts()[0]
+    assert post["body"]["max_tokens"] == 40000 and post["timeout"] == 1200
+
+
+def test_retry_after_truncation_uses_the_retry_limits(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK[:10], finish="length"), ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="writer")
+    posts = fake.posts()
+    assert [p["body"]["max_tokens"] for p in posts] == [40000, 72000]
+    assert [p["timeout"] for p in posts] == [1200, 1800]
+
+
+def test_every_request_carries_the_reasoning_cap(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK), ok(REVIEW_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="writer")
+    built.call("reviewer", "system", "user", kind="reviewer")
+    assert all(p["body"]["reasoning"] == {"max_tokens": 8000} for p in fake.posts())
+
+
+def test_xing_uses_its_sampling_settings_and_the_others_do_not(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK), ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_b", "system", "user", kind="writer")
+    built.call("writer_a", "system", "user", kind="writer")
+    xing, dots = fake.posts()[0]["body"], fake.posts()[1]["body"]
+    assert (xing["temperature"], xing["top_p"], xing["repetition_penalty"]) == (0.8, 0.95, 1.05)
+    assert dots["temperature"] == 0.1 and "top_p" not in dots and "repetition_penalty" not in dots
+
+
+def test_reasoning_tokens_are_recorded_and_a_thinking_overrun_is_not_rejected(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK, usage={"prompt_tokens": 10, "completion_tokens": 9100,
+                                                       "completion_tokens_details": {"reasoning_tokens": 9000}}))
+    built, _ = client(tmp_path, fake)
+    text, info = built.call("writer_a", "system", "user", kind="writer")
+    assert text == WRITER_OK and info["reasoning_tokens"] == 9000
+
+
+def test_reasoning_tokens_are_none_when_the_provider_does_not_report_them(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    assert built.call("writer_a", "system", "user", kind="writer")[1]["reasoning_tokens"] is None
+
+
+# ---- 10. P1a.3: GLM pinned to Z.AI, wrong provider refused
+
+def test_reply_from_another_provider_is_unavailable_and_its_spend_counts(tmp_path):
+    fake = paid_fake(ok("hi", provider="Relace", usage={"prompt_tokens": 100, "completion_tokens": 20}))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="provider"):
+        built.call("repair", "system", "user", max_tokens=500)
+    assert built.budget.paid_spent == pytest.approx(100 * ZAI_PRICE["prompt"] + 20 * ZAI_PRICE["completion"])
+    assert built.budget.paid_reserved == pytest.approx(0.0) and built.breaker.streak[GLM_PAID] == 1
+
+
+def test_wrong_provider_reply_is_never_returned_as_an_answer(tmp_path):
+    fake = paid_fake(ok("hi", provider="Relace"))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable):
+        built.call("repair", "system", "user", max_tokens=500)
+    assert len(fake.posts()) == 1
+
+
+# ---- 11. P1a.4: paid accounting, rounds, attempts, ceiling
+
+def test_job_paid_ceiling_is_fifteen_cents():
+    assert oc.JOB_PAID_USD == 0.15 and oc.JobBudget().paid_usd == 0.15
+
+
+def test_repair_allows_two_logical_rounds_per_job(tmp_path):
+    fake = paid_fake(ok(WRITER_OK))
+    fake.on("/chat/completions", ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("repair", "system", "user", kind="writer")
+    built.call("repair", "system", "user", kind="writer")
+    with pytest.raises(oc.BudgetExceeded, match="rounds"):
+        built.call("repair", "system", "user", kind="writer")
+    assert len(fake.posts()) == 2
+
+
+def test_fifth_physical_paid_attempt_is_refused_and_retries_count(tmp_path):
+    limit = fail(429, "Rate limit exceeded: free-models-per-min", {"retry-after": "1"})
+    fake = paid_fake(limit)
+    fake.on("/chat/completions", limit, limit, limit)
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable, match="gave up after 4 attempts"):
+        built.call("repair", "system", "user")
+    assert len(fake.posts()) == 4
+    with pytest.raises(oc.BudgetExceeded, match="attempts"):
+        built.call("repair", "system", "user")
+    assert len(fake.posts()) == 4
+
+
+def test_reservation_over_the_ceiling_is_refused_before_sending(tmp_path):
+    fake = paid_fake(ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.BudgetExceeded):
+        built.call("repair", "system", "x" * 4_000_000, kind="writer")
+    assert fake.posts() == []
+
+
+# ---- 12. P1a.5: key separation
+
+def test_free_roles_use_the_free_key_and_repair_uses_the_paid_key_when_both_are_loaded(tmp_path):
+    fake = paid_fake(ok(WRITER_OK))
+    fake.on("/chat/completions", ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="writer")
+    built.call("repair", "system", "user", kind="writer")
+    assert [p["headers"]["Authorization"] for p in fake.posts()] == ["Bearer " + FREE_KEY, "Bearer " + PAID_KEY]
+
+
+# ---- 13. P1a.6: key snapshot before each job, quota rule
+
+def test_begin_job_saves_the_full_key_json_and_uses_the_provider_quota(tmp_path):
+    body = {"data": {"is_free_tier": False, "limit": 2, "free_model_daily_requests": {"used": 9, "limit": 1000, "remaining": 991}}}
+    fake = Fake()
+    fake.on("/key", (200, {}, json.dumps(body).encode()))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = built.begin_job()
+    saved = list((tmp_path / "ledger" / "key_snapshots").glob("key_snapshot_free_*.json"))
+    assert len(saved) == 1 and json.loads(saved[0].read_text(encoding="utf-8")) == body
+    ledger = json.loads((tmp_path / "ledger" / "openrouter_free_ledger.json").read_text(encoding="utf-8"))
+    assert ledger["snapshot"] == 991 and built.ledger.daily_cap == 1000
+    assert summary["free"]["quota"] == "provider"
+
+
+def test_without_a_quota_field_a_paid_account_uses_the_local_cap_of_1000(tmp_path):
+    fake = Fake()
+    fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = built.begin_job()
+    assert built.ledger.daily_cap == 1000 and summary["free"]["quota"] == "local"
+    assert "free_model_daily_requests absent" in summary["free"]["note"]
+
+
+def test_without_a_quota_field_a_free_tier_account_uses_the_local_cap_of_50(tmp_path):
+    fake = Fake()
+    fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": True}}).encode()))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    built.begin_job()
+    assert built.ledger.daily_cap == 50
+
+
+def test_begin_job_saves_the_paid_key_state_without_touching_the_free_ledger(tmp_path):
+    fake = Fake()
+    fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()))
+    built, _ = client(tmp_path, fake, keys={"paid": PAID_KEY})
+    built.begin_job()
+    assert list((tmp_path / "ledger" / "key_snapshots").glob("key_snapshot_paid_*.json"))
+    assert not (tmp_path / "ledger" / "openrouter_free_ledger.json").exists()
+
+
+# ---- 14. P1a.7: 403 is a model refusal, not an account block
+
+def test_403_is_a_model_refusal_not_an_account_block_and_the_other_roles_still_work(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", fail(403, "model refused"), ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ModelDenied, match="403"):
+        built.call("writer_a", "system", "user", kind="writer")
+    assert not issubclass(oc.ModelDenied, oc.AccountBlocked) and len(fake.posts()) == 1
+    assert built.call("writer_b", "system", "user", kind="writer")[1]["model"] == XING
+    with pytest.raises(oc.ProviderUnavailable, match="dropped"):
+        built.call("writer_a", "system", "user", kind="writer")

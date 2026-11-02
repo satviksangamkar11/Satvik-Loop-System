@@ -38,3 +38,13 @@ def test_ordinary_names_pass(name):
 def test_container_probe_runs_the_same_rule():
     assert sr._PROBE.startswith(sr.CREDENTIAL_RULE)
     assert "if credential_like(k):" in sr._PROBE
+
+
+@pytest.mark.parametrize("name", ["MY_KEY", "KEYRING", "KEY", "GPG_KEY_PASSPHRASE", "GPG_KEY2", "gpg_key_backup", "KEY_GPG"])
+def test_any_name_containing_key_is_refused_except_the_exact_gpg_key(name):
+    assert credential_like()(name)
+
+
+def test_gpg_key_exemption_is_by_exact_name_only():
+    assert sr.BENIGN_KEY_NAMES == ("GPG_KEY",)
+    assert not credential_like()("GPG_KEY") and credential_like()("GPG_KEY2")

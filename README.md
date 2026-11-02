@@ -108,7 +108,7 @@ The launcher accepts only `nemotron` or `haiku` as fixers; any other name is ref
 - `scripts/source/nemotron_code.py`, `draft_source.py`, `coder_run.py`: coder calls, streaming, parsing of `FILE:` blocks
 - `scripts/image_trials/nvidia_trial.py`: the key pool
 - `pieces/p1_claims.py`, `pieces/p1_escalate.py`: launcher, claims, ledger, escalation
-- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (roster allowlist, free ledger, DeepSeek budget, probe)
+- `scripts/source/openrouter_call.py`: the OpenRouter adapter (P1a): the only path to OpenRouter (owner roster, free ledger, Z.AI-pinned repair budget, probe)
 - `tools/codex_change_review.py`: read-only review of a change set (`CODEX_REVIEW_MODEL` sets the Codex model; `REVIEW_WITH=haiku` asks Haiku at low effort instead)
 - `docs/REVIEW_PROMPT.md`: the prompt every reviewer receives
 - `pieces/test_*.py`: the tests
@@ -195,22 +195,33 @@ New states (exit code 1): `acceptance-invalid`, `acceptance-tampered`, `sandbox-
 `scripts/source/openrouter_call.py` is the only path to OpenRouter. The loop does not use it yet; P1b wires it in. Every reply is checked
 before it counts, and no failure falls back to another model or key.
 
-- **Roster.** Exact IDs only: `z-ai/glm-5.3-flash:free`, `qwen/qwen3.8-27b:free`, `thinkingmachines/inkling-small:free`,
-  `deepseek/deepseek-v4.1-flash-1017`. Refused before any request: `openrouter/free`, a `models` fallback list, any other ID.
+- **Roster (owner, 2026-11-02).** Roles: `writer_a` = `dots-studio/dots-3-note-preview:free`, `writer_b` = `xingchen-agi/xing4.0-29b-a4b:free`,
+  `reviewer` = `cohere/north-mini-code:free`, `repair` = `z-ai/glm-5.3-flash` (the only paid ID). The reviewer backup
+  (`google/gemma-4-31b-it:free`, `google/gemma-4-26b-a4b-it:free`) is disabled: only the probe may call those IDs. Refused before any request:
+  `openrouter/free`, a `models` list, a bare paid ID, a free ID without `:free`, a disabled backup role, any other ID.
+- **Limits.** Writer and repair: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
+  sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
+  Xing sends temperature 0.8, top_p 0.95, repetition_penalty 1.05.
 - **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
-  Every attempt is reserved before it is sent, failed attempts included. 15 a minute; 1,000 a day (a lower cap can be passed). A 429 that names
-  the day is `QuotaExhausted`; a per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
-- **DeepSeek.** The only paid ID, with the paid key. Its price is read live from the endpoints list; requests are pinned to the cheapest
-  endpoint. Each attempt reserves its estimate before it is sent, against the job ceiling (default $0.10). A missing live price sends nothing.
+  Every attempt is reserved before it is sent, failed attempts included. 15 a minute. `begin_job()` saves each key's full `GET /api/v1/key`
+  JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
+  and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
+  per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
+- **Repair (paid).** The paid key only. Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "allow_fallbacks": false}`); the endpoint
+  and prices are in `docs/p1a_glm_endpoint.json`. The cheapest-endpoint choice is removed. A reply from any other provider is unavailable and its
+  spend still counts. Limits per job: 2 logical repair rounds, 4 physical paid attempts (retries included), $0.15 ceiling. Each attempt reserves
+  its estimate before it is sent; a missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
 - **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a `FILE:` block; a reviewer needs a
-  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at double `max_tokens`.
+  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at the retry limit (writer and repair: 72000).
 - **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
-  Two provider errors in a row drop the model for the job. 401, 402 and 403 are never retried.
+  Two provider errors in a row drop the model for the job. 401 and 402 block the account and are never retried. 403 is a refusal of that
+  model only: the model is dropped for the job, and the other roles keep working (`ModelDenied`).
 - **Private code.** Blocked. `APPROVED_PRIVATE` is empty because no non-training route has been approved.
 - **Keys.** `OPENROUTER_FREE_KEY` and `OPENROUTER_PAID_KEY` from the environment, or `secrets/openrouter_free_key.txt` and
   `secrets/openrouter_paid_key.txt`. Keys are never printed or written; error text is redacted.
-- **Probe.** `python scripts/source/openrouter_call.py probe --out <file>` makes one live call per roster model and records the key state before
-  and after. It spends free requests and a few cents of DeepSeek, so run it by hand.
+- **Probe.** `python scripts/source/openrouter_call.py probe --out <file>` makes one live free call each to writer_a, writer_b, reviewer and the
+  two Gemma backups, and records the key state before and after. It never calls the repair model. It spends free requests, so run it by hand
+  and only after the owner's go.
 - **Sandbox credential check.** The container probe refuses any environment variable whose name contains a credential word (`KEY`, `TOKEN`,
   `SECRET`, `PASSWORD`, ...), except `GPG_KEY`, which the base image sets. One rule, `sandbox_runner.CREDENTIAL_RULE`, is used on the host and in
   the container (`pieces/test_sandbox_credential_names.py`).

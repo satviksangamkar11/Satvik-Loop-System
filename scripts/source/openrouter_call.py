@@ -37,14 +37,24 @@ APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non
 FREE_DAILY_CAP = 1000               # per account, once $10 has been bought (50 below that)
 FREE_PER_MINUTE = 15                # OpenRouter allows 20
 JOB_FREE_REQUESTS = 40
-JOB_PAID_USD = 0.10
+JOB_PAID_USD = 0.15                # owner: $0.15 ceiling per job, paid calls only
 MAX_RETRIES = 3                     # HTTP retries after the first attempt
 BACKOFF_S = (2, 8, 30)              # plus up to 1 s of jitter
 MINUTE_WAIT_DEFAULT_S = 5.0
 MAX_WAIT_S = 120.0                  # a longer wait than this ends the call instead of sleeping
 BREAKER_LIMIT = 2                   # consecutive provider errors drop a model for the job
 TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
-MAX_TOKENS_CAP = 32000
+MAX_TOKENS_CAP = 72000              # the largest max_tokens any retry asks for
+LIMITS = {                          # owner limits, 2026-11-02; text (the probe) keeps the old defaults
+    "writer": {"max_tokens": 40000, "retry_max_tokens": 72000, "timeout_s": 1200, "retry_timeout_s": 1800},
+    "repair": {"max_tokens": 40000, "retry_max_tokens": 72000, "timeout_s": 1200, "retry_timeout_s": 1800},
+    "reviewer": {"max_tokens": 16000, "timeout_s": 600},
+    "text": {"max_tokens": 4000, "timeout_s": 600},
+}
+REASONING_MAX = 8000                # reasoning.max_tokens on every call; the provider does not enforce it, so thinking tokens are recorded only
+XING_SAMPLING = {"temperature": 0.8, "top_p": 0.95, "repetition_penalty": 1.05}
+PAID_PROVIDER_NAME, PAID_PROVIDER_SLUG = "Z.AI", "z-ai"     # docs/p1a_glm_endpoint.json, read 2026-11-02
+PAID_ROUNDS, PAID_ATTEMPTS = 2, 4   # per job: logical repair rounds, and physical paid attempts (retries included)
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
@@ -89,6 +99,10 @@ class ProviderUnavailable(OpenRouterError):
 
 class AccountBlocked(OpenRouterError):
     """401, 402 or 403: the key or the balance cannot make calls. No retry."""
+
+
+class ModelDenied(OpenRouterError):
+    """HTTP 403 on one model: that model refuses this request. The account is not blocked; the model is dropped for the job."""
 
 
 class _Truncated(ReplyRejected):
@@ -208,6 +222,7 @@ class FreeLedger:
     def __init__(self, directory, clock=time.time, daily_cap=FREE_DAILY_CAP, per_minute=FREE_PER_MINUTE, lock_timeout_s=30.0):
         folder = str(directory)
         os.makedirs(folder, exist_ok=True)
+        self.folder = folder
         self.path = os.path.join(folder, "openrouter_free_ledger.json")
         self._lock = FileLock(os.path.join(folder, "key_ledger.lock"))
         self.clock, self.daily_cap, self.per_minute, self.lock_timeout_s = clock, daily_cap, per_minute, lock_timeout_s
@@ -280,6 +295,7 @@ class JobBudget:
     def __init__(self, free_requests=JOB_FREE_REQUESTS, paid_usd=JOB_PAID_USD):
         self.free_requests, self.paid_usd = free_requests, paid_usd
         self.free_used, self.paid_reserved, self.paid_spent = 0, 0.0, 0.0
+        self.paid_rounds, self.paid_attempts = 0, 0
 
     def check_free(self):
         if self.free_used >= self.free_requests:
@@ -293,6 +309,16 @@ class JobBudget:
     def settle_paid(self, reserved, spent):
         self.paid_reserved -= reserved
         self.paid_spent += spent
+
+    def start_round(self):
+        if self.paid_rounds >= PAID_ROUNDS:
+            raise BudgetExceeded(f"repair rounds for this job are used up ({PAID_ROUNDS})")
+        self.paid_rounds += 1
+
+    def count_attempt(self):
+        if self.paid_attempts >= PAID_ATTEMPTS:
+            raise BudgetExceeded(f"paid attempts for this job are used up ({PAID_ATTEMPTS}); the next one is not sent")
+        self.paid_attempts += 1
 
 
 class Breaker:
@@ -309,6 +335,9 @@ class Breaker:
 
     def ok(self, model):
         self.streak[model] = 0
+
+    def drop(self, model):
+        self.streak[model] = BREAKER_LIMIT
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -362,8 +391,8 @@ class OpenRouter:
         return cls(redact(message, self._secrets))
 
     def endpoint(self, model):
-        """The paid model's cheapest endpoint, read live once per job: per-token prices and the provider slug the requests are pinned to.
-        The pin field and the slug are checked by the live probe; a mismatch there is a finding, not a silent fallback."""
+        """The paid model's Z.AI endpoint, read live once per job: per-token prices and the slug the requests are pinned to.
+        A reply from any other provider is refused in call()."""
         if model in self._endpoints:
             return self._endpoints[model]
         status, _, raw = self.transport("GET", f"{API}/models/{model}/endpoints", {}, None, 60)
@@ -372,30 +401,63 @@ class OpenRouter:
         endpoints = body.get("endpoints", []) if isinstance(body, dict) else []
         if status != 200 or not isinstance(endpoints, list):
             raise self._err(ProviderUnavailable, f"endpoint prices for {model} unavailable: HTTP {status} {message[:200]}")
-        priced = []
+        pinned = None
         for ep in endpoints:
-            pricing = ep.get("pricing") if isinstance(ep, dict) else None
-            try:
-                prompt, completion = float(pricing["prompt"]), float(pricing["completion"])
-            except (TypeError, KeyError, ValueError):
+            if not isinstance(ep, dict) or ep.get("provider_name") != PAID_PROVIDER_NAME:
                 continue
-            slug = str(ep.get("tag") or ep.get("provider_name") or "").split("/")[0]
-            if slug:
-                priced.append({"slug": slug, "prompt": prompt, "completion": completion})
-        if not priced:
-            raise self._err(ProviderUnavailable, f"no priced endpoint for {model}; a paid call needs a live price")
-        self._endpoints[model] = min(priced, key=lambda e: (e["completion"], e["prompt"]))
-        return self._endpoints[model]
+            if str(ep.get("tag") or "").split("/")[0] != PAID_PROVIDER_SLUG:
+                continue
+            pricing = ep.get("pricing") if isinstance(ep.get("pricing"), dict) else {}
+            try:
+                pinned = {"slug": PAID_PROVIDER_SLUG, "name": PAID_PROVIDER_NAME,
+                          "prompt": float(pricing["prompt"]), "completion": float(pricing["completion"])}
+            except (KeyError, TypeError, ValueError):
+                pinned = None
+            break
+        if pinned is None:
+            raise self._err(ProviderUnavailable, f"no priced {PAID_PROVIDER_NAME} endpoint for {model}; repair is refused (no other provider is used)")
+        self._endpoints[model] = pinned
+        return pinned
 
-    def key_info(self, slot):
+    def _key_payload(self, slot):
+        """The full GET /api/v1/key JSON for a loaded slot (no completion call)."""
         status, _, raw = self.transport("GET", f"{API}/key", {"Authorization": "Bearer " + self.keys[slot]}, None, 30)
         _, data, message = parse_response(status, raw)
-        info = data.get("data") if isinstance(data, dict) else None
-        if status != 200 or not isinstance(info, dict):
+        if status != 200 or not isinstance(data, dict) or not isinstance(data.get("data"), dict):
             raise self._err(OpenRouterError, f"key state unavailable: HTTP {status} {message[:200]}")
-        return info
+        return data
 
-    def call(self, name, system, user, kind="text", private=False, max_tokens=4000, timeout_s=600, allow_disabled_backup=False):
+    def key_info(self, slot):
+        return self._key_payload(slot)["data"]
+
+    def begin_job(self):
+        """Before each job: saves every loaded key's full JSON under key_snapshots/ and sets the free ledger from it. The provider's
+        free_model_daily_requests (limit, remaining) is used when present; when absent, the local cap is 1000 for a paid-tier key
+        (is_free_tier false) and 50 otherwise. Returns a summary with no key values."""
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(self.clock()))
+        folder = os.path.join(self.ledger.folder, "key_snapshots")
+        os.makedirs(folder, exist_ok=True)
+        summary = {}
+        for slot in self.keys:
+            payload = self._key_payload(slot)
+            with open(os.path.join(folder, f"key_snapshot_{slot}_{stamp}.json"), "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, sort_keys=True)
+            if slot != "free":
+                summary[slot] = {"saved": True}
+                continue
+            info = payload["data"]
+            quota = info.get("free_model_daily_requests")
+            if isinstance(quota, dict) and isinstance(quota.get("limit"), int) and isinstance(quota.get("remaining"), int):
+                self.ledger.daily_cap = quota["limit"]
+                self.ledger.set_snapshot(quota["remaining"])
+                summary[slot] = {"saved": True, "quota": "provider", "note": "free_model_daily_requests read"}
+            else:
+                self.ledger.daily_cap = 1000 if info.get("is_free_tier") is False else 50
+                summary[slot] = {"saved": True, "quota": "local",
+                                 "note": "free_model_daily_requests absent; local cap " + str(self.ledger.daily_cap)}
+        return summary
+
+    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, allow_disabled_backup=False):
         """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply)."""
         if kind not in ("text", "writer", "reviewer"):
             raise ValueError(f"unknown reply kind {kind!r}")
@@ -405,15 +467,22 @@ class OpenRouter:
         slot = "paid" if model in PAID else "free"
         if slot not in self.keys:
             raise self._err(ModelRefused, f"no {slot} key loaded, so {model} is not called")
+        limits = LIMITS["repair" if slot == "paid" else kind]
+        if slot == "paid":
+            self.budget.start_round()
         started = self.clock()
-        tokens, attempts, retries, truncations = max_tokens, 0, 0, 0
+        tokens = max_tokens if max_tokens is not None else limits["max_tokens"]
+        timeout = timeout_s if timeout_s is not None else limits["timeout_s"]
+        attempts, retries, truncations = 0, 0, 0
         while True:
+            if attempts and "retry_timeout_s" in limits:
+                timeout = limits["retry_timeout_s"]
             if self.breaker.open(model):
                 raise self._err(ProviderUnavailable, f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row")
             attempts += 1
             reserved = self._reserve(model, slot, system, user, tokens)
             try:
-                status, headers, raw = self._post(model, slot, system, user, tokens, private, timeout_s)
+                status, headers, raw = self._post(model, slot, system, user, tokens, private, timeout)
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
                 self.breaker.failed(model)
                 self._settle(slot, model, reserved, None)
@@ -425,13 +494,16 @@ class OpenRouter:
             if status == 200:
                 if data is None:
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
+                if slot == "paid" and data.get("provider") != PAID_PROVIDER_NAME:
+                    self.breaker.failed(model)
+                    raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {PAID_PROVIDER_NAME!r}")
                 try:
                     text = check_reply(kind, model, data)
                 except _Truncated:
                     if truncations == TRUNCATION_RETRIES:
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens} again")
                     truncations += 1
-                    tokens = min(tokens * 2, MAX_TOKENS_CAP)
+                    tokens = limits.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
                     continue
                 except _Mismatch as exc:
                     self.breaker.failed(model)
@@ -452,7 +524,10 @@ class OpenRouter:
                     self._wait_before_retry(model, retries, self._backoff_s(retries, retry_after(headers)), "provider rate limited upstream")
                 retries += 1
                 continue
-            if status in (401, 402, 403):
+            if status == 403:
+                self.breaker.drop(model)
+                raise self._err(ModelDenied, f"{model}: HTTP 403: {message[:200]}")
+            if status in (401, 402):
                 raise self._err(AccountBlocked, f"{model}: HTTP {status}: {message[:200]}")
             if status >= 500:
                 self.breaker.failed(model)
@@ -465,6 +540,7 @@ class OpenRouter:
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
         if slot == "paid":
+            self.budget.count_attempt()
             estimate = estimate_cost(system, user, tokens, self.endpoint(model))
             self.budget.reserve_paid(estimate)
             return estimate
@@ -488,7 +564,9 @@ class OpenRouter:
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):
         body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "max_tokens": tokens, "temperature": 0.1}
+                "max_tokens": tokens, "temperature": 0.1, "reasoning": {"max_tokens": REASONING_MAX}}
+        if model == ROLES["writer_b"]:
+            body.update(XING_SAMPLING)
         provider = {}
         if private:
             provider["data_collection"] = "deny"
@@ -513,9 +591,12 @@ class OpenRouter:
     def _info(self, model, data, spent, attempts, tokens, started):
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         endpoint = self._endpoints.get(model)
+        details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+        reasoning = details.get("reasoning_tokens") if isinstance(details.get("reasoning_tokens"), int) else None
         return {"model": model, "provider": data.get("provider"), "endpoint": endpoint["slug"] if endpoint else None,
                 "status": 200, "finish": "stop", "usage": {k: v for k, v in usage.items() if isinstance(v, int)},
-                "cost_usd": spent, "latency_s": round(self.clock() - started, 3), "attempts": attempts, "max_tokens": tokens}
+                "reasoning_tokens": reasoning, "cost_usd": spent, "latency_s": round(self.clock() - started, 3),
+                "attempts": attempts, "max_tokens": tokens}
 
 
 PROBE_SYSTEM = "You are a connectivity check. Answer exactly as instructed."
