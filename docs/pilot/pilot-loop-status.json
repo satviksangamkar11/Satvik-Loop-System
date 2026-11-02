@@ -1,0 +1,29 @@
+{
+ "name": "pilot-loop-status",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/LOOP_STATUS_SPEC.md",
+ "files": ["scripts/source/loop_status.py", "pieces/test_loop_status.py"],
+ "tests": ["pieces/test_loop_status.py"],
+ "acceptance_tests": ["tests/acceptance/test_loop_status_acceptance.py"],
+ "negative_controls": [
+  {"name": "empty-stub",
+   "replace": {"scripts/source/loop_status.py": "tests/controls/loop_status_empty.py"},
+   "must_fail": ["tests/acceptance/test_loop_status_acceptance.py::test_rows_order_and_fields",
+                 "tests/acceptance/test_loop_status_acceptance.py::test_main_output"]}
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/test_loop_status_acceptance.py::test_rows_order_and_fields",
+  "tests/acceptance/test_loop_status_acceptance.py::test_missing_fields_default",
+  "tests/acceptance/test_loop_status_acceptance.py::test_not_an_object",
+  "tests/acceptance/test_loop_status_acceptance.py::test_tie_sorted_by_name",
+  "tests/acceptance/test_loop_status_acceptance.py::test_deeper_files_ignored",
+  "tests/acceptance/test_loop_status_acceptance.py::test_missing_dir",
+  "tests/acceptance/test_loop_status_acceptance.py::test_main_output",
+  "tests/acceptance/test_loop_status_acceptance.py::test_read_only"
+ ],
+ "fixers": ["writer_a", "writer_b"],
+ "reviewers": "by_lineage",
+ "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0},
+ "deadline_min": 60
+}
