@@ -157,12 +157,16 @@ def test_satvik_profile_production_loads_todays_roster_unchanged():
     assert roles["repair"]["paid"] is True and roles["planner"]["paid"] is True
     assert roles["reviewer_a"]["pricing"] == {"prompt": 1.5e-07, "completion": 5e-07}
     assert roles["writer_a"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
-                                             "sampling": None, "retry_max_tokens": 72000, "retry_timeout_s": 1800}
+                                             "sampling": None, "retry_max_tokens": 72000, "retry_timeout_s": 1800,
+                                             "max_tokens_cap": 72000}
     assert roles["writer_b"]["settings"] == {"temperature": 0.8, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
-                                             "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800}
-    assert roles["reviewer_b"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": None}
+                                             "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800,
+                                             "max_tokens_cap": 72000}
+    assert roles["reviewer_b"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": None,
+                                             "max_tokens_cap": 72000}
     assert roles["reviewer_a"]["settings"] == {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": True}, "max_tokens": 16000,
-                                               "timeout_s": 600, "sampling": None}
+                                               "timeout_s": 600, "sampling": None,
+                                               "max_tokens_cap": 72000}
     assert loaded["paid"] == ["z-ai/glm-5.3-flash"]
 
 
