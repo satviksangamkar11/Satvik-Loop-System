@@ -51,7 +51,8 @@ KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid":
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
 VERDICT_LINE = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
-SECRET_SHAPES = re.compile(r"sk-or-[A-Za-z0-9_\-]+|Bearer\s+\S+")
+SECRET_SHAPES = re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|(?i:authorization)[\"']?\s*[:=]\s*[^\r\n,}\"']+")
+FAILURE_CHARS = 2000                # the first characters of a failed call's message that are kept (after redaction)
 
 
 def _shared_limits():
@@ -254,13 +255,13 @@ def parse_response(status, raw):
     except ValueError:
         data = None
     if not isinstance(data, dict):
-        return status, None, text[:300]
+        return status, None, text[:FAILURE_CHARS]
     err = data.get("error")
     if isinstance(err, dict):
         code = err.get("code")
         status = code if isinstance(code, int) else (status if status != 200 else 502)
-        return status, None, f"{err.get('message') or ''} {json.dumps(err.get('metadata') or {}, sort_keys=True)}"[:600]
-    return status, data, text[:300]
+        return status, None, f"{err.get('message') or ''} {json.dumps(err.get('metadata') or {}, sort_keys=True)}"[:FAILURE_CHARS]
+    return status, data, text[:FAILURE_CHARS]
 
 
 def classify_429(message):
@@ -553,13 +554,13 @@ class OpenRouter:
         self.sleep(seconds)
 
     def _note(self, model, status, message):
-        """Keeps one failed attempt. The message is redacted and cut to its first 500 characters."""
-        self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:500]})
+        """Keeps one failed attempt: its raw HTTP status (None for a network error) and its message, redacted, cut to FAILURE_CHARS."""
+        self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:FAILURE_CHARS]})
 
     def _last_failures(self, model):
         """The last BREAKER_LIMIT raw failures of a model, for the error that drops it."""
         mine = [f for f in self.failed_attempts if f["model"] == model][-BREAKER_LIMIT:]
-        return " | ".join(f"HTTP {f['status']}: {f['message']}" if f["status"] is not None else f"no HTTP status: {f['message']}" for f in mine)
+        return " | ".join(f"HTTP {f['status']}: {f['message'][:300]}" if f["status"] is not None else f"no HTTP status: {f['message'][:300]}" for f in mine)
 
     def failures_for(self, model):
         return [f for f in self.failed_attempts if f["model"] == model]
@@ -578,6 +579,7 @@ class OpenRouter:
         body = data.get("data") if isinstance(data, dict) else None
         endpoints = body.get("endpoints", []) if isinstance(body, dict) else []
         if status != 200 or not isinstance(endpoints, list):
+            self._note(model, status, message)
             raise self._err(ProviderUnavailable, f"endpoint prices for {model} unavailable: HTTP {status} {message[:200]}")
         pinned = None
         for ep in endpoints:
@@ -671,11 +673,12 @@ class OpenRouter:
                 self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"{type(exc).__name__}: {exc}", attempts + 1)
                 retries += 1
                 continue
+            http_status = status                                  # the raw HTTP status; parse_response may replace it with a body error code
             status, data, message = parse_response(status, raw)
             spent = self._settle(slot, model, reserved, data)
             if status == 200:
                 if data is None:
-                    self._note(model, 200, "malformed reply: not a JSON object")
+                    self._note(model, 200, f"malformed reply: not a JSON object: {message}")
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
                 pin_name = roster_state()["PINS"][model]["name"] if slot == "paid" else None
                 if slot == "paid" and data.get("provider") != pin_name:
@@ -701,7 +704,7 @@ class OpenRouter:
                 self.breaker.ok(model)
                 return text, self._info(model, data, spent, attempts, tokens, started)
             if status == 429:
-                self._note(model, 429, message)
+                self._note(model, http_status, message)
                 limit = classify_429(message)
                 if limit == "daily":
                     self.ledger.set_snapshot(0)
@@ -719,19 +722,19 @@ class OpenRouter:
                     retries += 1
                 continue
             if status == 403:
-                self._note(model, 403, message)
+                self._note(model, http_status, message)
                 self.breaker.drop(model)
                 raise self._err(ModelDenied, f"{model}: HTTP 403: {message[:200]}")
             if status in (401, 402):
-                self._note(model, status, message)
+                self._note(model, http_status, message)
                 raise self._err(AccountBlocked, f"{model}: HTTP {status}: {message[:200]}")
             if status >= 500:
-                self._note(model, status, message)
+                self._note(model, http_status, message)
                 self.breaker.failed(model)
                 self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"HTTP {status}", attempts + 1)
                 retries += 1
                 continue
-            self._note(model, status, message)
+            self._note(model, http_status, message)
             raise self._err(OpenRouterError, f"{model}: HTTP {status}: {message[:200]}")
 
     def _reserve(self, model, slot, system, user, tokens):
@@ -884,7 +887,7 @@ def probe_roles() -> list[str]:
 
 def probe(client, out_path=None, names=None):
     """One live call per roster model (kind text), plus each loaded key's state before and after. `names` limits the run to some of the
-    probe names. The summary holds no key value; every failed attempt is kept in full (status and first 500 characters)."""
+    probe names. The summary holds no key value; every failed attempt is kept in full (status and first 2000 characters)."""
     def key_states():
         return {slot: {k: v for k, v in client.key_info(slot).items() if k in KEY_FIELDS} for slot in client.keys}
 
