@@ -93,14 +93,10 @@ def protected_paths(root: Path, acceptance_tests, control_files) -> list:
 def production_job_problems(job: dict) -> list:
     """Problems that make a job unsafe to run as a production job. load_job raises on any of them."""
     p = []
-    reviewers = job.get("reviewers") or []
     if not job.get("review", True):
         p.append("production jobs cannot set review: false (no-review mode is legacy/tests only)")
-    if len(set(reviewers)) < 2:
-        p.append("production jobs need at least two distinct reviewers")
-    mv = job.get("min_valid_reviews", 0)
-    if mv not in (0, len(reviewers)):
-        p.append("production jobs cannot lower the review quorum (min_valid_reviews must be 0 or the number of reviewers)")
+    if job.get("reviewers") != "by_lineage":                 # P1b 2026-11-02: the reviewers are the lineage panel (p1b_routing), never a list
+        p.append("production jobs use reviewers: by_lineage (the P1b lineage panels), not a reviewer list")
     acc = job.get("acceptance_tests") or []
     if not acc:
         p.append("production jobs need acceptance_tests (independent, controller-owned tests)")

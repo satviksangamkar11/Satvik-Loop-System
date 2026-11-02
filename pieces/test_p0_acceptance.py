@@ -22,6 +22,8 @@ import fix_loop as fl  # noqa: E402
 import p0_gates as gates  # noqa: E402
 import sandbox_runner as sr  # noqa: E402
 from test_fix_loop_review import FENCE, FILE_MARK  # noqa: E402
+import openrouter_call as oc  # noqa: E402
+import prod_harness as ph  # noqa: E402
 
 NL = "\n"
 
@@ -134,9 +136,11 @@ def make_prod_root(tmp_path):
 
 
 def prod_job(**over):
-    job = {"name": "calc", "profile": "production", "spec": "specs/s.md", "files": ["pieces/calc.py", "pieces/test_calc.py"], "tests": ["pieces/test_calc.py"],
-           "reference": [], "max_rounds": 1, "review_rounds": 1, "review": True, "reviewers": ["lightning", "codex"], "review_prompt": "docs/RP.md",
-           "fixers": ["nemotron"] * 3, "acceptance_tests": ["tests/acceptance/test_calc_acceptance.py"],
+    """A production job in the P1b shape (2026-11-02): role names, reviewers by lineage, the owner's budget and deadline."""
+    job = {"name": "calc", "profile": "production", "visibility": "public", "spec": "specs/s.md", "files": ["pieces/calc.py", "pieces/test_calc.py"],
+           "tests": ["pieces/test_calc.py"], "reference": [], "review": True, "reviewers": "by_lineage", "review_prompt": "docs/RP.md",
+           "fixers": ["writer_a", "writer_b"], "budget": {"free_requests": 40, "paid_usd": 0.15}, "deadline_min": 60,
+           "acceptance_tests": ["tests/acceptance/test_calc_acceptance.py"],
            "negative_controls": [
                {"name": "returns None", "replace": {"pieces/calc.py": "tests/controls/calc_returns_none.py"},
                 "must_fail": ["tests/acceptance/test_calc_acceptance.py::test_sums_two_prices"]},
@@ -191,22 +195,24 @@ def coder_reply(code, test):
             + FILE_MARK + "pieces/test_calc.py" + NL + FENCE + "python" + NL + test + FENCE + NL)
 
 
-def ready(files, report):
-    report.write_text("## Verdict: READY" + NL, encoding="utf-8")
-    return {"verdict": "READY"}
+READY_TEXT = "The code meets SPEC 1." + NL + "## Verdict: READY" + NL
 
 
 def run_prod(root, code, test, sandbox=None, reviewers=None, **over):
+    """One production run through run_job with scripted models: writer_a, writer_b and repair each return the same code and test; the reviewers
+    answer READY unless `reviewers` (a function of the request) answers. Returns (result, the model IDs that were called, in order)."""
     job = fl.load_job(write_job(root, prod_job(**over)))
-    calls = []
+    reply = coder_reply(code, test)
 
-    def coder(s, u):
-        calls.append(1)
-        return coder_reply(code, test), {"status": 200}
+    def answer(request):
+        system = request["messages"][0]["content"]
+        if "REVIEW TASK" in system:
+            return reviewers(request) if reviewers else READY_TEXT
+        return reply
 
-    result = fl.run_job(job, root, caller=coder, reviewer=reviewers or {"lightning": ready, "codex": ready}, scrub_keys=[],
-                        sandbox=sandbox or LocalExecutor())
-    return result, calls
+    provider = ph.Provider({model: [answer] * 4 for model in oc.ROLES.values()})
+    result = fl.run_job(job, root, openrouter=ph.client(root.parent, provider), scrub_keys=[], sandbox=sandbox or LocalExecutor())
+    return result, provider.models()
 
 
 def test_constant_return_with_matching_coder_tests_is_rejected(tmp_path):
@@ -275,12 +281,11 @@ def test_an_acceptance_file_changed_during_the_job_voids_the_pass(tmp_path):
     root = make_prod_root(tmp_path)
     acc = root / "tests" / "acceptance" / "test_calc_acceptance.py"
 
-    def tamper(files, report):
+    def tamper(request):                                  # a reviewer's call changes the locked file
         acc.write_text(acc.read_text(encoding="utf-8") + "# changed" + NL, encoding="utf-8")
-        report.write_text("## Verdict: READY" + NL, encoding="utf-8")
-        return {"verdict": "READY"}
+        return READY_TEXT
 
-    result, _ = run_prod(root, GOOD_CODE, GOOD_TEST, reviewers={"lightning": tamper, "codex": ready})
+    result, _ = run_prod(root, GOOD_CODE, GOOD_TEST, reviewers=tamper)
     assert result["state"] == "acceptance-tampered"
 
 

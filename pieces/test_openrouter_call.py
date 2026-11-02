@@ -459,7 +459,7 @@ def test_repair_is_pinned_to_z_ai_even_when_a_cheaper_endpoint_exists(tmp_path):
     post = fake.posts()[0]
     assert post["headers"]["Authorization"] == "Bearer " + PAID_KEY
     assert post["body"]["model"] == GLM_PAID
-    assert post["body"]["provider"] == {"order": ["z-ai"], "allow_fallbacks": False}
+    assert post["body"]["provider"] == {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": False}
     assert info["endpoint"] == "z-ai" and info["provider"] == "Z.AI" and info["cost_usd"] == 0.00005
     assert built.budget.paid_spent == pytest.approx(0.00005) and built.budget.paid_reserved == pytest.approx(0.0)
 

@@ -4,7 +4,9 @@ rule runs with scripted fake models and no network.
 
 Injected `models` interface:
   call(model_id, mode, files) -> dict {path: text} for mode write/repair; str for mode review/review-reask. Raises ModelFailed when the
-      provider is down. Only the adapter's roster IDs are used (oc.ROLES), and a paid ID is only ever given to the repair step.
+      provider is down, BadReply when the reply cannot be used. Only the adapter's roster IDs are used (oc.ROLES), and a paid ID is only ever
+      given to the repair step.
+  write(reply) -> puts a validated reply's files on disk (walk calls it after take() accepts the reply, before tests).
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
   paid_fits() -> True when the next GLM call's reserved worst case still fits the $0.15 job ceiling.
@@ -50,7 +52,7 @@ class Blocked(Exception):
     """Mixed or missing lineage, or a lineage row with no reviewer table entry."""
 
 
-class _Bad(Exception):
+class BadReply(Exception):
     """A reply that cannot be used: outside the job's files, or missing one on a fresh write."""
 
 
@@ -244,19 +246,21 @@ def walk(job, models, lineage, clock=time.monotonic):
 
     def take(reply, model, full, keep_origin):
         if not isinstance(reply, dict) or not reply:
-            raise _Bad(f"{model} reply has no FILE blocks")
+            raise BadReply(f"{model} reply has no FILE blocks")
         extra = set(reply) - wanted
         if extra:
-            raise _Bad(f"{model} reply names files outside the job: {sorted(extra)}")
+            raise BadReply(f"{model} reply names files outside the job: {sorted(extra)}")
         if full and set(reply) != wanted:
-            raise _Bad(f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
+            raise BadReply(f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
         for path in reply:
             previous = lineage.get(path)
             origin = previous["origin"] if (keep_origin and previous) else model
             lineage.set(path, model, origin)
 
     def attempt(model, mode, full=False, keep_origin=False):
-        take(models.call(model, mode, files), model, full, keep_origin)
+        reply = models.call(model, mode, files)
+        take(reply, model, full, keep_origin)
+        models.write(reply)                      # validated files go to disk before the tests run
         result = models.tests(files)
         failing[model] = result.failing
         return result
@@ -270,7 +274,7 @@ def walk(job, models, lineage, clock=time.monotonic):
     except ModelFailed:
         down.add(DOTS)
         result = None
-    except _Bad:
+    except BadReply:
         result = None
 
     if result is not None and not result.green and _localized(result):
@@ -281,7 +285,7 @@ def walk(job, models, lineage, clock=time.monotonic):
         except ModelFailed:
             down.add(DOTS)
             result = None
-        except _Bad:
+        except BadReply:
             result = None
 
     fresh_writer = None
@@ -296,7 +300,7 @@ def walk(job, models, lineage, clock=time.monotonic):
                 break
             except ModelFailed:
                 down.add(writer)
-            except _Bad as exc:
+            except BadReply as exc:
                 return Outcome("escalate", str(exc))
         else:
             return Outcome("provider-unavailable", "Xing and North Mini Code both failed the fresh write")
@@ -308,7 +312,7 @@ def walk(job, models, lineage, clock=time.monotonic):
             result = attempt(XING, "repair")
         except ModelFailed:
             return Outcome("escalate", "Xing repair is unavailable")
-        except _Bad as exc:
+        except BadReply as exc:
             return Outcome("escalate", str(exc))
 
     rounds = 0
@@ -325,7 +329,7 @@ def walk(job, models, lineage, clock=time.monotonic):
             result = attempt(GLM, "repair", keep_origin=True)
         except ModelFailed:
             return Outcome("escalate", "GLM repair is unavailable")
-        except _Bad as exc:
+        except BadReply as exc:
             return Outcome("escalate", str(exc))
 
     return _review(files, models, lineage, down)

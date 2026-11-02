@@ -55,6 +55,9 @@ class FakeModels:
     def restore(self):
         self.log.append(("restore", None))
 
+    def write(self, reply):
+        self.written = getattr(self, "written", []) + [dict(reply)]
+
     def paid_fits(self):
         return self.paid_ok
 

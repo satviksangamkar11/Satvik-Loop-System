@@ -597,7 +597,7 @@ class OpenRouter:
         if private:
             provider["data_collection"] = "deny"
         if slot == "paid":
-            provider.update(order=[self._endpoints[model]["slug"]], allow_fallbacks=False)
+            provider.update(order=[self._endpoints[model]["slug"]], only=[self._endpoints[model]["slug"]], allow_fallbacks=False)
         if provider:
             body["provider"] = provider
         headers = {"Authorization": "Bearer " + self.keys[slot], "Content-Type": "application/json"}
