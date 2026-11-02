@@ -1,8 +1,8 @@
 """OpenRouter adapter (P1a, architecture Revision 2). The only path to OpenRouter.
 
-Roster IDs only: exact match, no `openrouter/free`, no fallback lists. Free IDs use the free key and one account-wide ledger; every free
-attempt is reserved there under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. The DeepSeek ID uses
-the paid key, is priced from the endpoint it is pinned to, and needs a per-job budget. Every reply is checked before it counts. Errors are
+Roster roles or exact free IDs only: no `openrouter/free`, no fallback lists. Free IDs use the free key and one account-wide ledger; every
+free attempt is reserved there under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. The repair role
+(z-ai/glm-5.3-flash) is the only paid ID: it uses the paid key, is priced from the endpoint it is pinned to, and needs a per-job budget. Every reply is checked before it counts. Errors are
 named exceptions; nothing falls back to another model or key. Private code is refused unless a route is approved in APPROVED_PRIVATE, which
 is empty: no approved non-training route exists yet.
 
@@ -22,14 +22,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 API = "https://openrouter.ai/api/v1"
-ROSTER = {
-    "glm": "z-ai/glm-5.3-flash:free",
-    "qwen": "qwen/qwen3.8-27b:free",
-    "inkling": "thinkingmachines/inkling-small:free",
-    "deepseek": "deepseek/deepseek-v4.1-flash-1017",
+# Owner roster, 2026-11-02. Roles are the only names production code uses; exact IDs are accepted only where listed in ALLOWED.
+ROLES = {
+    "writer_a": "dots-studio/dots-3-note-preview:free",
+    "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
+    "reviewer": "cohere/north-mini-code:free",
+    "repair": "z-ai/glm-5.3-flash",
 }
-ALLOWED = frozenset(ROSTER.values())
-PAID = frozenset({ROSTER["deepseek"]})
+REVIEWER_BACKUP = ("google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free")
+REVIEWER_BACKUP_ENABLED = False     # owner: disabled; the probe may still call these IDs with allow_disabled_backup=True
+PAID = frozenset({ROLES["repair"]})
+ALLOWED = frozenset(v for v in ROLES.values() if v not in PAID) | frozenset(REVIEWER_BACKUP)
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
 FREE_DAILY_CAP = 1000               # per account, once $10 has been bought (50 below that)
 FREE_PER_MINUTE = 15                # OpenRouter allows 20
@@ -108,13 +111,16 @@ def utc_day(now):
     return time.strftime("%Y-%m-%d", time.gmtime(now))
 
 
-def resolve(name):
-    """The roster ID for a role name or an exact roster ID. Anything else (a list, a comma list, openrouter/free) is refused before a request is built."""
-    if isinstance(name, str) and name in ROSTER:
-        return ROSTER[name]
+def resolve(name, allow_disabled_backup=False):
+    """The roster ID for a role name or an exact free roster ID. Anything else (a list, a comma list, openrouter/free, a bare paid ID, a
+    disabled backup role) is refused before a request is built."""
+    if isinstance(name, str) and name in ROLES:
+        return ROLES[name]
     if isinstance(name, str) and name in ALLOWED:
+        if name in REVIEWER_BACKUP and not REVIEWER_BACKUP_ENABLED and not allow_disabled_backup:
+            raise ModelRefused(f"{name} is a disabled reviewer backup; it is not called")
         return name
-    raise ModelRefused(f"not on the roster: {name!r} (exact IDs only; no openrouter/free, no fallback lists)")
+    raise ModelRefused(f"not on the roster: {name!r} (roles or exact free IDs only; no openrouter/free, no fallback lists)")
 
 
 def parse_response(status, raw):
@@ -389,11 +395,11 @@ class OpenRouter:
             raise self._err(OpenRouterError, f"key state unavailable: HTTP {status} {message[:200]}")
         return info
 
-    def call(self, name, system, user, kind="text", private=False, max_tokens=4000, timeout_s=600):
+    def call(self, name, system, user, kind="text", private=False, max_tokens=4000, timeout_s=600, allow_disabled_backup=False):
         """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply)."""
         if kind not in ("text", "writer", "reviewer"):
             raise ValueError(f"unknown reply kind {kind!r}")
-        model = resolve(name)
+        model = resolve(name, allow_disabled_backup)
         if private and model not in self.approved_private:
             raise self._err(ModelRefused, f"private code is blocked: no approved non-training route for {model}")
         slot = "paid" if model in PAID else "free"
@@ -523,12 +529,13 @@ def probe(client, out_path=None):
 
     before = key_states()
     results = {}
-    for role, model in ROSTER.items():
+    targets = [("writer_a", False), ("writer_b", False), ("reviewer", False), (REVIEWER_BACKUP[0], True), (REVIEWER_BACKUP[1], True)]
+    for name, backup in targets:
         try:
-            text, info = client.call(role, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256)
-            results[role] = dict(info, ok=True, reply=text.strip()[:60])
+            text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256, allow_disabled_backup=backup)
+            results[name] = dict(info, ok=True, reply=text.strip()[:60])
         except OpenRouterError as exc:
-            results[role] = {"model": model, "ok": False, "error": str(exc)[:300]}
+            results[name] = {"model": resolve(name, backup), "ok": False, "error": str(exc)[:300]}
     summary = {"probed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(client.clock())), "key_before": before,
                "key_after": key_states(), "probes": results}
     if out_path:
