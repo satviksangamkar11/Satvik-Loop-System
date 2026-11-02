@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO / "scripts" / "source"))
 import fix_loop as fl  # noqa: E402
 import opus_repair as opus  # noqa: E402
 import openrouter_call as oc  # noqa: E402
+import p1b_production as pm  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 import sandbox_runner as sr  # noqa: E402
 import prod_harness as ph  # noqa: E402
@@ -293,6 +294,7 @@ class FakeClient:
     def __init__(self, queue):
         self.queue, self.calls, self.retry_log = list(queue), [], []
         self.budget = oc.JobBudget(40, 0.05)
+        self.failed_attempts = []
 
     def begin_job(self):
         pass
@@ -303,6 +305,10 @@ class FakeClient:
     def call(self, role, system, user, kind):
         self.calls.append(oc.ROLES[role])
         item = self.queue.pop(0)
+        if isinstance(item, tuple):             # (attempts, error): the adapter's failed attempts for this call, then its error
+            attempts, error = item
+            self.failed_attempts.extend(attempts)
+            raise error
         if isinstance(item, BaseException):
             raise item
         return item, {}
@@ -398,3 +404,85 @@ def test_dots_and_xing_failing_one_locked_acceptance_test_with_different_code_wr
     assert "likely SPEC line (guessed by word overlap)" in text
     assert client.calls == [DOTS, DOTS, XING, XING]
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIG_CODE
+
+# ---- failed calls keep their evidence (2026-11-03): each failed call is a file in history/ and a "failed" step in status.json
+
+def test_a_failed_writer_call_and_a_failed_repair_are_history_files_and_status_steps(tmp_path):
+    root = wp_h_root(tmp_path)
+    secret = "sk-or-v1-SECRETKEYABC123"
+    attempt = {"model": DOTS, "status": 503, "message": f"upstream down {secret} " + "x" * 2500}
+    client = FakeClient([([attempt], oc.ProviderUnavailable("HTTP 503")), ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST)),
+                         ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+    wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
+    history = root / "_loop" / "calc" / "history"
+    first = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert first["model"] == DOTS and first["status"] == 503 and first["call"] == "write"
+    assert len(first["message"]) == 2000 and secret not in first["message"] and "[REDACTED]" in first["message"]
+    steps = wp_h_status(root)["steps"]
+    failed = [s for s in steps if s["mode"] == "failed"]
+    assert failed[0]["model"] == DOTS and failed[0]["status"] == 503 and failed[0]["message"] == first["message"]
+    assert failed[0]["history"] == "history/failed_call_01.json"
+    assert sum(1 for s in steps if s["mode"] in ("write", "repair")) == 2     # the failed attempts do not count as coder calls
+
+
+def test_a_failed_opus_repair_is_a_failed_call_with_no_status(tmp_path):
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+
+    def refused(prompt, raw_sink=None):
+        raise opus.RepairFailed("the call did not finish in 600 s with key sk-ant-SECRETOPUS1234")
+
+    models = pm.Production(job, root, FakeClient([]), FakeSandbox({}), protected=[], acceptance_lock=None, originals={},
+                           parse_files=lambda text: ({}, []), check_path=lambda rel: None, content_problem=lambda rel, content: None,
+                           history=history, job_dir=root / "_loop" / "calc", repair_ask=refused)
+    with pytest.raises(p1b.ModelFailed):
+        models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
+    record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert record["model"] == ANTHROPIC and record["call"] == "repair" and record["status"] is None
+    assert "did not finish" in record["message"] and "SECRETOPUS1234" not in record["message"]
+
+
+def test_a_key_and_a_bearer_token_in_a_failed_reviewer_message_never_reach_status_json(tmp_path):
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    attempts = [{"model": DOTS, "status": 429, "message": "pool echoed " + LEAK + " and Bearer tok.en.123"}]
+    client = FakeClient([([attempts[0]], oc.ProviderUnavailable("HTTP 429")), ph.file_reply(("pieces/calc.py", SUM_CODE), ("pieces/test_calc.py", ORIG_TEST))])
+    fl.run_job(job, root, sandbox=FakeSandbox({ACC_ID: "assert 0 == 50"}), openrouter=client, scrub_keys=[LEAK])
+    text = (root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8")
+    assert LEAK not in text and "tok.en.123" not in text
+    assert "pool echoed" in text and "[REDACTED]" in text
+
+
+def test_a_writer_reply_the_job_cannot_use_is_a_failed_call_with_status_200(tmp_path):
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+    client = FakeClient(["a reply with a refused block"])
+    models = pm.Production(job, root, client, FakeSandbox({}), protected=[], acceptance_lock=None, originals={},
+                           parse_files=lambda text: ({}, [("pieces/calc.py", "refused")]), check_path=lambda rel: None,
+                           content_problem=lambda rel, content: None, history=history, job_dir=root / "_loop" / "calc")
+    with pytest.raises(p1b.BadReply):
+        models.call(DOTS, "write", ["pieces/calc.py"])
+    record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert record == {"model": DOTS, "call": "write", "status": 200, "message": record["message"]}
+    assert "refused block" in record["message"]
+    assert models.steps[-1]["mode"] == "failed" and models.steps[-1]["status"] == 200
+
+
+def test_a_review_with_fix_first_and_no_valid_evidence_is_a_failed_call_too(tmp_path):
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+    bad = "- pieces/calc.py:999 [SPEC 9]: no such line\n## Verdict: FIX FIRST"
+    client = FakeClient([bad])
+    models = pm.Production(job, root, client, FakeSandbox({}), protected=[], acceptance_lock=gates.hash_paths(root, []), originals={},
+                           parse_files=lambda text: ({}, []), check_path=lambda rel: None, content_problem=lambda rel, content: None,
+                           history=history, job_dir=root / "_loop" / "calc")
+    assert models.call(NORTH, "review", ["pieces/calc.py"]) == bad
+    record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert record["model"] == NORTH and record["call"] == "review" and record["status"] == 200
+    assert "FIX FIRST without valid evidence" in record["message"]

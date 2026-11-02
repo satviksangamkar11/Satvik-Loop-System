@@ -65,6 +65,7 @@ class DownClient:
     """Every OpenRouter call is refused as a provider outage, before any write."""
     budget = oc.JobBudget(free_requests=40, review_usd=0.05)
     retry_log = []
+    failed_attempts = []
 
     def begin_job(self):
         return None

@@ -416,6 +416,8 @@ class Production:
         self.green_junit = None         # the JUnit XML of the last green run: the RESULTS section of the review package
         self.reviewed_hashes = []       # hash of the job files at each review call
         self.package = {"files": {}, "spec_count": 0}   # what the last review was given: read by p1b_routing.evidence_ok
+        self.failed_calls = 0           # failed calls so far: each is history/failed_call_NN.json and a "failed" step in status.json
+        self._seen_attempts = len(client.failed_attempts)   # the adapter's failed attempts before this job's calls belong to nobody here
 
     # ---------------------------------------------------------------- model calls
 
@@ -423,28 +425,60 @@ class Production:
         if model == p1b.ANTHROPIC:
             return self._repair_step()
         if mode in ("write", "repair"):
-            text = self._ask(model, WRITER_SYSTEM, self._writer_user(), kind="writer")
-            reply = self._parse(text)
+            text = self._ask(model, WRITER_SYSTEM, self._writer_user(), kind="writer", mode=mode)
+            reply = self._usable(model, mode, text)
             self._step(model, mode, f"{len(reply)} file(s) returned")
             return reply
         user = self._review_package(reask=(mode == "review-reask"))
-        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer")
+        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", mode=mode)
         self._check_locked()
         self.reviewed_hashes.append(gates.combined_hash(self.root, self.files))
         lines = text.strip().splitlines()
         self._step(model, mode, lines[-1] if lines else "(empty reply)")
+        if p1b.verdict_of(text) == "FIX FIRST" and not p1b.evidence_ok(text, self.package):
+            self._failure(model, mode, 200, "FIX FIRST without valid evidence (file:line and SPEC n or CHECK n)")
         return text
 
-    def _ask(self, model, system, user, kind):
+    def _ask(self, model, system, user, kind, mode):
         try:
             text, _info = self.client.call(role_by_model()[model], system, user, kind=kind)
-        except oc.ReviewBudgetExceeded as exc:     # the GLM review would pass the job's review ceiling: nothing was sent
-            raise p1b.BudgetStop(str(exc)) from exc
-        except oc.QuotaExhausted as exc:           # the day's free requests are used up: the job ends quota-exhausted, no further call
-            raise p1b.QuotaStop(str(exc)) from exc
-        except oc.OpenRouterError as exc:          # refused, dropped, quota, budget, account: this model is down for this job
-            raise p1b.ModelFailed(str(exc)) from exc
+        except oc.OpenRouterError as exc:
+            self._record_attempts(model, mode)
+            if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
+                raise p1b.BudgetStop(str(exc)) from exc
+            if isinstance(exc, oc.QuotaExhausted):           # the day's free requests are used up: the job ends quota-exhausted, no further call
+                raise p1b.QuotaStop(str(exc)) from exc
+            raise p1b.ModelFailed(str(exc)) from exc         # refused, dropped, quota, budget, account: this model is down for this job
+        self._record_attempts(model, mode)
         return text
+
+    def _record_attempts(self, model, mode):
+        """Every failed attempt the adapter kept since the last call here, retries included: each one is a failed call."""
+        fresh = self.client.failed_attempts[self._seen_attempts:]
+        self._seen_attempts = len(self.client.failed_attempts)
+        for attempt in fresh:
+            self._failure(attempt["model"], mode, attempt["status"], attempt["message"])
+
+    def _usable(self, model, mode, text, status=200):
+        """The files of a reply. A reply the job cannot use is a failed call; its status is the HTTP status of that reply (200 for a writer)."""
+        try:
+            return self._parse(text)
+        except p1b.BadReply as exc:
+            self._failure(model, mode, status, exc)
+            raise
+
+    def _failure(self, model, mode, status, message):
+        """One failed call, kept whole: its model, its raw HTTP status (None when there is none) and the first 2,000 characters of its message with
+        keys redacted. It is a file in the job's history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
+        self.failed_calls += 1
+        text = oc.redact(_scrubbed(str(message), self.scrub_keys))[:oc.FAILURE_CHARS]
+        step = {"model": model, "mode": "failed", "call": mode, "status": status, "message": text,
+                "note": f"failed, HTTP {status}" if status is not None else "failed, no HTTP status"}
+        if self.history is not None:
+            name = f"failed_call_{self.failed_calls:02d}.json"
+            (self.history / name).write_text(json.dumps({"model": model, "call": mode, "status": status, "message": text}, indent=2), encoding="utf-8")
+            step["history"] = f"history/{name}"
+        self.steps.append(step)
 
     def _repair_step(self):
         """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
@@ -461,12 +495,14 @@ class Production:
         try:
             text = ask(prompt, raw_sink=keep_raw)
         except opus_repair.RepairFailed as exc:
+            self._failure(p1b.ANTHROPIC, "repair", None, exc)
             self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
             raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
         except opus_repair.RepairBadReply as exc:
+            self._failure(p1b.ANTHROPIC, "repair", None, exc)
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
-        reply = self._parse(_scrubbed(text, self.scrub_keys))
+        reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply
 

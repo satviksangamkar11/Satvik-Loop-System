@@ -1,5 +1,5 @@
-"""P1a raw errors (2026-11-02): every failed attempt keeps its HTTP status (None for a network error) and the first 500 characters of its
-message, including when the breaker drops a model; the probe keeps them in full and can be limited to named models. Fake HTTP only."""
+"""P1a raw errors (2026-11-02): every failed attempt keeps its raw HTTP status (None for a network error) and the first 2000 characters of its
+message, keys redacted, including when the breaker drops a model; the probe keeps them in full and can be limited to named models. Fake HTTP only."""
 import json
 import socket
 import sys
@@ -77,14 +77,48 @@ def key_reply():
     return 200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()
 
 
-def test_each_failed_attempt_keeps_its_status_and_the_first_500_characters(tmp_path):
+def test_each_failed_attempt_keeps_its_status_and_the_first_2000_characters(tmp_path):
     fake = Fake()
-    fake.on("/chat/completions", fail(503, "E" * 1000), ok("hi"))
+    fake.on("/chat/completions", fail(503, "E" * 2500), ok("hi"))
     built, _ = client(tmp_path, fake)
     assert built.call("writer_a", "s", "u")[0] == "hi"
     assert len(built.failed_attempts) == 1
     entry = built.failed_attempts[0]
-    assert entry["model"] == DOTS and entry["status"] == 503 and entry["message"] == "E" * 500
+    assert entry["model"] == DOTS and entry["status"] == 503 and entry["message"] == "E" * 2000
+
+
+def test_keys_bearer_tokens_and_authorization_values_are_redacted_in_a_failed_attempt(tmp_path):
+    fake = Fake()
+    text = f"task-based check; key {FREE_KEY}; sk-or-v1-LIVEKEY123456789; Bearer abc.def.ghi; Authorization: Basic dXNlcjpwYXNz"
+    fake.on("/chat/completions", fail(503, text), ok("hi"))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "s", "u")
+    message = built.failed_attempts[0]["message"]
+    for secret in (FREE_KEY, "LIVEKEY123456789", "abc.def.ghi", "dXNlcjpwYXNz"):
+        assert secret not in message
+    assert "task-based" in message and "[REDACTED]" in message
+
+
+def test_the_raw_http_status_is_kept_when_the_body_names_another_code(tmp_path):
+    fake = Fake()
+    body = json.dumps({"error": {"code": 429, "message": "Provider returned error", "metadata": {}}}).encode()
+    fake.on("/chat/completions", (200, {}, body), ok("hi"))
+    built, _ = client(tmp_path, fake)
+    assert built.call("writer_a", "s", "u")[0] == "hi"
+    entry = built.failed_attempts[0]
+    assert entry["status"] == 200 and "Provider returned error" in entry["message"]
+
+
+def test_a_failed_endpoint_lookup_for_the_paid_model_is_kept_too(tmp_path, profile):
+    profile("production")
+    glm = oc.roster_state()["ROLES"]["reviewer_a"]
+    fake = Fake()
+    fake.on("/endpoints", (500, {}, ("boom " + PAID_KEY).encode()))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ProviderUnavailable):
+        built.endpoint(glm)
+    entry = built.failed_attempts[0]
+    assert entry["model"] == glm and entry["status"] == 500 and PAID_KEY not in entry["message"]
 
 
 def test_a_network_error_is_kept_with_no_status(tmp_path):
