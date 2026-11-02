@@ -1540,6 +1540,57 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     return dict(result, job_id=job_id)
 
 
+def queue_dir(home: Path) -> Path:
+    """The job queue: home/queue/ (home is SATVIK_HOME, or the api's home folder)."""
+    return Path(home) / "queue"
+
+
+def enqueue(job_path: Path, home: Path) -> Path:
+    """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename)."""
+    folder = queue_dir(home)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_bytes(Path(job_path).read_bytes())
+    os.replace(tmp, dest)
+    return dest
+
+
+def take_next(home: Path) -> Path | None:
+    """Claim the oldest queued job by renaming it into queue/taken/. A rename that loses to another drainer is skipped, so each job is
+    taken once. Returns the claimed path, or None when the queue is empty."""
+    folder = queue_dir(home)
+    if not folder.exists():
+        return None
+    taken = folder / "taken"
+    taken.mkdir(exist_ok=True)
+    for path in sorted(folder.glob("*.json")):
+        try:
+            os.replace(path, taken / path.name)
+        except OSError:
+            continue
+        return taken / path.name
+    return None
+
+
+def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[tuple[str, str]]:
+    """Run queued jobs one after another, oldest first, until the queue is empty. Returns [(file name, state)]. A job file that does not
+    load is reported as "invalid" and the drain goes on."""
+    out = []
+    load = loader or load_job
+    while True:
+        path = take_next(api.home)
+        if path is None:
+            return out
+        try:
+            job = load(path)
+        except (ValueError, OSError) as exc:
+            out.append((path.name, "invalid"))
+            continue
+        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run)
+        out.append((path.name, res["state"]))
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser()

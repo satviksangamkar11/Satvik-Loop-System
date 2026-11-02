@@ -180,3 +180,51 @@ def test_step5_restore_files_checks_out_tracked_and_removes_new(tmp_path):
     fl.restore_files(wt, ["base.txt", "new.txt"])
     assert (wt / "base.txt").read_text(encoding="utf-8") == "base\n"
     assert not (wt / "new.txt").exists()
+
+
+# ---------------------------------------------------------------- step 6: job queue in SATVIK_HOME/queue/
+def write_job(tmp_path, name):
+    path = tmp_path / f"{name}.json"
+    path.write_text(name, encoding="utf-8")
+    return path
+
+
+def json_loader(path):
+    """Fake loader: the file holds the job name; the job is otherwise minimal (run_launched only needs name and files)."""
+    return {"name": Path(path).read_text(encoding="utf-8"), "files": ["base.txt"]}
+
+
+def test_step6_queue_is_taken_oldest_first_and_each_job_once(tmp_path):
+    env = env_for(tmp_path)
+    for n in ("first", "second", "third"):
+        fl.enqueue(write_job(tmp_path, n), env.home)
+    taken = [fl.take_next(env.home).name for _ in range(3)]
+    assert [t.split("-", 2)[2] for t in taken] == ["first.json", "second.json", "third.json"]
+    assert fl.take_next(env.home) is None
+    assert sorted(os.listdir(env.home / "queue" / "taken")) == sorted(taken)
+
+
+def test_step6_drain_runs_every_queued_job_in_order_and_empties_the_queue(tmp_path):
+    env = env_for(tmp_path)
+    merge = FakeMerge()
+    for n in ("alpha", "beta"):
+        fl.enqueue(write_job(tmp_path, n), env.home)
+    out = fl.drain_queue(env.api, env.launcher, merge_queue=merge, run=fake_run("passed"), loader=json_loader)
+    assert [name.split("-", 2)[2] for name, _ in out] == ["alpha.json", "beta.json"]
+    assert [state for _, state in out] == ["passed", "passed"]
+    assert len(merge.submitted) == 2
+    assert fl.take_next(env.home) is None
+
+
+def test_step6_an_unreadable_job_file_is_reported_and_the_drain_goes_on(tmp_path):
+    env = env_for(tmp_path)
+    fl.enqueue(write_job(tmp_path, "good"), env.home)
+    bad = fl.enqueue(write_job(tmp_path, "bad"), env.home)
+
+    def loader(path):
+        if "bad" in Path(path).name:
+            raise ValueError("schema")
+        return json_loader(path)
+
+    out = fl.drain_queue(env.api, env.launcher, run=fake_run("tests-failed"), loader=loader)
+    assert [state for _, state in out] == ["tests-failed", "invalid"]      # good was queued first
