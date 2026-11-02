@@ -1,4 +1,4 @@
-"""Opus repair (final roster, 2026-11-02): the isolated Claude CLI call, checked. Off by default (owner, 2026-11-02: no Opus call anywhere).
+"""Opus repair (final roster, 2026-11-02): the isolated Claude CLI call, checked. The test suite keeps the switch off (pieces/conftest.py).
 Every test here uses the fake `claude` (pieces/fake_claude.py) or an injected runner; the real CLI is never started. Also the static rules for
 the P1b modules: no legacy family name, and the word Opus only in opus_repair.py."""
 import json
@@ -41,8 +41,8 @@ def envelope(result, is_error=False):
 
 # ---- 1. off by default: no call of any kind
 
-def test_the_module_is_switched_off_by_default_and_names_its_reason():
-    assert opus.OPUS_ENABLED is False
+def test_the_test_run_keeps_the_repair_switch_off_and_the_reason_is_named():
+    assert opus.OPUS_ENABLED is False                  # pieces/conftest.py: no test starts the real CLI
     assert opus.UNAVAILABLE == "Opus repair unavailable"
 
 

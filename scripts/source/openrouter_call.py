@@ -56,6 +56,8 @@ LIMITS = {                          # owner limits, 2026-11-02; text (the probe)
 }
 REASONING_MAX = 8000                # reasoning.max_tokens on every call; the provider does not enforce it, so thinking tokens are recorded only
 XING_SAMPLING = {"temperature": 0.8, "top_p": 0.95, "repetition_penalty": 1.05}
+GLM_SETTINGS = {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": True}}   # patch 6 (2026-11-02): GLM takes no reasoning token cap
+GLM_MAX_TOKENS = 16000              # the GLM request never asks for more; a cut-off GLM reply is not retried with more tokens
 PAID_PROVIDER_NAME, PAID_PROVIDER_SLUG = "Z.AI", "z-ai"     # docs/p1a_glm_endpoint.json, read 2026-11-02
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
@@ -568,8 +570,8 @@ class OpenRouter:
                     text = check_reply(kind, model, data)
                 except _Truncated as exc:
                     self._note(model, 200, str(exc))
-                    if truncations == TRUNCATION_RETRIES:
-                        raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens} again")
+                    if truncations == TRUNCATION_RETRIES or slot == "paid":
+                        raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens}")
                     truncations += 1
                     tokens = limits.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
                     continue
@@ -649,6 +651,8 @@ class OpenRouter:
                 "max_tokens": tokens, "temperature": 0.1, "reasoning": {"max_tokens": REASONING_MAX}}
         if model == ROLES["writer_b"]:
             body.update(XING_SAMPLING)
+        if slot == "paid":                              # GLM: its own settings, no reasoning token cap
+            body.update(temperature=GLM_SETTINGS["temperature"], reasoning=dict(GLM_SETTINGS["reasoning"]), max_tokens=min(tokens, GLM_MAX_TOKENS))
         provider = {}
         if private:
             provider["data_collection"] = "deny"

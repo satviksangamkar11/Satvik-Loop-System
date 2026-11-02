@@ -1,4 +1,4 @@
-"""P1b routing (final roster, 2026-11-02): the production ladder, per-file lineage, the review panel (GLM first, then North; the free writer that
+"""P1b routing (final roster, 2026-11-02): the production ladder, per-file lineage, the review panel (North first, then GLM; the free writer that
 did not write the code takes North's place when North wrote it or is down), the FIX FIRST evidence rule, the repair-step gate, job-size and
 settings checks, and the unit deadline. Pure logic: models are injected through a small interface, so every rule runs with scripted fake models
 and no network.
@@ -23,7 +23,7 @@ import openrouter_call as oc
 
 DOTS, XING, NORTH, GLM = oc.ROLES["writer_a"], oc.ROLES["writer_b"], oc.ROLES["reviewer_b"], oc.ROLES["reviewer_a"]
 ANTHROPIC = "anthropic"             # the repair step's name in the lineage and the steps; its call lives in the isolated repair module
-REPAIR_TIMEOUT_S = 1800             # the repair step's call timeout: a repair starts only when this much of the unit deadline is left
+REPAIR_TIMEOUT_S = 900              # the repair step's call timeout (the repair module's TIMEOUT_S): a repair starts only when this much of the unit deadline is left
 DEADLINES_MIN = (60, 120)
 UNIT_LINES, FILE_LINES = 1500, 800
 FREE_REQUESTS, REVIEW_USD = 40, 0.05
@@ -148,13 +148,14 @@ def backup_writer(origin, excluded=()):
 
 
 def panel_for(origin, unavailable=()):
-    """The reviewers for a job's code whose fresh writer was `origin`: GLM, then North. North is replaced by the backup writer (the free writer
-    that did not write the code) when North wrote the code or is down. The writer is never on its own panel."""
+    """The reviewers for a job's code whose fresh writer was `origin`: North, then GLM. North is replaced by the backup writer (the free writer
+    that did not write the code) when North wrote the code or is down. GLM is always last, so it is called only after the first reviewer says
+    READY. The writer is never on its own panel."""
     if origin not in (DOTS, XING, NORTH):
         raise Blocked(f"no reviewer row for code whose origin is {origin}")
     down = set(unavailable)
-    second = backup_writer(origin, down) if (origin == NORTH or NORTH in down) else NORTH
-    panel = [GLM, second]
+    first = backup_writer(origin, down) if (origin == NORTH or NORTH in down) else NORTH
+    panel = [first, GLM]
     if origin in panel or len(set(panel)) != len(panel):
         raise Blocked(f"panel for {origin} is not independent: {panel}")
     return panel
@@ -241,7 +242,7 @@ def _review(files, models, lineage, down):
     used = set(panel) | set(down)
     ready, errors = [], {}
     try:
-        for slot in panel:                              # GLM first, then North (or the backup)
+        for slot in panel:                              # North (or its backup) first; GLM only after that READY
             kind, text, error = _verdict(models, slot, files)
             if kind == "READY":
                 ready.append(slot)

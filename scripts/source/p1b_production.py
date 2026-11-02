@@ -15,6 +15,7 @@ import ast
 import difflib
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -42,10 +43,45 @@ CONTEXT_HEAD = "## 7. CONTEXT\n"
 OMITTED_HEAD = "## 8. OMITTED (optional files left out for the size limit, and excluded references)\n"
 WRITER_SYSTEM = ("You write the files of one job. Follow the spec exactly. Reply with FILE blocks only: for each file you were given, "
                  "`FILE: <path>` then the complete file in a fenced block, nothing else. Never write a reviewer verdict line.")
-REVIEW_SYSTEM = ("REVIEW TASK. Review the files against the spec. End your reply with exactly one line: `## Verdict: READY` or "
-                 "`## Verdict: FIX FIRST`. A FIX FIRST must name file:line (a file of this package) and the SPEC n or CHECK n it breaks; "
-                 "without both it is not counted.")
+REVIEW_SYSTEM = ("REVIEW TASK. Review the files against the spec and the checks. Reply with at most 5 findings, each on ONE line, in exactly "
+                 "this form:\n- file:line [SPEC n|CHECK n]: <what breaks, under 25 words>\n"
+                 "Example: `- pieces/calc.py:12 [SPEC 3]: returns the sum without the tax, so the total is wrong.`\n"
+                 "No code. No praise. If the code is right, give no finding line.\n"
+                 "End your reply with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`. A FIX FIRST must have a finding line "
+                 "that names file:line of a file in this package and the SPEC n or CHECK n it breaks; without both it is not counted.")
+REPAIR_INPUT_CHARS = 3000           # the failing tests fed back to a repair: at most this many characters
+FAILING_HEAD = "FAILING TESTS (from the JUnit file of the last run, failing tests only):\n"
+CUT_MARK = "\n[cut at 3000 characters]"
 REASK = ("Your FIX FIRST had no valid file:line and SPEC n or CHECK n, so it is not counted. Reply again with that evidence, or with READY.")
+
+
+def failing_summary(junit, limit=REPAIR_INPUT_CHARS):
+    """The repair input: the failing tests of one JUnit run only, each with its assertion line and the short traceback (the failing source line,
+    the E lines and the location). Failures with the same short traceback are merged into one entry. Capped at `limit` characters."""
+    if not junit:
+        return "(no JUnit record of the last run)"
+    try:
+        cases = list(ET.fromstring(junit).iter("testcase"))
+        details = gates._case_details(junit)
+    except ET.ParseError:
+        return "(the JUnit file could not be read)"
+    groups = {}
+    for case, (file, tid, _outcome, _kind) in zip(cases, details):
+        bad = next((c for c in case if c.tag in ("failure", "error")), None)
+        if bad is None:
+            continue
+        lines = [line.rstrip() for line in ((bad.text or "") + "\n" + (bad.get("message") or "")).splitlines() if line.strip()]
+        source = [line.strip() for line in lines if line.lstrip().startswith((">", "E "))][:3] or [(bad.get("message") or "").strip()]
+        where = [line.strip() for line in lines if re.match(r"\s*\S+\.py:\d+", line)][-1:]
+        groups.setdefault(tuple(source + where), []).append(f"{file}::{tid}" if file else tid)
+    entries = []
+    for short, ids in groups.items():
+        same = f" (identical failure, {len(ids)} tests)" if len(ids) > 1 else ""
+        entries.append(", ".join(ids) + same + "\n" + "\n".join(short))
+    text = "\n\n".join(entries) or "(no failing test in the last run)"
+    if len(text) > limit:
+        text = text[:limit - len(CUT_MARK)] + CUT_MARK
+    return text
 
 
 class AcceptanceTampered(Exception):
@@ -369,7 +405,7 @@ class Production:
         self.spec = (self.root / job["spec"]).read_text(encoding="utf-8")
         self.review_text = ""           # the production review prompt is built in: a job's review_prompt is never read (the legacy docs/REVIEW_PROMPT.md is never used)
         self.steps = []                 # every model call and test run, in order
-        self.last_output = ""           # the output a writer may see next: cleared by restore(), so a fresh writer never gets an earlier run's output
+        self.last_junit = None          # the JUnit XML of the last test run (the repair input: failing tests only); cleared by restore()
         self.evidence_output = ""       # the output of the last test run, kept for the diagnostic
         self.test_runs = 0
         self.tested_hash = None         # hash of the job files at the last green run
@@ -445,8 +481,8 @@ class Production:
         for rel in self.files:
             path = self.root / rel
             parts.append(f"{rel}:\n{path.read_text(encoding='utf-8')}" if path.is_file() else f"{rel}: (new file)")
-        if self.last_output:
-            parts.append("PYTEST OUTPUT (last 9000 chars):\n" + self.last_output[-9000:])
+        if self.last_junit is not None:
+            parts.append(FAILING_HEAD + failing_summary(self.last_junit))
             parts.append("Fix exactly the problems shown above. Change nothing else.")
         return "\n\n".join(parts)
 
@@ -467,7 +503,7 @@ class Production:
 
     def restore(self):
         restore_files(self.root, self.originals)
-        self.last_output = ""           # the next writer starts from the originals and the spec only: no output of the attempt just undone
+        self.last_junit = None          # the next writer starts from the originals and the spec only: no test result of the attempt just undone
 
     def tests(self, files):
         result = self.sandbox.run(self.root, self.test_targets, readonly=self.protected, timeout_s=600)
@@ -476,7 +512,7 @@ class Production:
         self.evidence_output = result.output or ""
         if self.history is not None:                # the evidence of every run stays with the job, never in a writer's prompt
             (self.history / f"test_{self.test_runs:02d}.txt").write_text(_scrubbed(self.evidence_output, self.scrub_keys), encoding="utf-8")
-        self.last_output = self.evidence_output
+        self.last_junit = result.junit
         expected = gates.expected_test_ids(self.root, self.test_targets)
         problems = gates.verify_junit(result.junit, expected, result.returncode, result.timed_out)
         failing = self._failing(result.junit, expected)

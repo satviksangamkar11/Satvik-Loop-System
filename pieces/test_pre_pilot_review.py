@@ -144,8 +144,9 @@ def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path, o
     assert "PYTEST OUTPUT" not in fresh
     assert "TRACE-OF" not in fresh and "return 100" not in fresh  # no line of Dots' failure reached Xing
 
-    repair = prompt_of(provider, XING, 1)                       # Xing's own repair gets Xing's own output, never Dots'
-    assert "TRACE-OF     return sum(prices[:-1])" in repair
+    repair = prompt_of(provider, XING, 1)                       # Xing's own repair gets its own failing tests from JUnit, never Dots' output
+    assert "FAILING TESTS" in repair and "PYTEST OUTPUT" not in repair
+    assert "assert calculate_total([1, 2]) == 3" in repair       # Xing's own failing assertion
     assert "return 100" not in repair
 
     assert "TRACE-OF     return 100" in history_text(root)     # the evidence is kept in the job history, not in a prompt
@@ -156,7 +157,7 @@ def test_a_fresh_xing_write_never_receives_the_pytest_output_of_dots(tmp_path, o
 def test_review_open_restores_the_originals_and_keeps_the_candidate_for_inspection(tmp_path):
     root = with_original(make_prod_root(tmp_path))
     job = load(root, prod_job())
-    provider = ph.Provider({DOTS: [good_reply()], GLM: [FIX_FIRST]})   # Dots green; GLM's FIX FIRST has file:line and SPEC
+    provider = ph.Provider({DOTS: [good_reply()], NORTH: [FIX_FIRST]})   # Dots green; North (the first reviewer) gives a FIX FIRST with file:line and SPEC
     result = fl.run_job(job, root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
     assert result["state"] == "review-open", result
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
