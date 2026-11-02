@@ -1,12 +1,14 @@
 """OpenRouter adapter (P1a, architecture Revision 2). The only path to OpenRouter.
 
-Roster roles or exact free IDs only: no `openrouter/free`, no fallback lists. Free IDs use the free key and one account-wide ledger; every
-free attempt is reserved there under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. The reviewer_a role
-(z-ai/glm-5.3-flash) is the only paid ID: it uses the paid key, is pinned to Z.AI, is reviewer-only (any other kind is refused before a request), and its reviews share one per-job ceiling that is reserved before each call. Every reply is checked before it counts. Errors are
-named exceptions; nothing falls back to another model or key. Private code is refused unless a route is approved in APPROVED_PRIVATE, which
-is empty: no approved non-training route exists yet.
+Models come only from config/roster.json, read for the profile named by SATVIK_PROFILE (default "test"). Roster roles or exact free roster IDs
+only: no auto-routing alias, no fallback lists. Free IDs use the free key and one account-wide ledger; every free attempt is reserved there
+under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. A paid OpenRouter role (production reviewer_a)
+uses the paid key, is pinned to its roster provider, is reviewer-only (any other kind is refused before a request), and its reviews share one
+per-job ceiling that is reserved before each call. The test profile refuses any paid role when the roster is loaded, before any request.
+Every reply is checked before it counts. Errors are named exceptions; nothing falls back to another model or key. Private code is refused
+unless a route is approved in APPROVED_PRIVATE, which is empty: no approved non-training route exists yet.
 
-Importing this module calls no model. `main()` with `probe` makes one call per roster model, by hand."""
+Importing this module calls no model. `main()` with `probe` makes one call per writer and reviewer role, by hand."""
 import http.client
 import importlib.util
 import json
@@ -22,24 +24,19 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 API = "https://openrouter.ai/api/v1"
-# Owner roster, 2026-11-02. Roles are the only names production code uses; exact IDs are accepted only where listed in ALLOWED.
-ROLES = {
-    "writer_a": "dots-studio/dots-3-note-preview:free",
-    "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
-    "reviewer_a": "z-ai/glm-5.3-flash",
-    "reviewer_b": "cohere/north-mini-code:free",
-}
-REVIEWER_BACKUP = ("google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free")
-REVIEWER_BACKUP_ENABLED = False     # owner: disabled; the probe may still call these IDs with allow_disabled_backup=True
-PAID = frozenset({ROLES["reviewer_a"]})
-ALLOWED = frozenset(v for v in ROLES.values() if v not in PAID) | frozenset(REVIEWER_BACKUP)
+ROSTER_PATH = REPO / "config" / "roster.json"
+PROFILE_VAR = "SATVIK_PROFILE"      # "test" (the default) or "production"
+WRITER_ROLES = ("writer_a", "writer_b")
+REVIEWER_ROLES = ("reviewer_b", "reviewer_a")     # the review panel's order: the free reviewer first, the paid one last (after a READY)
+ROLE_NAMES = ("writer_a", "writer_b", "reviewer_a", "reviewer_b", "repair", "planner")
+SETTING_KEYS = ("temperature", "reasoning", "max_tokens", "timeout_s", "sampling")
+NON_AUTHOR_WRITER = "non_author_writer"  # reviewer_a under the test profile: the free writer that did not write the code
+SENTINELS = frozenset({NON_AUTHOR_WRITER, "off", "fake"})   # roster values that are not model IDs
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
 FREE_DAILY_CAP = 1000               # per account, once $10 has been bought (50 below that)
 FREE_PER_MINUTE = 15                # OpenRouter allows 20
 JOB_FREE_REQUESTS = 40
-JOB_REVIEW_USD = 0.05              # owner (final roster, 2026-11-02): $0.05 ceiling per job for the GLM reviews, reserved before each call
-GLM_PROMPT_USD_PER_TOKEN = 0.15e-6  # z-ai/glm-5.3-flash at Z.AI (docs/p1a_glm_endpoint.json)
-GLM_COMPLETION_USD_PER_TOKEN = 0.50e-6
+JOB_REVIEW_USD = 0.05              # owner (final roster, 2026-11-02): $0.05 ceiling per job for the paid reviews, reserved before each call
 MAX_RETRIES = 3                     # HTTP retries after the first attempt
 BACKOFF_S = (2, 8, 30)              # plus up to 1 s of jitter
 MINUTE_WAIT_DEFAULT_S = 5.0
@@ -49,16 +46,6 @@ REVIEW_TIMEOUT_S = 600              # the review timeout: the reviewer's 429 win
 BREAKER_LIMIT = 2                   # consecutive provider errors drop a model for the job
 TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
 MAX_TOKENS_CAP = 72000              # the largest max_tokens any retry asks for
-LIMITS = {                          # owner limits, 2026-11-02; text (the probe) keeps the old defaults
-    "writer": {"max_tokens": 40000, "retry_max_tokens": 72000, "timeout_s": 1200, "retry_timeout_s": 1800},
-    "reviewer": {"max_tokens": 16000, "timeout_s": 600},
-    "text": {"max_tokens": 4000, "timeout_s": 600},
-}
-REASONING_MAX = 8000                # reasoning.max_tokens on every call; the provider does not enforce it, so thinking tokens are recorded only
-XING_SAMPLING = {"temperature": 0.8, "top_p": 0.95, "repetition_penalty": 1.05}
-GLM_SETTINGS = {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": True}}   # patch 6 (2026-11-02): GLM takes no reasoning token cap
-GLM_MAX_TOKENS = 16000              # the GLM request never asks for more; a cut-off GLM reply is not retried with more tokens
-PAID_PROVIDER_NAME, PAID_PROVIDER_SLUG = "Z.AI", "z-ai"     # docs/p1a_glm_endpoint.json, read 2026-11-02
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
@@ -121,6 +108,73 @@ class _Mismatch(OpenRouterError):
     pass
 
 
+class RosterRefused(ValueError):
+    """config/roster.json is malformed, names an unknown profile, or the test profile names a paid role. Raised while the roster loads: no
+    client exists and no request is sent."""
+
+
+def _check_role(profile, role, spec):
+    where = f"{profile}/{role}"
+    if not isinstance(spec, dict) or any(key not in spec for key in ("model", "provider", "paid", "pricing", "settings")):
+        raise RosterRefused(f"{where}: needs model, provider, paid, pricing and settings")
+    if not isinstance(spec["model"], str) or not spec["model"].strip():
+        raise RosterRefused(f"{where}: model must be a non-empty string")
+    if spec["provider"] is not None and (not isinstance(spec["provider"], dict) or not {"name", "slug"} <= set(spec["provider"])):
+        raise RosterRefused(f"{where}: provider must be null or {{name, slug}}")
+    if not isinstance(spec["paid"], bool):
+        raise RosterRefused(f"{where}: paid must be true or false")
+    if not isinstance(spec["settings"], dict) or any(key not in spec["settings"] for key in SETTING_KEYS):
+        raise RosterRefused(f"{where}: settings must hold {', '.join(SETTING_KEYS)}")
+    if spec["paid"] and role in WRITER_ROLES + REVIEWER_ROLES and (spec["provider"] is None or spec["pricing"] is None):
+        raise RosterRefused(f"{where}: a paid OpenRouter role needs a pinned provider and prices")
+
+
+def load_roster_file(path=None):
+    """The profiles in config/roster.json, every role checked. Raises RosterRefused for anything malformed."""
+    try:
+        data = json.loads(Path(path or ROSTER_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RosterRefused(f"config/roster.json cannot be read: {exc}") from exc
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        raise RosterRefused("config/roster.json: schema_version must be 1")
+    profiles = data.get("profiles")
+    if not isinstance(profiles, dict) or set(profiles) != {"test", "production"}:
+        raise RosterRefused("config/roster.json: profiles must be exactly test and production")
+    for name, profile in profiles.items():
+        roles = profile.get("roles") if isinstance(profile, dict) else None
+        if not isinstance(roles, dict) or set(roles) != set(ROLE_NAMES):
+            raise RosterRefused(f"profile {name}: roles must be exactly {', '.join(ROLE_NAMES)}")
+        for role, spec in roles.items():
+            _check_role(name, role, spec)
+    return profiles
+
+
+def load_profile(name=None, path=None):
+    """{role: spec} for a profile: the name given, else SATVIK_PROFILE, else test. The test profile refuses any paid role here, before any
+    request can be built."""
+    name = (name or os.environ.get(PROFILE_VAR) or "test").strip()
+    profiles = load_roster_file(path)
+    if name not in profiles:
+        raise RosterRefused(f"unknown profile {name!r}: SATVIK_PROFILE is test (the default) or production")
+    roles = profiles[name]["roles"]
+    if name == "test":
+        paid = sorted(role for role, spec in roles.items() if spec["paid"])
+        if paid:
+            raise RosterRefused(f"the test profile refuses paid roles; the roster names these as paid: {paid}")
+    return roles
+
+
+PROFILE = (os.environ.get(PROFILE_VAR) or "test").strip()
+ROLE_SPECS = load_profile(PROFILE)
+ROLES = {role: spec["model"] for role, spec in ROLE_SPECS.items()}
+_API_ROLES = [role for role in WRITER_ROLES + REVIEWER_ROLES if ROLES[role] not in SENTINELS]
+PAID = frozenset(ROLES[role] for role in _API_ROLES if ROLE_SPECS[role]["paid"])
+ALLOWED = frozenset(ROLES[role] for role in _API_ROLES if not ROLE_SPECS[role]["paid"])
+PINS = {ROLES[role]: ROLE_SPECS[role]["provider"] for role in _API_ROLES if ROLE_SPECS[role]["paid"]}     # paid model -> {name, slug}
+PRICING = {ROLES[role]: ROLE_SPECS[role]["pricing"] for role in _API_ROLES if ROLE_SPECS[role]["paid"]}    # paid model -> USD per token
+SETTINGS = {ROLES[role]: ROLE_SPECS[role]["settings"] for role in _API_ROLES}                              # model -> its role's settings
+
+
 def redact(text, secrets=()):
     text = str(text)
     for secret in secrets:
@@ -133,16 +187,16 @@ def utc_day(now):
     return time.strftime("%Y-%m-%d", time.gmtime(now))
 
 
-def resolve(name, allow_disabled_backup=False):
-    """The roster ID for a role name or an exact free roster ID. Anything else (a list, a comma list, openrouter/free, a bare paid ID, a
-    disabled backup role) is refused before a request is built."""
-    if isinstance(name, str) and name in ROLES:
+def resolve(name):
+    """The roster model for a writer or reviewer role name, or an exact free roster ID. Anything else (a list, a comma list, an alias, a
+    bare paid ID, the repair or planner role, a sentinel such as non_author_writer) is refused before a request is built."""
+    if isinstance(name, str) and name in WRITER_ROLES + REVIEWER_ROLES:
+        if ROLES[name] in SENTINELS:
+            raise ModelRefused(f"{name} is {ROLES[name]!r} in the {PROFILE} profile, not a model: nothing is called")
         return ROLES[name]
     if isinstance(name, str) and name in ALLOWED:
-        if name in REVIEWER_BACKUP and not REVIEWER_BACKUP_ENABLED and not allow_disabled_backup:
-            raise ModelRefused(f"{name} is a disabled reviewer backup; it is not called")
         return name
-    raise ModelRefused(f"not on the roster: {name!r} (roles or exact free IDs only; no openrouter/free, no fallback lists)")
+    raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster IDs only; no fallback lists)")
 
 
 def parse_response(status, raw):
@@ -205,10 +259,10 @@ def check_reply(kind, requested, data):
     return text
 
 
-def review_reservation(system, user, max_tokens):
-    """The worst case of one GLM call: the prompt at about 3 characters a token (deliberately high) at $0.15 a million, plus the whole output
-    allowance at $0.50 a million."""
-    return math.ceil(len(system + user) / 3) * GLM_PROMPT_USD_PER_TOKEN + max_tokens * GLM_COMPLETION_USD_PER_TOKEN
+def review_reservation(system, user, max_tokens, prices):
+    """The worst case of one paid call: the prompt at about 3 characters a token (deliberately high) at the roster's prompt price, plus the
+    whole output allowance at the roster's completion price. `prices` is {"prompt", "completion"} in USD per token."""
+    return math.ceil(len(system + user) / 3) * prices["prompt"] + max_tokens * prices["completion"]
 
 
 def _reported_cost(data):
@@ -218,13 +272,13 @@ def _reported_cost(data):
     return float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
 
 
-def review_cost(data):
-    """What a GLM reply costs: usage.cost when reported, else its tokens at the spec prices, else None."""
+def review_cost(data, prices):
+    """What a paid reply costs: usage.cost when reported, else its tokens at the roster's prices, else None."""
     if _reported_cost(data) is not None:
         return _reported_cost(data)
     usage = data.get("usage") if isinstance(data, dict) else None
     if isinstance(usage, dict) and isinstance(usage.get("prompt_tokens"), int) and isinstance(usage.get("completion_tokens"), int):
-        return usage["prompt_tokens"] * GLM_PROMPT_USD_PER_TOKEN + usage["completion_tokens"] * GLM_COMPLETION_USD_PER_TOKEN
+        return usage["prompt_tokens"] * prices["prompt"] + usage["completion_tokens"] * prices["completion"]
     return None
 
 
@@ -460,6 +514,9 @@ class OpenRouter:
         A reply from any other provider is refused in call()."""
         if model in self._endpoints:
             return self._endpoints[model]
+        pin = PINS.get(model)
+        if pin is None:
+            raise self._err(ModelRefused, f"{model} has no pinned provider in the roster; nothing is sent")
         status, _, raw = self.transport("GET", f"{API}/models/{model}/endpoints", {}, None, 60)
         _, data, message = parse_response(status, raw)
         body = data.get("data") if isinstance(data, dict) else None
@@ -468,19 +525,19 @@ class OpenRouter:
             raise self._err(ProviderUnavailable, f"endpoint prices for {model} unavailable: HTTP {status} {message[:200]}")
         pinned = None
         for ep in endpoints:
-            if not isinstance(ep, dict) or ep.get("provider_name") != PAID_PROVIDER_NAME:
+            if not isinstance(ep, dict) or ep.get("provider_name") != pin["name"]:
                 continue
-            if str(ep.get("tag") or "").split("/")[0] != PAID_PROVIDER_SLUG:
+            if str(ep.get("tag") or "").split("/")[0] != pin["slug"]:
                 continue
             pricing = ep.get("pricing") if isinstance(ep.get("pricing"), dict) else {}
             try:
-                pinned = {"slug": PAID_PROVIDER_SLUG, "name": PAID_PROVIDER_NAME,
+                pinned = {"slug": pin["slug"], "name": pin["name"],
                           "prompt": float(pricing["prompt"]), "completion": float(pricing["completion"])}
             except (KeyError, TypeError, ValueError):
                 pinned = None
             break
         if pinned is None:
-            raise self._err(ProviderUnavailable, f"no priced {PAID_PROVIDER_NAME} endpoint for {model}; the GLM review is refused (no other provider is used)")
+            raise self._err(ProviderUnavailable, f"no priced {pin['name']} endpoint for {model}; the review is refused (no other provider is used)")
         self._endpoints[model] = pinned
         return pinned
 
@@ -522,11 +579,12 @@ class OpenRouter:
                                  "note": "free_model_daily_requests absent; local cap " + str(self.ledger.daily_cap)}
         return summary
 
-    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, allow_disabled_backup=False):
-        """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply)."""
+    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None):
+        """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply). The model's settings
+        come from its roster role; the retry values apply to writer calls only."""
         if kind not in ("text", "writer", "reviewer"):
             raise ValueError(f"unknown reply kind {kind!r}")
-        model = resolve(name, allow_disabled_backup)
+        model = resolve(name)
         if private and model not in self.approved_private:
             raise self._err(ModelRefused, f"private code is blocked: no approved non-training route for {model}")
         slot = "paid" if model in PAID else "free"
@@ -534,14 +592,15 @@ class OpenRouter:
             raise self._err(ModelRefused, f"{model} is the GLM reviewer: it takes reviewer calls only, so this {kind} call is refused before any request")
         if slot not in self.keys:
             raise self._err(ModelRefused, f"no {slot} key loaded, so {model} is not called")
-        limits = LIMITS[kind]
+        settings = SETTINGS[model]
+        retry = settings if kind == "writer" else {}           # retry values belong to writer calls only
         started = self.clock()
-        tokens = max_tokens if max_tokens is not None else limits["max_tokens"]
-        timeout = timeout_s if timeout_s is not None else limits["timeout_s"]
+        tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
+        timeout = timeout_s if timeout_s is not None else settings["timeout_s"]
         attempts, retries, truncations, window = 0, 0, 0, 0     # window: upstream 429 retries a reviewer call has used (REVIEWER_429_WAITS_S)
         while True:
-            if attempts and "retry_timeout_s" in limits:
-                timeout = limits["retry_timeout_s"]
+            if attempts and retry.get("retry_timeout_s"):
+                timeout = retry["retry_timeout_s"]
             if self.breaker.open(model):
                 raise self._err(ProviderUnavailable,
                                 f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row; last: {self._last_failures(model)}")
@@ -562,10 +621,10 @@ class OpenRouter:
                 if data is None:
                     self._note(model, 200, "malformed reply: not a JSON object")
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
-                if slot == "paid" and data.get("provider") != PAID_PROVIDER_NAME:
+                if slot == "paid" and data.get("provider") != PINS[model]["name"]:
                     self._note(model, 200, f"reply came from provider {data.get('provider')!r}")
                     self.breaker.failed(model)
-                    raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {PAID_PROVIDER_NAME!r}")
+                    raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {PINS[model]['name']!r}")
                 try:
                     text = check_reply(kind, model, data)
                 except _Truncated as exc:
@@ -573,7 +632,7 @@ class OpenRouter:
                     if truncations == TRUNCATION_RETRIES or slot == "paid":
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens}")
                     truncations += 1
-                    tokens = limits.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
+                    tokens = retry.get("retry_max_tokens") or min(tokens * 2, MAX_TOKENS_CAP)
                     continue
                 except _Mismatch as exc:
                     self._note(model, 200, str(exc))
@@ -621,7 +680,7 @@ class OpenRouter:
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens)
+            estimate = review_reservation(system, user, tokens, PRICING[model])
             self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
             self.endpoint(model)
             self.budget.reserve_review(estimate)
@@ -640,19 +699,22 @@ class OpenRouter:
         reply costs; with no reply, the whole reservation is kept as spent."""
         if slot == "free":
             return _reported_cost(data) or 0.0
-        spent = review_cost(data) if data is not None else None
+        spent = review_cost(data, PRICING[model]) if data is not None else None
         if spent is None:
             spent = reserved
         self.budget.settle_review(reserved, spent)
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):
+        settings = SETTINGS[model]
         body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "max_tokens": tokens, "temperature": 0.1, "reasoning": {"max_tokens": REASONING_MAX}}
-        if model == ROLES["writer_b"]:
-            body.update(XING_SAMPLING)
-        if slot == "paid":                              # GLM: its own settings, no reasoning token cap
-            body.update(temperature=GLM_SETTINGS["temperature"], reasoning=dict(GLM_SETTINGS["reasoning"]), max_tokens=min(tokens, GLM_MAX_TOKENS))
+                "max_tokens": tokens, "temperature": settings["temperature"]}
+        if settings["reasoning"] is not None:
+            body["reasoning"] = dict(settings["reasoning"])
+        if settings["sampling"]:
+            body.update(settings["sampling"])
+        if slot == "paid":                              # a paid role's request never asks for more than its roster max_tokens
+            body["max_tokens"] = min(tokens, settings["max_tokens"])
         provider = {}
         if private:
             provider["data_collection"] = "deny"
@@ -698,13 +760,13 @@ def probe(client, out_path=None, names=None):
 
     before = key_states()
     results = {}
-    targets = [("writer_a", False), ("writer_b", False), ("reviewer_b", False), (REVIEWER_BACKUP[0], True), (REVIEWER_BACKUP[1], True)]
+    targets = ["writer_a", "writer_b", "reviewer_b"]        # the free roles; the paid role is never probed
     if names is not None:
-        targets = [t for t in targets if t[0] in names]
-    for name, backup in targets:
-        model = resolve(name, backup)
+        targets = [t for t in targets if t in names]
+    for name in targets:
+        model = resolve(name)
         try:
-            text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256, allow_disabled_backup=backup)
+            text, info = client.call(name, PROBE_SYSTEM, PROBE_USER, kind="text", max_tokens=256)
             results[name] = dict(info, ok=True, reply=text.strip()[:60], failed_attempts=client.failures_for(model))
         except OpenRouterError as exc:
             results[name] = {"model": model, "ok": False, "error": str(exc), "failed_attempts": client.failures_for(model)}
@@ -721,7 +783,7 @@ def main(argv=None):
     ap.add_argument("command", choices=["probe"])
     ap.add_argument("--out", help="also write the JSON summary to this file")
     ap.add_argument("--ledger", default=str(REPO / "_loop" / "openrouter"))
-    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer_b, or a backup model ID); default all")
+    ap.add_argument("--models", help="comma list of probe names to run (writer_a, writer_b, reviewer_b); default all")
     args = ap.parse_args(argv)
     keys = load_keys()
     if not keys:

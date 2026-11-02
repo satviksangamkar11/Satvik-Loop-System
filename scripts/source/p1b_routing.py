@@ -37,6 +37,7 @@ Outcome = namedtuple("Outcome", "status reason")
 FILE_LINE = re.compile(r"([\w./\\-]+\.\w+):(\d+)")
 CITE = re.compile(r"\b(SPEC|CHECK) (\d+)\b")
 CHECKS = 5                          # CHECK 1 to 5 in the review package
+LINEAGE_SCHEMA_VERSION = 1
 VERDICT = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 
 
@@ -82,12 +83,17 @@ class Lineage:
         return self._rows.get(path)
 
     def save(self, path):
-        Path(path).write_text(json.dumps(self._rows, indent=2, sort_keys=True), encoding="utf-8")
+        """The file holds one row per job file, plus "schema_version": 1 at the top level (a file with no version is read as version 1)."""
+        Path(path).write_text(json.dumps(dict(self._rows, schema_version=LINEAGE_SCHEMA_VERSION), indent=2, sort_keys=True), encoding="utf-8")
 
     @classmethod
     def load(cls, path):
         lineage = cls()
-        lineage._rows = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        version = data.pop("schema_version", LINEAGE_SCHEMA_VERSION)
+        if version != LINEAGE_SCHEMA_VERSION:
+            raise ValueError(f"lineage schema_version {version!r} is not {LINEAGE_SCHEMA_VERSION}")
+        lineage._rows = data
         return lineage
 
 
@@ -139,23 +145,33 @@ def trim_tail(text, limit=TRIM_CHARS):
     return text[-limit:] if len(text) > limit else text
 
 
-def backup_writer(origin, excluded=()):
+def backup_writer(origin, excluded=(), writers=(DOTS, XING)):
     """The free writer that did not write the code and is not excluded (down, or already on this panel)."""
-    for writer in (DOTS, XING):
+    for writer in writers:
         if writer != origin and writer not in excluded:
             return writer
     raise oc.ProviderUnavailable("no second independent reviewer is available (provider-unavailable)")
 
 
-def panel_for(origin, unavailable=()):
-    """The reviewers for a job's code whose fresh writer was `origin`: North, then GLM. North is replaced by the backup writer (the free writer
-    that did not write the code) when North wrote the code or is down. GLM is always last, so it is called only after the first reviewer says
-    READY. The writer is never on its own panel."""
-    if origin not in (DOTS, XING, NORTH):
+def panel_for(origin, unavailable=(), specs=None):
+    """The reviewers for a job's code whose fresh writer was `origin`, from the roster's reviewer roles in panel order: the free reviewer
+    (reviewer_b) first, then reviewer_a (the paid reviewer, or the non_author_writer role of the test profile). A slot takes the free writer
+    that did not write the code (backup_writer) when its model is the author, is down, or is the non_author_writer role; a paid slot is never
+    replaced. The paid reviewer is last, so it is called only after the first reviewer says READY. The author is never on its own panel."""
+    specs = oc.ROLE_SPECS if specs is None else specs
+    models = {role: spec["model"] for role, spec in specs.items()}
+    writers = (models["writer_a"], models["writer_b"])
+    if origin not in writers + (models["reviewer_b"],):
         raise Blocked(f"no reviewer row for code whose origin is {origin}")
     down = set(unavailable)
-    first = backup_writer(origin, down) if (origin == NORTH or NORTH in down) else NORTH
-    panel = [first, GLM]
+    panel = []
+    for role in oc.REVIEWER_ROLES:
+        spec = specs[role]
+        taken = set(panel) | down
+        if spec["model"] == oc.NON_AUTHOR_WRITER or (not spec["paid"] and (spec["model"] == origin or spec["model"] in down)):
+            panel.append(backup_writer(origin, taken, writers))
+        else:
+            panel.append(spec["model"])
     if origin in panel or len(set(panel)) != len(panel):
         raise Blocked(f"panel for {origin} is not independent: {panel}")
     return panel
@@ -252,8 +268,8 @@ def _review(files, models, lineage, down):
             if kind == "UNSUPPORTED":
                 return Outcome("review-fix", f"{slot}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
             errors[slot] = error
-            if slot == GLM:                             # GLM must answer READY: there is no substitute for it
-                return Outcome("provider-unavailable", f"GLM review did not return READY ({_why(errors, GLM)})")
+            if slot in oc.PAID:                         # the paid reviewer must answer READY: there is no substitute for it
+                return Outcome("provider-unavailable", f"paid review did not return READY ({_why(errors, slot)})")
             try:
                 backup = backup_writer(origin, used)
             except oc.ProviderUnavailable as exc:

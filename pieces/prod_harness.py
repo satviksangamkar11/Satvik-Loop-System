@@ -45,7 +45,7 @@ class Provider:
                 raise AssertionError(f"no scripted reply left for {model}")
             item = queue.pop(0)
             text = item(request) if callable(item) else item
-            payload = {"model": model, "provider": oc.PAID_PROVIDER_NAME if model == oc.ROLES["reviewer_a"] else "Fake",
+            payload = {"model": model, "provider": oc.PINS[oc.ROLES["reviewer_a"]]["name"] if model == oc.ROLES["reviewer_a"] else "Fake",
                        "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
                        "usage": {"prompt_tokens": 10, "completion_tokens": 10}}
             return 200, {}, json.dumps(payload).encode()

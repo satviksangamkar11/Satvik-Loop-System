@@ -2,9 +2,11 @@
 
 Covers: the owner's roster (roles and exact IDs), refusal of anything else, reply checks, 429 kinds with Retry-After, retries and the provider
 breaker, the account-wide free ledger, the repair model's paid budget and endpoint pricing, 402 and 401/403, redaction, and the private-code block.
-The literal model IDs below are copied from the owner's roster, not read from the adapter, so a wrong roster in the adapter fails here."""
+The model IDs below are copied from the production roster in config/roster.json; test_roster_config.py checks the file itself.
+The adapter runs under the production profile here, so the paid reviewer's calls can be tested."""
 import calendar
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -13,6 +15,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
+os.environ.setdefault("SATVIK_PROFILE", "production")   # the test profile refuses the paid reviewer, so these tests load production
 import openrouter_call as oc  # noqa: E402
 
 FREE_KEY = "sk-or-v1-FREETEST000000000000"
@@ -22,8 +25,6 @@ DAY0 = calendar.timegm((2026, 11, 2, 0, 0, 0))
 DOTS = "dots-studio/dots-3-note-preview:free"
 XING = "xingchen-agi/xing4.0-29b-a4b:free"
 NORTH = "cohere/north-mini-code:free"
-GEMMA31 = "google/gemma-4-31b-it:free"
-GEMMA26 = "google/gemma-4-26b-a4b-it:free"
 GLM_PAID = "z-ai/glm-5.3-flash"
 REMOVED = ("deepseek/deepseek-v4.1-flash-1017", "z-ai/glm-5.3-flash:free", "qwen/qwen3.8-27b:free", "thinkingmachines/inkling-small:free")
 WRITER_OK = "FILE: pieces/calc.py\n```python\nx = 1\n```\n"
@@ -114,18 +115,15 @@ def client(tmp_path, fake, clock=None, keys=KEYS, **options):
 
 # ---- 1. roster and request shape
 
-def test_roles_are_exactly_the_owner_roster():
-    assert oc.ROLES == {"writer_a": DOTS, "writer_b": XING, "reviewer_a": GLM_PAID, "reviewer_b": NORTH}
-    assert oc.REVIEWER_BACKUP == (GEMMA31, GEMMA26)
-    assert oc.REVIEWER_BACKUP_ENABLED is False
-
-
-def test_exact_ids_are_free_only_and_the_paid_id_is_the_reviewer_a_role_only():
-    assert oc.ALLOWED == {DOTS, XING, NORTH, GEMMA31, GEMMA26}
-    assert oc.PAID == {GLM_PAID}
+def test_a_paid_model_is_refused_by_its_own_id_and_is_called_only_through_its_role():
+    assert oc.PAID and not (oc.PAID & oc.ALLOWED)
     assert all(model.endswith(":free") for model in oc.ALLOWED)
-    with pytest.raises(oc.ModelRefused):
-        oc.resolve(GLM_PAID)
+    for model in oc.PAID:
+        with pytest.raises(oc.ModelRefused):
+            oc.resolve(model)
+    for role, model in oc.ROLES.items():
+        if model in oc.PAID:
+            assert oc.resolve(role) == model
 
 
 @pytest.mark.parametrize("name", list(REMOVED))
@@ -148,16 +146,6 @@ def test_unknown_ids_and_fallback_lists_are_refused_before_any_request(tmp_path,
     with pytest.raises(oc.ModelRefused):
         built.call(name, "system", "user")
     assert fake.calls == []
-
-
-def test_disabled_backup_is_refused_unless_the_probe_allows_it(tmp_path):
-    fake = Fake()
-    fake.on("/chat/completions", ok("hi"))
-    built, _ = client(tmp_path, fake)
-    with pytest.raises(oc.ModelRefused, match="disabled"):
-        built.call(GEMMA31, "system", "user")
-    assert fake.calls == []
-    assert built.call(GEMMA31, "system", "user", allow_disabled_backup=True)[1]["model"] == GEMMA31
 
 
 def test_request_names_one_model_and_carries_no_fallback_list(tmp_path):
@@ -488,7 +476,7 @@ def test_glm_review_budget_is_reserved_before_the_request_is_sent(tmp_path):
     built.call("reviewer_a", "system", "user", kind="reviewer")
     # 10 characters of prompt -> ceil(10 / 3) = 4 prompt tokens, plus the 16,000-token output allowance
     assert seen["reserved"] == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
-    assert oc.review_reservation("system", "user", 16000) == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
+    assert oc.review_reservation("system", "user", 16000, oc.PRICING[GLM_PAID]) == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
 
 
 def test_cost_falls_back_to_tokens_at_the_spec_prices(tmp_path):
@@ -503,7 +491,7 @@ def test_a_failed_glm_attempt_keeps_its_reservation_as_spent(tmp_path):
     fake.on("/chat/completions", ok(REVIEW_OK, usage={"prompt_tokens": 1, "completion_tokens": 1}))
     built, _ = client(tmp_path, fake)
     built.call("reviewer_a", "system", "user", kind="reviewer")
-    first = oc.review_reservation("system", "user", 16000)
+    first = oc.review_reservation("system", "user", 16000, oc.PRICING[GLM_PAID])
     assert built.budget.review_spent == pytest.approx(first + 1 * 0.15e-6 + 1 * 0.50e-6)
 
 
@@ -619,15 +607,15 @@ def test_keys_come_from_the_environment_or_the_secrets_folder(tmp_path):
 
 def test_probe_makes_one_free_call_per_probe_model_and_never_calls_glm(tmp_path):
     fake = Fake()
-    fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())
-    fake.on("/chat/completions", ok("OK"), ok("OK"), ok("OK"), ok("OK"), ok("OK"))
+    fake.on("/key", key_reply(), key_reply(), key_reply(), key_reply())     # the free and paid key states, before and after
+    fake.on("/chat/completions", ok("OK"), ok("OK"), ok("OK"))
     built, _ = client(tmp_path, fake)
     out = tmp_path / "probe.json"
     summary = oc.probe(built, str(out))
     posts = fake.posts()
-    assert [p["body"]["model"] for p in posts] == [DOTS, XING, NORTH, GEMMA31, GEMMA26]
+    assert [p["body"]["model"] for p in posts] == [DOTS, XING, NORTH]
     assert all(p["headers"]["Authorization"] == "Bearer " + FREE_KEY for p in posts)
-    assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer_b", GEMMA31, GEMMA26}
+    assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer_b"}
     assert all(p["ok"] for p in summary["probes"].values())
     assert FREE_KEY not in out.read_text(encoding="utf-8") and PAID_KEY not in out.read_text(encoding="utf-8")
 
@@ -740,7 +728,7 @@ def test_failed_glm_attempts_all_count_toward_the_review_ceiling(tmp_path):
     with pytest.raises(oc.ProviderUnavailable, match="gave up after 4 attempts"):
         built.call("reviewer_a", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 4
-    assert built.budget.review_spent == pytest.approx(4 * oc.review_reservation("system", "user", 16000))
+    assert built.budget.review_spent == pytest.approx(4 * oc.review_reservation("system", "user", 16000, oc.PRICING[GLM_PAID]))
     assert built.budget.review_reserved == pytest.approx(0.0)
 
 

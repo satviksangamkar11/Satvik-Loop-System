@@ -1,5 +1,7 @@
 """P1b routing (final roster, 2026-11-02): the production ladder (Dots, Xing, then Opus repairs at most twice), the GLM + North panel, the backup
 rule, FIX FIRST evidence, the review ceiling outcome, job checks and deadlines, driven by scripted fake models. No network, no model call."""
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
+os.environ.setdefault("SATVIK_PROFILE", "production")   # the GLM panel is the production roster; the test profile has no paid reviewer
 import openrouter_call as oc  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 
@@ -416,3 +419,29 @@ def test_a_failed_glm_keeps_its_upstream_error_in_the_outcome_reason():
                      [green()])
     assert outcome.status == "provider-unavailable"
     assert "HTTP 429 glm pool" in outcome.reason
+
+
+# ---- 10. the lineage file carries schema_version 1 (2026-11-02)
+
+def test_the_lineage_file_carries_schema_version_1_and_loads_back(tmp_path):
+    lineage = p1b.Lineage()
+    lineage.set("pieces/calc.py", DOTS, DOTS, [DOTS])
+    path = tmp_path / "lineage.json"
+    lineage.save(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["pieces/calc.py"] == {"last": DOTS, "origin": DOTS, "chain": [DOTS]}
+    assert p1b.Lineage.load(path).get("pieces/calc.py") == {"last": DOTS, "origin": DOTS, "chain": [DOTS]}
+
+
+def test_a_lineage_file_with_another_schema_version_is_refused(tmp_path):
+    path = tmp_path / "lineage.json"
+    path.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        p1b.Lineage.load(path)
+
+
+def test_a_lineage_file_written_before_the_version_still_loads(tmp_path):
+    path = tmp_path / "lineage.json"
+    path.write_text(json.dumps({"pieces/calc.py": {"last": DOTS, "origin": DOTS, "chain": [DOTS]}}), encoding="utf-8")
+    assert p1b.Lineage.load(path).get("pieces/calc.py")["origin"] == DOTS

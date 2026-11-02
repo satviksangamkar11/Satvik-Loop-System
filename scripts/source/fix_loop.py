@@ -35,8 +35,6 @@ JOB_SCHEMA = {
         "review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "groq_review_files": {"type": ["array", "null"], "items": {"type": "string"}, "default": None},
         "review_prompt": {"type": ["string", "null"], "default": "docs/REVIEW_PROMPT.md"},
-        "coder_model": {"type": "string", "default": "nvidia/nemotron-3-ultra-550b-a55b"},
-        "reviewer_model": {"type": "string", "default": "nvidia/nemotron-3.5-lightning-30b-a3b"},
         # a list for legacy jobs; the string "by_lineage" for production (P1b), checked in load_job / p1b_routing.check_production_job
         "reviewers": {"type": ["array", "string"], "items": {"type": "string", "enum": ["lightning", "minimax", "codex", "haiku", "groq", "ultra"]},
                       "default": ["lightning", "minimax", "codex", "haiku"]},
@@ -97,15 +95,10 @@ def load_job(path: str | Path) -> dict:
     job.setdefault("review_files", None)
     job.setdefault("groq_review_files", None)
     job.setdefault("review_prompt", None if job.get("profile") == "production" else "docs/REVIEW_PROMPT.md")   # production: its own prompt only (never the legacy file)
-    job.setdefault("coder_model", "nvidia/nemotron-3-ultra-550b-a55b")
-    job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
-    if job["coder_model"] != "nvidia/nemotron-3-ultra-550b-a55b" or job["reviewer_model"] != "nvidia/nemotron-3.5-lightning-30b-a3b":
-        raise ValueError("coder_model and reviewer_model are not configurable: the loop always uses nemotron-3-ultra (coder) and nemotron-3.5-lightning (Lightning reviewer)")
     production = job.get("profile") == "production"
     if production:                                   # P1b: roles only (writer_a, writer_b); reviewers by lineage; the production checks below
         _p1b().check_production_job(job)
     else:
-        job.setdefault("reviewer_model", "nvidia/nemotron-3.5-lightning-30b-a3b")
         job.setdefault("reviewers", ["lightning", "minimax", "codex", "haiku"])
         job.setdefault("fixers", ["nemotron", "nemotron", "nemotron"])
         if not isinstance(job["reviewers"], list):
