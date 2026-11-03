@@ -699,8 +699,8 @@ class OpenRouter:
             http_status = status                                  # the raw HTTP status; parse_response may replace it with a body error code
             status, data, message = parse_response(status, raw)
             self._keep_request(model, http_status, self.clock() - sent, data)
-            if kind in ("writer", "repair"):
-                self.requests[-1].update(reply_texts(data))   # the raw texts, kept before check_reply so a rejected reply is still on record
+            if kind in ("writer", "repair", "reviewer"):
+                self.requests[-1].update(reply_texts(data))   # the raw texts, kept before check_reply so a rejected reply (a review with no verdict line too) is still on record
             spent = self._settle(slot, model, reserved, data)
             if status == 200:
                 if data is None:

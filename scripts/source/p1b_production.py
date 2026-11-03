@@ -525,6 +525,7 @@ class Production:
         self.test_runs = 0
         self.tested_hash = None         # hash of the job files at the last green run
         self.green_junit = None         # the JUnit XML of the last green run: the RESULTS section of the review package
+        self.green_files = None         # the job files' texts at the last green run ({rel: text or None}): restore_green() puts them back
         self.reviewed_hashes = []       # hash of the job files at each review call (the whole job, kept as evidence)
         self.candidate_reviews = []     # hash of the job files at each review call of the candidate written last: the integrity check reads these
         self.fix_findings = None        # the stripped FIX FIRST findings the next repair call carries (stage_fix), None otherwise
@@ -631,8 +632,9 @@ class Production:
 
     def _write_call(self, request, mode):
         """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds.
-        A writer or repair reply's text and its reasoning text are kept too, scrubbed, in history/reply_NN.txt and history/reasoning_NN.txt, and the
-        record links them as reply_file and reasoning_file (null when there is none)."""
+        The reply's text and its reasoning text are kept too, scrubbed: a writer or repair reply in history/reply_NN.txt, a reviewer reply (review
+        or review-reask, kept even when it has no verdict line) in history/review_NN.txt, and the reasoning in history/reasoning_NN.txt. The record
+        links them as reply_file and reasoning_file (null when there is none)."""
         self.calls_written += 1
         if self.history is not None:
             n = self.calls_written
@@ -643,8 +645,9 @@ class Production:
                       "reply_file": None, "reasoning_file": None}
             reply = request.get("reply_text")
             if isinstance(reply, str):
-                (self.history / f"reply_{n:02d}.txt").write_text(self._clean(reply), encoding="utf-8")
-                record["reply_file"] = f"history/reply_{n:02d}.txt"
+                name = f"{'review' if mode in ('review', 'review-reask') else 'reply'}_{n:02d}.txt"
+                (self.history / name).write_text(self._clean(reply), encoding="utf-8")
+                record["reply_file"] = f"history/{name}"
             reasoning = request.get("reasoning_text")
             if isinstance(reasoning, str) and reasoning.strip():
                 (self.history / f"reasoning_{n:02d}.txt").write_text(self._clean(reasoning), encoding="utf-8")
@@ -799,6 +802,18 @@ class Production:
         restore_files(self.root, self.originals)
         self.last_junit = None          # the next writer starts from the originals and the spec only: no test result of the attempt just undone
 
+    def restore_green(self):
+        """Puts the job files of the last green run back (a FIX FIRST repair that turned the tests red is undone): the candidate is again the
+        code that passed every test and was reviewed, so the reviews of that code and its JUnit file belong to it again."""
+        if self.green_files is None:
+            raise AssertionError("restore_green before any green run")
+        restore_files(self.root, self.green_files)
+        self.last_junit = self.green_junit
+        if gates.combined_hash(self.root, self.files) != self.tested_hash:
+            raise AssertionError("the restored files are not the files of the last green run")
+        self.candidate_reviews = [h for h in self.reviewed_hashes if h == self.tested_hash]
+        self._step("checkout", "restore-green", "the last green code is back on disk")
+
     def tests(self, files):
         result = self.sandbox.run(self.root, self.test_targets, readonly=self.protected, timeout_s=600)
         self._check_locked()
@@ -814,6 +829,7 @@ class Production:
         if green:
             self.tested_hash = gates.combined_hash(self.root, self.files)
             self.green_junit = result.junit
+            self.green_files = {rel: (self.root / rel).read_text(encoding="utf-8") if (self.root / rel).is_file() else None for rel in self.files}
         self._step("sandbox", "tests", "green" if green else f"red: {len(failing)} failing")
         systemic = result.timed_out or result.junit is None or (not green and not failing)
         return p1b.Result(green, frozenset(failing), frozenset(t.split("::")[0] for t in failing), systemic)
@@ -968,8 +984,9 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
         state, verdict, tests_passed = "passed", "READY", True
     elif outcome.status == "review-fix":
         state, verdict, tests_passed = "review-open", "FIX FIRST", True
-        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the job ends review-open)\n\n{outcome.reason}\n", scrub_keys),
-                                                     encoding="utf-8")
+        found = "".join(f"- {note}\n" for note in outcome.findings)
+        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the job ends review-open)\n\n{outcome.reason}\n"
+                                                                + (f"\n## Findings\n\n{found}" if found else ""), scrub_keys), encoding="utf-8")
     elif outcome.status == "integrity-mismatch":
         state, verdict, tests_passed = "integrity-mismatch", "unavailable", True
     elif outcome.status in ("escalate", "blocked", "provider-unavailable", "budget-exceeded", "deadline", "acceptance-tampered", "exception"):
@@ -993,6 +1010,8 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     status = {"name": name, "schema_version": 1, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
               "reason": outcome.reason, "failing_tests": sorted(outcome.failing), "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
+    if state == "review-open" and outcome.findings:
+        status["findings"] = list(outcome.findings)            # the stripped FIX FIRST findings still open on the kept (green) candidate
     if models is not None and models.contract_file:
         status["contract_check"] = models.contract_file        # the contract evidence, whatever the end state
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved
