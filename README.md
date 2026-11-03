@@ -398,4 +398,5 @@ Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge
 - docs/changes/tl-slug-20261103-2214-bc59.md
 - docs/changes/tl-index-20261103-2220-94a5.md
 - docs/changes/fl-clamp-20261103-2236-aaea.md
+- docs/changes/fl-dedupe-20261103-2236-cc8c.md
 <!-- change-index:end -->
