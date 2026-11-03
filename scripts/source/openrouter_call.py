@@ -336,9 +336,11 @@ def check_reply(kind, requested, data):
     choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
     message = choice.get("message") if choice else None
     text = message.get("content") if isinstance(message, dict) else None
+    finish = choice.get("finish_reason") if choice else None
+    if finish == "length" and not (isinstance(text, str) and text.strip()):
+        raise _Truncated("reply cut off at max_tokens with no text (content missing or empty)")
     if not isinstance(text, str):
         raise ReplyRejected("malformed reply: no message text")
-    finish = choice.get("finish_reason")
     if finish == "length":
         raise _Truncated("reply cut off at max_tokens")
     if finish != "stop":

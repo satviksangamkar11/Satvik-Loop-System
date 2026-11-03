@@ -247,6 +247,33 @@ def test_truncated_twice_is_rejected(tmp_path):
     assert len(fake.posts()) == 2
 
 
+def _null_content(finish):
+    def build(request):
+        payload = {"id": "gen-1", "model": request["model"], "provider": "Z.AI",
+                   "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "reasoning": "thinking"}, "finish_reason": finish}],
+                   "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+        return 200, {}, json.dumps(payload).encode()
+    return build
+
+
+def test_null_content_cut_off_at_max_tokens_is_retried_at_the_retry_limit(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", _null_content("length"), ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    text, info = built.call("writer_a", "system", "user", kind="writer", max_tokens=1000)
+    assert text == WRITER_OK and info["attempts"] == 2
+    assert [p["body"]["max_tokens"] for p in fake.posts()] == [1000, 72000]
+
+
+def test_null_content_with_another_finish_reason_is_rejected_without_a_retry(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", _null_content("content_filter"))
+    built, _ = client(tmp_path, fake)
+    with pytest.raises(oc.ReplyRejected, match="no message text"):
+        built.call("writer_a", "system", "user", kind="writer", max_tokens=1000)
+    assert len(fake.posts()) == 1
+
+
 # ---- 3. 429 kinds and Retry-After
 
 def test_per_minute_429_waits_retry_after_and_is_not_a_provider_error(tmp_path):
