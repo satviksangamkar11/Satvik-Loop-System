@@ -9,7 +9,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
+import event_log  # noqa: E402
 import openrouter_call as oc  # noqa: E402
+import p1b_production as pm  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
 
 DOTS = XING = NORTH = GLM = None      # set per test by the profile fixture below (the roster is read per test, never at import)
@@ -44,9 +46,12 @@ class FakeModels:
         self.fixes = []                 # the review findings staged for each repair call, in order
         self.rejected = []              # (model, mode, reason) of each writer reply the job cannot use (recorded as a failed call)
         self.contract = None            # (test ids, Dots files, Xing files) of the contract check, when one was made
+        self.slots = []                 # (model, panel slot) of each review call, in order
 
-    def call(self, model_id, mode, files):
+    def call(self, model_id, mode, files, slot=None):
         self.log.append((mode, model_id))
+        if mode == "review":
+            self.slots.append((model_id, slot))
         queue = self.script.get((model_id, mode))
         if not queue:
             raise AssertionError(f"unscripted call {mode} {model_id}")
@@ -474,6 +479,15 @@ def test_a_failed_north_call_goes_to_the_free_writer_that_did_not_write_the_code
     assert outcome.status == "passed" and f"{XING} (backup for {NORTH})" in outcome.reason
 
 
+def test_a_backup_review_in_slot_one_is_called_and_recorded_under_reviewer_b():
+    """NORTH is slot 1 (reviewer_b). When it fails, the free writer that did not write the code fills slot 1: that backup's review call names
+    reviewer_b (the slot), not its own writer role. Slot 2 (GLM, reviewer_a) is called with reviewer_a."""
+    outcome, models = run({(DOTS, "write"): [full()], (GLM, "review"): [READY], (NORTH, "review"): [p1b.ModelFailed("HTTP 429 shared pool")],
+                           (XING, "review"): [READY]}, [green()])
+    assert outcome.status == "passed"
+    assert models.slots == [(NORTH, "reviewer_b"), (XING, "reviewer_b"), (GLM, "reviewer_a")]
+
+
 def test_north_failing_with_its_backup_down_is_provider_unavailable_and_keeps_the_error():
     outcome, _ = run({(DOTS, "write"): [p1b.ModelFailed("down")], (XING, "write"): [full()], (GLM, "review"): [READY],
                       (NORTH, "review"): [p1b.ModelFailed("HTTP 429 shared pool")], (DOTS, "review"): [p1b.ModelFailed("down again")]},
@@ -609,3 +623,17 @@ def test_the_same_locked_failure_with_the_same_code_writes_no_contract_file():
                           [red((ACC,), systemic=True), red((ACC,)), red((ACC,))], job=JOB_ACC)
     assert models.contract is None
     assert outcome.reason == "Opus repair unavailable"
+
+def test_a_backup_review_in_slot_one_records_its_attempt_as_reviewer_b(tmp_path):
+    """The attempt event of a review call names the panel slot: a backup writer filling reviewer_b is recorded as reviewer_b. The old guess
+    (from the READY count) would name reviewer_a here, once the candidate has a READY."""
+    models = pm.Production.__new__(pm.Production)
+    models.job_dir, models.scrub_keys = tmp_path / "job", ()
+    models._attempt_open, models._attempt_tag, models._attempt_count = None, "t", 0
+    models._ready_reviews = lambda: 1                                   # the old fallback would name reviewer_a here
+    with models._attempt(XING, "writer_b", "review", "openrouter", effort="low", slot="reviewer_b"):
+        pass
+    start = next(e for e in event_log.read_events(tmp_path / "job" / "events.jsonl") if e["type"] == "attempt-start")
+    assert start["stage"] == "reviewer_b" and start["role"] == "writer_b" and start["model"] == XING
+    assert models._stage("writer_b", "review", "reviewer_a") == "reviewer_a"
+    assert models._stage("writer_b", "review") == "reviewer_a"          # without a slot the old rule still applies

@@ -17,6 +17,8 @@ from .store import ApiError, atomic_write_json, home as satvik_home, read_json
 
 MAX_POOL = 20
 MIN_POOL = 10
+TEXT_CONTRACTS = ("planner_json", "writer_file_blocks", "repair_edit_blocks", "repair_whole_file", "reviewer_verdict")
+PRODUCTION_JOB_REVIEW_USD = oc.JOB_REVIEW_USD_BY_PROFILE["production"]   # the only job_review_usd the engine applies (p0_gates, fix_loop.load_job)
 PROMPT_TOKENS_ASSUMED = 40000     # the prompt a worst-case paid call is priced at (about 120,000 characters): stated in every budget answer
 REASONING_EFFORTS = ("off", "low", "medium", "high")
 PROFILES = ("test", "production")
@@ -73,6 +75,22 @@ def _reasoning_records(home):
     return read_json(Path(home) / "api" / "reasoning_verified.json", {}) or {}
 
 
+def _claude_code_contracts():
+    """A Claude Code model's contracts. text_validated is true (its reply goes through the same text parsers), but a contract is verified only
+    by a recorded POST /models/verify result for that model and contract. That call takes catalog (OpenRouter) models only and refuses a Claude
+    Code model as not-in-catalog, so no such result exists and every text contract reads unverified."""
+    return {**{c: "unverified" for c in TEXT_CONTRACTS}, "native_structured_output": "not-applicable"}
+
+
+def _openrouter_contracts(entry):
+    """An OpenRouter model's contracts from its catalog entry (true, false or null: verified, failed, unverified)."""
+    c, structured = entry["contracts"], entry["structured_outputs"]
+    return {"planner_json": "not-applicable", "writer_file_blocks": _state(c["writer_file_blocks"]),
+            "repair_edit_blocks": _state(c["repair_edit_blocks"]), "repair_whole_file": _state(c["writer_file_blocks"]),
+            "reviewer_verdict": _state(c["reviewer_verdict"]),
+            "native_structured_output": "unverified" if structured is None else "verified" if structured else "not-applicable"}
+
+
 def model_shape(entry, home=None, reasoning=None):
     """One Model (contract section 2) from a catalog entry (OpenRouter or Claude Code). Unknown stays null; efforts show only what the
     model's capabilities list; the reasoning mode and verified efforts come from POST /models/verify-reasoning when it has run."""
@@ -80,10 +98,7 @@ def model_shape(entry, home=None, reasoning=None):
         return {"model_id": entry["model"], "via": "claude_code", "hosting_provider": None, "paid": None, "price_in_usd_per_mtok": None,
                 "price_out_usd_per_mtok": None, "context_tokens": None, "max_output_tokens": None, "endpoint": None,
                 "capabilities": {"reasoning_on_off": None, "efforts": list(entry["efforts"]), "token_budget": None, "temperature": None,
-                                 "structured_outputs": None,
-                                 "contracts": {"planner_json": "verified", "writer_file_blocks": "verified", "repair_edit_blocks": "verified",
-                                               "repair_whole_file": "verified", "reviewer_verdict": "verified",
-                                               "native_structured_output": "not-applicable"},
+                                 "structured_outputs": None, "contracts": _claude_code_contracts(),
                                  "reasoning_mode": "unknown", "text_validated": True},
                 "verified_at": None, "metadata_at": None, "note": "subscription: no USD"}
     rec = (reasoning if reasoning is not None else _reasoning_records(home).get(entry["model_id"])) or {}
@@ -93,8 +108,6 @@ def model_shape(entry, home=None, reasoning=None):
         mode = "unsupported"
     else:
         mode = rec.get("reasoning_mode") or "unknown"
-    c = entry["contracts"]
-    structured = entry["structured_outputs"]
     stamps = entry["verified_at"] or {}
     verified_at = max(stamps.values()) if stamps else None
     provider = entry["hosting_provider"]
@@ -106,11 +119,8 @@ def model_shape(entry, home=None, reasoning=None):
         "capabilities": {
             "reasoning_on_off": r["on_off"], "efforts": efforts, "token_budget": r["token_budget"],
             "temperature": dict(entry["temperature"]) if entry["temperature"] else None,
-            "structured_outputs": structured,
-            "contracts": {"planner_json": "not-applicable", "writer_file_blocks": _state(c["writer_file_blocks"]),
-                          "repair_edit_blocks": _state(c["repair_edit_blocks"]), "repair_whole_file": _state(c["writer_file_blocks"]),
-                          "reviewer_verdict": _state(c["reviewer_verdict"]),
-                          "native_structured_output": "unverified" if structured is None else "verified" if structured else "not-applicable"},
+            "structured_outputs": entry["structured_outputs"],
+            "contracts": _openrouter_contracts(entry),
             "reasoning_mode": mode,
         },
         "verified_at": verified_at, "metadata_at": entry["metadata_at"],
@@ -323,8 +333,9 @@ def stages_view(profile=None):
         e = table[stage]
         role = sc.STAGES[stage][0]
         model = e["model"]
+        required, fallback = sc.CONTRACT_OF[stage]
         row = {"stage": stage, "model": model, "via": e["via"], "model_selectable": bool(e["model_selectable"]), "effort": e["effort"],
-               "settings": sc.thaw(e["settings"])}
+               "settings": sc.thaw(e["settings"]), "required_contract": required, "fallback_contract": fallback}
         if stage in sc.INHERITED:
             row["model"], row["via"], row["model_selectable"] = None, None, False
             row["inherits"] = "triggering reviewer" if stage == "reviewer_reask" else "current writer (lineage)"
@@ -391,11 +402,38 @@ def stage_problems(name, changes):
     return problems
 
 
+def _contract_problems(name, changes):
+    """contract-not-verified for each changed stage whose model does not have the stage's required contract verified, in the state GET /models
+    reports (one source for both). Sentinels (fake, non-author writer, off) have no contract to check."""
+    data = _roster_stages_now(name)
+    table = sc._table(dict(data, stages=sc._merge(sc._stages_block(data), changes)))
+    catalog = mc.load_catalog()
+    out = []
+    for stage, change in changes.items():
+        if stage not in sc.STAGES or not isinstance(change, dict) or stage not in table:
+            continue
+        model, via = table[stage]["model"], table[stage]["via"]
+        if not isinstance(model, str) or model in oc.SENTINELS:
+            continue
+        required = sc.CONTRACT_OF[stage][0]
+        if via == "claude_code":
+            states = _claude_code_contracts()
+        else:
+            entry = mc.entry_of(catalog, model)
+            states = _openrouter_contracts(entry) if entry is not None else {}
+        state = states.get(required, "unverified")
+        if state != "verified":
+            out.append({"code": "contract-not-verified", "stage": stage,
+                        "message": f"{stage}: {model} has {required} {state}; the stage needs it verified (POST /models/verify)"})
+    return out
+
+
 def validate_stages(profile, changes):
-    """POST /stages/validate: {valid: true, problems: []}; 400 with details.problems otherwise."""
+    """POST /stages/validate: {valid: true, problems: []}; 400 with details.problems otherwise. A change is refused as contract-not-verified when
+    its model's required contract is not verified."""
     name = _profile(profile)
     changes = _as_changes(changes)
-    problems = stage_problems(name, changes)
+    problems = stage_problems(name, changes) or _contract_problems(name, changes)
     if problems:
         raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
     return {"valid": True, "problems": []}
@@ -498,7 +536,8 @@ def validate_budget(profile, stages, paid_budget_usd):
 def update_limits(revision, changes, slots_in_use=0):
     """PUT /system/limits: {revision} must be the current revision (409 stale-revision); the values are range-checked (422 out-of-range).
     A change to sandbox_slots waits for no job holding a sandbox slot (409 jobs-running). New starts only: the engine reads the file at
-    each start. Returns (200, {revision: n+1})."""
+    each start. A job_review_usd other than the engine's production value is refused (422 not-applied-by-engine): the production budget gate
+    requires exactly that value, so another one would be stored and not used. Returns (200, {revision: n+1})."""
     if isinstance(revision, bool) or not isinstance(revision, int):
         raise ApiError(400, "bad-revision", "revision is a whole number")
     if not isinstance(changes, dict):
@@ -515,6 +554,11 @@ def update_limits(revision, changes, slots_in_use=0):
             limits_config._valid(new)
         except limits_config.LimitsError as exc:
             raise ApiError(422, "out-of-range", str(exc))
+        if "job_review_usd" in changes and changes["job_review_usd"] != PRODUCTION_JOB_REVIEW_USD:
+            raise ApiError(422, "not-applied-by-engine",
+                           f"job_review_usd {changes['job_review_usd']} would not apply: the engine's production budget gate requires exactly "
+                           f"{PRODUCTION_JOB_REVIEW_USD} (p0_gates, fix_loop.load_job), so only that value is accepted until the engine reads this setting",
+                           {"required": PRODUCTION_JOB_REVIEW_USD, "given": changes["job_review_usd"]})
         if "sandbox_slots" in changes and changes["sandbox_slots"] != cur["sandbox_slots"] and slots_in_use:
             raise ApiError(409, "jobs-running", "sandbox_slots changes only when no job holds a sandbox slot", {"holding": slots_in_use})
         new["revision"] = cur["revision"] + 1

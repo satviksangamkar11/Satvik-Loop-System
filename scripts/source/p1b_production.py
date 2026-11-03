@@ -607,14 +607,16 @@ class Production:
         reason as its message."""
         self._failure(model, mode, 200, reason)
 
-    def call(self, model, mode, files):
+    def call(self, model, mode, files, slot=None):
+        """One model call. `slot` (review modes only, optional): the reviewer slot the call fills, reviewer_b or reviewer_a. A backup writer
+        filling a slot is recorded under the slot, not under its own role."""
         try:
-            return self._call(model, mode, files)
+            return self._call(model, mode, files, slot)
         finally:
             if mode in ("write", "repair"):
                 self.fix_findings = None          # a staged finding goes to one repair call only
 
-    def _call(self, model, mode, files):
+    def _call(self, model, mode, files, slot=None):
         if model == p1b.ANTHROPIC:
             return self._repair_step()
         if mode == "write":
@@ -625,7 +627,7 @@ class Production:
         if mode == "repair":
             return self._repair_writer(model)
         user = self._review_package(reask=(mode == "review-reask"))
-        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", mode=mode)
+        text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", mode=mode, slot=slot)
         self._check_locked()
         self.reviewed_hashes.append(gates.combined_hash(self.root, self.files))
         self.candidate_reviews.append(self.reviewed_hashes[-1])
@@ -673,11 +675,11 @@ class Production:
         except p1b.BadReply as exc:
             return None, str(exc)
 
-    def _ask(self, model, system, user, kind, mode, role=None):
+    def _ask(self, model, system, user, kind, mode, role=None, slot=None):
         spec = self._stage_call(model, mode, role)       # the job's snapshot (None: the roster, read now)
         role = role or self._role_of(model)
         via = spec["via"] if spec is not None else oc.roster_state()["VIA"][role]
-        with self._attempt(model, role, mode, via, effort=(spec or {}).get("effort")):
+        with self._attempt(model, role, mode, via, effort=(spec or {}).get("effort"), slot=slot):
             if via == "claude_code":
                 return self._ask_claude(model, role, system, user, kind, mode, spec)
             try:
@@ -1017,12 +1019,15 @@ class Production:
         """One line in the job's events.jsonl, scrubbed as status.json is. Never raises: an event never changes the job's outcome."""
         return event_log.emit(getattr(self, "job_dir", None), type_, **_scrubbed_obj(fields, getattr(self, "scrub_keys", ())))
 
-    def _stage(self, role, mode):
-        """The stage type of a call, from its role and mode (best effort; None when no stage type fits). A backup writer on review takes the
-        slot it stands in for: reviewer_a once the current candidate has a READY, reviewer_b before."""
+    def _stage(self, role, mode, slot=None):
+        """The stage type of a call, from its role and mode (best effort; None when no stage type fits). A review call names its panel slot
+        (reviewer_b or reviewer_a), so a backup writer filling that slot is recorded under it. Without a slot, a review falls back to the role,
+        then to the candidate's READY count: reviewer_a once it has one, reviewer_b before."""
         if mode == "review-reask":
             return "reviewer_reask"
         if mode == "review":
+            if slot in ("reviewer_a", "reviewer_b"):
+                return slot
             return role if role in ("reviewer_a", "reviewer_b") else ("reviewer_a" if self._ready_reviews() else "reviewer_b")
         if mode == "repair" and self.fix_findings:
             return "review_fix_repair"
@@ -1045,7 +1050,7 @@ class Production:
         return count
 
     @contextmanager
-    def _attempt(self, model, role, mode, via, effort=None):
+    def _attempt(self, model, role, mode, via, effort=None, slot=None):
         """One model call as an attempt-start event before it and an attempt-end event after it, also when it raises. The attempt-end sums
         the tokens of the call records written during it (retries included) and takes status and finish_reason from the last one."""
         self._attempt_count += 1
@@ -1055,7 +1060,7 @@ class Production:
                 effort = oc.effort_for_mode(mode) if via == "openrouter" else oc.roster_state()["ROLE_SPECS"][role].get("effort")
         except Exception:                       # the effort is a note on the event only; the call reads its own
             effort = None
-        self._event("attempt-start", attempt_id=rec["attempt_id"], stage=self._stage(role, mode), role=role, mode=mode, model=model, via=via,
+        self._event("attempt-start", attempt_id=rec["attempt_id"], stage=self._stage(role, mode, slot), role=role, mode=mode, model=model, via=via,
                     effort=effort)
         outer, self._attempt_open = self._attempt_open, rec
         started = time.monotonic()

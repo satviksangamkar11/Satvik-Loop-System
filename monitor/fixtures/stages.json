@@ -8,6 +8,8 @@
       "via": null,
       "model_selectable": true,
       "effort": null,
+      "required_contract": "planner_json",
+      "fallback_contract": null,
       "settings": {},
       "source": "role:planner",
       "note": "planning refused under test"
@@ -18,6 +20,8 @@
       "via": "openrouter",
       "model_selectable": true,
       "effort": "high",
+      "required_contract": "writer_file_blocks",
+      "fallback_contract": null,
       "settings": {
         "temperature": 0.1,
         "max_tokens": 32000,
@@ -33,6 +37,8 @@
       "via": "openrouter",
       "model_selectable": true,
       "effort": "low",
+      "required_contract": "repair_edit_blocks",
+      "fallback_contract": "repair_whole_file",
       "settings": {
         "max_tokens": 10000
       },
@@ -44,6 +50,8 @@
       "via": "openrouter",
       "model_selectable": true,
       "effort": "high",
+      "required_contract": "writer_file_blocks",
+      "fallback_contract": null,
       "settings": {
         "temperature": 0.1,
         "max_tokens": 32000
@@ -57,6 +65,8 @@
       "via": "openrouter",
       "model_selectable": true,
       "effort": "low",
+      "required_contract": "repair_edit_blocks",
+      "fallback_contract": "repair_whole_file",
       "settings": {
         "max_tokens": 10000
       },
@@ -68,6 +78,8 @@
       "via": "openrouter",
       "model_selectable": true,
       "effort": "low",
+      "required_contract": "reviewer_verdict",
+      "fallback_contract": null,
       "settings": {
         "max_tokens": 16000
       },
@@ -80,6 +92,8 @@
       "model_selectable": false,
       "inherits": "non-author writer",
       "effort": "low",
+      "required_contract": "reviewer_verdict",
+      "fallback_contract": null,
       "settings": {},
       "source": "role:reviewer_a",
       "note": "fixed to the non-author writer in the test profile only"
@@ -91,6 +105,8 @@
       "model_selectable": false,
       "inherits": "triggering reviewer",
       "effort": "low",
+      "required_contract": "reviewer_verdict",
+      "fallback_contract": null,
       "settings": {}
     },
     {
@@ -99,6 +115,8 @@
       "via": null,
       "model_selectable": true,
       "effort": null,
+      "required_contract": "repair_edit_blocks",
+      "fallback_contract": "repair_whole_file",
       "settings": {},
       "source": "role:repair",
       "note": "off under test"
@@ -110,6 +128,8 @@
       "model_selectable": false,
       "inherits": "current writer (lineage)",
       "effort": "low",
+      "required_contract": "repair_edit_blocks",
+      "fallback_contract": "repair_whole_file",
       "settings": {}
     }
   ]

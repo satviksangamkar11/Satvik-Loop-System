@@ -11,6 +11,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
+import event_log  # noqa: E402
 import plan_job as pj  # noqa: E402
 
 FAKE = str(REPO / "pieces" / "fake_claude.py")
@@ -138,6 +139,49 @@ def test_a_timed_out_call_is_planner_uncertain(repo, tmp_path, monkeypatch):
     assert result["state"] == "planner-uncertain"
     assert len(calls(log)) == 1
     assert plan(repo, timeout_s=1)["state"] == "planner-uncertain" and len(calls(log)) == 1
+
+
+# ---------------------------------------------------------------- the planner call is an attempt in the job's events (I3)
+
+def events_of(root):
+    return event_log.read_events(root / "_loop" / "calc" / "events.jsonl")
+
+
+def test_the_planner_call_emits_attempt_start_and_end_with_stage_planner(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    start, end = events_of(repo)
+    assert (start["type"], end["type"]) == ("attempt-start", "attempt-end")
+    assert start["stage"] == end["stage"] == "planner" and start["attempt_id"] == end["attempt_id"]
+    assert start["model"] == "opus" and start["mode"] == "plan"
+    assert end["status"] == "ok" and end["failed"] is False and end["seconds"] >= 0
+    assert start["seq"] < end["seq"]
+
+
+def test_a_timed_out_planner_call_ends_its_attempt_as_failed(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, None)                                   # the fake claude sleeps: the call times out
+    assert plan(repo, timeout_s=1)["state"] == "planner-uncertain"
+    start, end = events_of(repo)
+    assert end["attempt_id"] == start["attempt_id"] and end["stage"] == "planner"
+    assert end["status"] == "failed" and end["failed"] is True and "TimeoutExpired" in end["error"]
+
+
+def test_a_planner_call_that_raises_still_gets_its_attempt_end(repo):
+    def boom(prompt, cwd, claude_cmd, timeout_s):
+        raise OSError("no claude on this machine")
+    with pytest.raises(OSError):
+        plan(repo, runner=boom)
+    start, end = events_of(repo)
+    assert end["attempt_id"] == start["attempt_id"] and end["failed"] is True
+    assert end["error"].startswith("OSError: no claude")
+
+
+def test_a_saved_answer_makes_no_call_and_no_attempt(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    plan(repo)
+    before = len(events_of(repo))
+    plan(repo)                                                               # reused: no second call, no second attempt
+    assert len(events_of(repo)) == before
 
 
 def test_the_real_claude_is_refused_under_pytest_before_any_process_or_intent(repo, monkeypatch):

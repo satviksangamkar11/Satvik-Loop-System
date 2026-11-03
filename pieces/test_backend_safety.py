@@ -13,6 +13,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts" / "source"))
 sys.path.insert(0, str(REPO / "pieces"))
+import event_log  # noqa: E402
 import fix_loop as fl  # noqa: E402
 import launch  # noqa: E402
 import loop_home  # noqa: E402
@@ -76,6 +77,20 @@ def test_an_archive_failure_keeps_the_worktree_and_still_releases_everything(tmp
     assert not any(e["job"] == res["job_id"] for entries in claims.values() for e in entries)    # claims released
     assert env.launcher._slots == {}                                                # sandbox slot released
     assert not list((env.home / "results").glob(".tmp-*"))                          # no half-written archive
+
+
+def test_the_archive_leaves_out_the_loop_gitignore_and_keeps_the_evidence(tmp_path):
+    """event_log writes _loop/.gitignore (`*`) beside the job's events. The archive must not copy it: a published evidence folder with that
+    file is git-ignored in its entirety."""
+    home = tmp_path / "home"
+    folder = home / "wt" / "job-1" / "_loop" / "calc"
+    event_log.emit(folder, "job-start", name="calc", base="a" * 40, branch="job/job-1", gen=1, key="calc")
+    (folder / "status.json").write_text("{}", encoding="utf-8")
+    assert (folder.parent / ".gitignore").read_text(encoding="utf-8") == "*\n"        # the file the archive must not copy
+    assert launch.archive_job(home, "job-1") == "archived"
+    assert not (home / "results" / "job-1" / ".gitignore").exists()
+    assert (home / "results" / "job-1" / "calc" / "events.jsonl").is_file()
+    assert (home / "results" / "job-1" / "calc" / "status.json").is_file()
 
 
 def test_archiving_twice_keeps_the_first_archive(tmp_path):
