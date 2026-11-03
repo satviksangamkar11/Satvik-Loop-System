@@ -35,6 +35,12 @@ def fake(tmp_path, monkeypatch):
     return Fake()
 
 
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """2026-11-03: the repair model is the roster's repair role, opus at medium in the production profile (the test profile's is off)."""
+    profile("production")
+
+
 def envelope(result, is_error=False):
     return {"type": "result", "is_error": is_error, "result": result}
 
@@ -166,9 +172,11 @@ def test_the_word_opus_appears_in_no_p1b_module_but_opus_repair(name):
     assert "opus" not in text, f"{name} names opus; the Opus call lives only in opus_repair.py"
 
 
-def test_opus_is_a_model_name_only_in_opus_repair():
+def test_opus_repair_names_no_model_the_repair_role_is_read_from_the_roster():
+    """2026-11-03: the repair model and effort are the roster's repair role (config/roster.json); opus_repair.py holds no model name."""
     text = (REPO / "scripts" / "source" / "opus_repair.py").read_text(encoding="utf-8")
-    assert '"opus"' in text
+    assert '"opus"' not in text and "MODEL, EFFORT" not in text
+    assert opus.repair_model() == ("opus", "medium")             # today's production roster
 
 
 # ---- 9. the test guard: a real Claude command never starts under pytest (2026-11-02)
