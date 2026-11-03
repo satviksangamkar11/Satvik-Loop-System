@@ -2,6 +2,8 @@
 
 **Status: FROZEN (2026-10-30) — only owner-authorized bug fixes from here.** See `docs/LOOP_CLOSURE_REPORT.md` for the closure evidence.
 
+**Revision 4 (2026-11-03):** the production loop is closed on the test profile. The pilot passed, 2 loops merged 3 jobs in order, and 4 loops ran 4 jobs at once and merged them (`fl-top` escalated; rerun pending). All runs cost $0 and made 0 Opus calls. As built: `docs/ARCHITECTURE_REVISION_4.md`. UI contracts: `docs/UI_ENGINE_HANDOFF.md`. Day log: `docs/STATUS_2026-11-03.md`.
+
 An automatic code-writing loop. A spec goes in. Tested, reviewed code comes out. The supervisor only watches.
 
 ## How one job runs

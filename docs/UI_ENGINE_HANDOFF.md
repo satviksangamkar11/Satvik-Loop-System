@@ -1,6 +1,6 @@
 # Satvik Loop: engine handoff for the Control Center UI
 
-Source of truth: `main` at `9625f24`, 3 Nov 2026. Every finding is marked **[exists]**, **[extend]** (the code exists but needs an addition) or **[none]**
+Source of truth: `main` at `b96063e` (after PR #36), 3 Nov 2026. Every finding is marked **[exists]**, **[extend]** (the code exists but needs an addition) or **[none]**
 (not supported today). Paths are relative to the repo root, and `S/` means `scripts/source/`.
 
 **The one fact that shapes every page:** the engine has **no HTTP server, no API and no event stream**. Every operation is a Python function or a
@@ -145,6 +145,7 @@ All of these are files. A UI reads them by polling (no events, [none]).
 | Queue | `SATVIK_HOME/queue/*.json`, `queue/taken/` | job files by arrival | `fix_loop.enqueue` / `take_next` |
 | STOP | `SATVIK_HOME/STOP` | the file exists or not | user |
 | Change doc | `docs/changes/<job_id>.md` (on main after a merge) | job, base, state, files, round, verdict | `write_change_doc` |
+| Results archive [exists, #36] | `SATVIK_HOME/results/<job_id>/` (the job's `_loop`, without the key snapshots) and `results/<job_id>/merge.json` (`job_id, state, base, head?, attempts?, tail?`) | kept after the worktree is removed, for every terminal state | `launch.archive_job` (in `Launcher.finish`), `launch.record_merge` (in `MergeQueue._finish`) |
 | Roster | `config/roster.json` | as in A3 | hand edit |
 
 **Job states** (`status.json.state`):
@@ -168,10 +169,10 @@ All of these are files. A UI reads them by polling (no events, [none]).
 - merge = the registry row state (`merged` …) and `docs/changes`
 
 **Monitoring:**
-- **Not distinguished [none]:** waiting on a model gate vs the pace vs a 429 window. Only `queue-wait` and `openrouter_retries` show it, after the
-  fact.
-- **No stall detector [none].** A stalled job is one whose `status.json.updated` and lease heartbeat stop advancing. A lease heartbeat older than
-  300 s with a dead pid is an orphan, which `Lease` takes over.
+- **Waits [exists, #36]:** `status.json.waiting = {why, since, model}` or `null`. `why` is `model-slot`, `account-pace`, `429-backoff` or
+  `retry-backoff`. It is set when the wait begins and cleared when it ends.
+- **No stall detector [none].** Liveness is the lease: a lease heartbeat older than 300 s with a dead pid is an orphan, which `Lease` takes over.
+  `waiting` explains a wait; it never proves a process is alive.
 
 ---
 
@@ -185,13 +186,13 @@ There are no routes or HTTP codes today. "Call" is the function a local server w
 | Dry run | `fix_loop.py --dry-run --job` | job path | prompt size | non-zero exit | any | none | safe | exists |
 | Plan | `plan_job.plan(root, name, plan_dir, request, files)` / `--request` | request text, files ≤30 | `{state:"planned", job_sha256, assumed}` | `planner-uncertain`, refused in test | production, planner set | 1 Claude call, writes `plan/` | reuses the saved answer, never calls twice | exists |
 | Approve | `fix_loop.py --approve JOB` | job name | the job starts | sha mismatch, ASSUMED unapproved | after Plan | launches | the second start → `request-running` | exists |
-| Queue | `fix_loop.enqueue(job_path, home)` | job path | queue file path | OSError | any | file in `queue/` | **duplicates** (no dedupe) | exists |
+| Queue | `fix_loop.try_enqueue(job_path, home, rerun=False)` (#36); `enqueue()` is the raw form | job path | `{queued: true, path}` | `{queued: false, reason: duplicate-pending \| duplicate-running \| already-completed, job}` | any | file in `queue/` | an active duplicate is refused (atomic, `queue/.lock`); a passed or merged job needs `rerun=True` | exists |
 | Start / run loop | `run_launched(job, repo, api, launcher, merge_queue)`; loop: `take_next` + `run_launched` + `mq.drain` | job dict | result dict `{state, job_id,…}` | `{state:"refused", reason}` | not STOP, within limits | worktree, lease, claims, model calls, ledger | same key while running → `request-running` | exists (no server) |
 | Solo run | `fix_loop.py --solo --job` | path | exit code by state | — | one job | model calls, files in the checkout | not guarded | exists |
 | Merge | `MergeQueue.drain()` (automatic after a passed job) | — | `[(job_id, "merged")]` | `merge-conflict`, `tests-failed`, `main-moved` | the job passed and was submitted | rebase, sandbox suite, push to main, worktree removed | `merge.lock` serializes | exists (no manual trigger) |
 | Global STOP | create or delete `SATVIK_HOME/STOP` | — | — | — | any | stops new starts and the next round; a running job restores its files → `stopped` | safe | exists |
 | Status / Results | read the files in Part B | job / job_id | JSON | missing file | any | none | safe | exists (no API) |
-| Download artifacts | read `_loop/<job>/` (removed with the worktree at merge) | — | files | gone after a merge | before the merge | none | safe | extend (no archive) |
+| Download artifacts | read `SATVIK_HOME/results/<job_id>/` (#36) | — | files | `archive_failed` in the registry row: the evidence stays in `wt/<job_id>` | after finish | none | safe | exists (no API) |
 | Model verify | `openrouter_call.py probe` (`main()`, `probe()`) | roles or models | probe JSON, one call per role | errors per role | key set | 1 free call each | repeats calls | exists (roster models only) |
 | Refresh price | `OpenRouter.endpoint(model)` | paid model | price, provider | ProviderUnavailable | paid roles | 1 GET | safe | extend (paid only, not stored) |
 | Change a stage model | edit `config/roster.json` | file | — | `RosterRefused` at the next load | any (no lock) | affects running jobs at their next call | — | extend (no snapshot or revision) |
@@ -206,22 +207,22 @@ There are no routes or HTTP codes today. "Call" is the function a local server w
 | Missing for the UI | Where it would go | Phase |
 |---|---|---|
 | A local HTTP server with read routes for Part B and action routes for Part C, stable error codes, and a health route | new server module wrapping `fix_loop`, `launch`, `merge_queue`, `loop_home`, `shared_limits`, `openrouter_call` | P2 (UI backend) |
-| Live events (step start/end, model wait, 429 wait, merge stage) | `p1b_production.Production._step` / `_heartbeat`; `openrouter_call._log_retry` / `_wait_before_retry`; `merge_queue.drain` (emit a per-job event file) | P1 extension |
-| Stall vs waiting states | `shared_limits.model_slot` / `wait_pace` and `openrouter_call._reviewer_window_wait` (write a "waiting:<why>" into `status.json`); compare the lease heartbeat in `loop_home.Lease` | P1 extension |
+| Live events (step start/end, merge stage) | `p1b_production.Production._step` / `_heartbeat`; `merge_queue.drain` (emit a per-job event file) | P1 extension |
+| ~~Stall vs waiting states~~ | done in #36 (`status.json.waiting`); liveness stays with the lease | done |
 | Frozen roster per job, with revisions | `p1b_production.run` (copy the resolved roles into `status.json.evidence`), and `openrouter_call.roster_state` (read from the snapshot) | P1 |
 | Future-stage edits only | needs the frozen snapshot above, plus a per-stage override read in `_ladder`; today a roster edit changes running jobs | P1 |
 | Model capability metadata (context, max output, structured outputs, free prices, freshness) | `openrouter_call` (`/models` read, stored beside the roster) | P1 |
 | Structured-output requests and JSON-schema validation | `openrouter_call._post` / `check_reply`, `p1b_production` parsers (text formats today) | P1 |
 | Per-job cancel | `fix_loop.run_launched` stop_check per job id (today only global STOP) | P2 |
 | Resume or retry a failed job | the registry and `launch.Launcher.start`; not designed: re-queue only | unsupported |
-| Queue dedupe / idempotent queue | `fix_loop.enqueue` (key by job sha) | P2 |
-| An artifact archive that survives the merge | `merge_queue.drain` before `launcher.finish` removes the worktree (copy `_loop/<job>` to `SATVIK_HOME/results/<job_id>`) | P2 |
+| ~~Queue dedupe~~ | done in #36 (`fix_loop.try_enqueue`) | done |
+| ~~An artifact archive that survives cleanup~~ | done in #36 (`launch.archive_job`, `results/<job_id>/`) | done |
 | A manual Merge button | `MergeQueue` (submit and drain on request) | P2 |
 | A command line for the launcher and the merge queue | `launch.py` / `merge_queue.py` (today Python snippets, see `docs/pilot/two-loop/RUNBOOK.md`) | P2 |
 | API key aliases in health | `openrouter_call.load_keys` (names `free` / `paid` exist; never values) | P2 |
 
-**Safe to expose as-is:** Validate, Dry run, Queue, the run-loop start, Global STOP, the status, registry, ledger, claims, lease and counter
-reads, and Model verify for roster models.
+**Safe to expose as-is:** Validate, Dry run, Queue (`try_enqueue`), the run-loop start, Global STOP, the reads of status (with `waiting`),
+results, registry, ledger, claims, leases and counters, and Model verify for roster models.
 
 **Do not expose:** a model switch during a run (no snapshot), Resume, per-job Cancel, a manual Merge, and Apply Future Stage. None of these
 exist in the engine.
