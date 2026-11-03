@@ -1,0 +1,31 @@
+{
+  "label": "nemotron_control",
+  "role": "reviewer_a",
+  "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "roster_edited": false,
+  "probed_at": "2026-11-03T12:30:52+00:00",
+  "sent": true,
+  "requests": [
+    {
+      "http_status": 200,
+      "finish_reason": "stop",
+      "failed": false
+    }
+  ],
+  "http_status": 200,
+  "finish_reason": "stop",
+  "prompt_tokens": 10099,
+  "completion_tokens": 9818,
+  "total_tokens": 19917,
+  "reasoning_tokens": 9774,
+  "seconds": 263.3,
+  "last_line": "## Verdict: FIX FIRST",
+  "verdict": "FIX FIRST",
+  "evidence_ok": true,
+  "review_one": "FIX",
+  "review_one_error": null,
+  "error": null,
+  "failed_attempts": [],
+  "reply_chars": 142,
+  "reply_text": "- scripts/source/loop_status.py:74 [SPEC 9]: main uses argv[0] as loop_dir when len(argv)==1 instead of default \"_loop\"\n\n## Verdict: FIX FIRST"
+}
