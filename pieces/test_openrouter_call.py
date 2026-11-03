@@ -256,13 +256,15 @@ def _null_content(finish):
     return build
 
 
-def test_null_content_cut_off_at_max_tokens_is_retried_at_the_retry_limit(tmp_path):
+def test_null_content_cut_off_at_max_tokens_is_retried_with_reasoning_off_at_the_same_size(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", _null_content("length"), ok(WRITER_OK))
     built, _ = client(tmp_path, fake)
     text, info = built.call("writer_a", "system", "user", kind="writer", max_tokens=1000)
     assert text == WRITER_OK and info["attempts"] == 2
-    assert [p["body"]["max_tokens"] for p in fake.posts()] == [1000, 72000]
+    first, second = (p["body"] for p in fake.posts())
+    assert [first["max_tokens"], second["max_tokens"]] == [1000, 1000]     # R1: the budget does not grow
+    assert "reasoning" in first and "reasoning" not in second             # R1: the retry turns reasoning off
 
 
 def test_null_content_with_another_finish_reason_is_rejected_without_a_retry(tmp_path):
@@ -924,14 +926,14 @@ def test_a_reviewer_server_error_still_counts_toward_the_two_error_rule(tmp_path
     assert len(fake.posts()) == 2 and clock.slept == [oc.BACKOFF_S[0], oc.BACKOFF_S[1]]
 
 
-def test_a_writer_upstream_429_keeps_the_old_schedule(tmp_path):
+def test_a_writer_upstream_429_waits_in_the_reviewer_window_and_is_not_a_breaker_failure(tmp_path):
     fake = Fake()
     fake.on("/chat/completions", upstream_429(), upstream_429(), ok(WRITER_OK))
     built, clock = client(tmp_path, fake)
-    with pytest.raises(oc.ProviderUnavailable, match="dropped"):
-        built.call("writer_a", "system", "user", kind="writer")
-    assert oc.BACKOFF_S == (2, 8, 30)
-    assert clock.slept == [2, 8] and len(fake.posts()) == 2
+    text, _ = built.call("writer_a", "system", "user", kind="writer")
+    assert text == WRITER_OK
+    assert clock.slept == [oc.REVIEWER_429_WAITS_S[0], oc.REVIEWER_429_WAITS_S[1]] and len(fake.posts()) == 3   # R1: 15 s then 30 s (jitter 0 here)
+    assert built.breaker.streak.get(DOTS, 0) == 0
 
 
 @pytest.fixture(autouse=True)
@@ -1043,7 +1045,7 @@ def test_every_request_is_kept_with_its_usage_finish_reason_and_seconds(tmp_path
     built = oc.OpenRouter(KEYS, tmp_path / "ledger", transport=slow, clock=clock.time, sleep=clock.sleep, rand=lambda: 0.0)
     built.call("writer_a", "s", "u")
     assert built.requests == [{"model": DOTS, "status": 200, "failed": False, "seconds": 2.5, "finish_reason": "stop",
-                               "usage": {"prompt_tokens": 12, "completion_tokens": 7}, "reasoning_tokens": 3}]
+                               "usage": {"prompt_tokens": 12, "completion_tokens": 7}, "reasoning_tokens": 3, "reasoning_over_cap": False}]
 
 
 def test_a_failed_request_is_kept_as_a_request_too(tmp_path):
@@ -1073,3 +1075,44 @@ def test_a_reply_with_no_message_text_keeps_its_finish_reason_usage_keys_and_rea
     assert sorted(facts["message_keys"]) == ["[REDACTED]", "reasoning", "reasoning_content", "role"]
     assert facts["reasoning_len"] == len("thinking!") and facts["reasoning_content_len"] == len("more")
     assert "thinking!" not in json.dumps(built.failed_attempts[0]) and FREE_KEY not in json.dumps(built.failed_attempts[0])
+
+
+# ---- R1: reasoning per mode, overrun flag, roster check
+
+def test_a_free_call_sends_the_effort_it_is_given_and_off_sends_no_reasoning_field(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok(WRITER_OK), ok(WRITER_OK), ok(WRITER_OK))
+    built, _ = client(tmp_path, fake)
+    built.call("writer_a", "system", "user", kind="writer", effort="low")
+    built.call("writer_a", "system", "user", kind="writer", effort="off")
+    built.call("writer_a", "system", "user", kind="writer")
+    low, off, role_default = (p["body"] for p in fake.posts())
+    assert low["reasoning"] == {"effort": "low"}
+    assert "reasoning" not in off
+    assert role_default["reasoning"] == {"max_tokens": 8000}          # no effort given: the role's own setting
+
+
+def test_a_reviewer_on_a_free_model_takes_the_mode_effort_too(tmp_path):
+    fake = Fake()
+    fake.on("/chat/completions", ok("Notes.\n## Verdict: READY"))
+    built, _ = client(tmp_path, fake)
+    built.call("reviewer_b", "system", "user", kind="reviewer", effort="low")
+    assert fake.posts()[0]["body"]["reasoning"] == {"effort": "low"}
+
+
+def test_the_mode_efforts_come_from_the_roster_and_a_missing_table_is_refused(tmp_path):
+    assert oc.effort_for_mode("write") == "high" and oc.effort_for_mode("repair") == "low" and oc.effort_for_mode("text") is None
+    roster = json.loads(Path(oc.ROSTER_PATH).read_text(encoding="utf-8"))
+    del roster["profiles"]["test"]["effort_by_mode"]
+    bad = tmp_path / "roster.json"
+    bad.write_text(json.dumps(roster), encoding="utf-8")
+    with pytest.raises(oc.RosterRefused, match="effort_by_mode"):
+        oc.load_roster_file(bad)
+
+
+def test_a_reply_that_spends_more_reasoning_than_its_cap_is_flagged(tmp_path):
+    over = {"model": DOTS, "choices": [{"message": {"content": "x"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens_details": {"reasoning_tokens": 9000}}}
+    under = dict(over, usage={"completion_tokens_details": {"reasoning_tokens": 100}})
+    assert oc.reply_facts(over)["reasoning_over_cap"] is True
+    assert oc.reply_facts(under)["reasoning_over_cap"] is False

@@ -3,6 +3,7 @@
   "profiles": {
     "test": {
       "probe_max_tokens": 256,
+      "effort_by_mode": {"write": "high", "repair": "low", "review": "low", "review-reask": "low"},
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",
@@ -52,6 +53,7 @@
     },
     "production": {
       "probe_max_tokens": 256,
+      "effort_by_mode": {"write": "high", "repair": "low", "review": "low", "review-reask": "low"},
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",

@@ -43,7 +43,9 @@ MINUTE_WAIT_DEFAULT_S = 5.0
 MAX_WAIT_S = 120.0                  # a longer wait than this ends the call instead of sleeping
 REVIEWER_429_WAITS_S = (15, 30, 60, 120, 180)   # an upstream 429 on a reviewer call: these waits, plus up to 1 s of jitter (Retry-After when longer)
 BREAKER_LIMIT = 2                   # consecutive provider errors drop a model for the job
-TRUNCATION_RETRIES = 1              # one retry with a doubled max_tokens
+TRUNCATION_RETRIES = 1              # one retry: a cut-off reply with no text goes again with reasoning off at the same size (R1); a cut-off text with a doubled max_tokens
+EFFORT_MODES = ("write", "repair", "review", "review-reask")   # the call modes that take a reasoning effort from the roster (R1: effort_by_mode)
+EFFORT_VALUES = (None, "off", "low", "medium", "high")
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
 FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
@@ -140,6 +142,10 @@ class _Truncated(ReplyRejected):
     pass
 
 
+class _TruncatedNoText(_Truncated):
+    """cut off at max_tokens with no message text: a reasoning model spent the budget thinking (R1: retried with reasoning off, same size)."""
+
+
 class _Mismatch(OpenRouterError):
     pass
 
@@ -183,6 +189,9 @@ def load_roster_file(path=None):
         cap = profile.get("probe_max_tokens")
         if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
             raise RosterRefused(f"profile {name}: probe_max_tokens must be a positive whole number")
+        effort = profile.get("effort_by_mode")
+        if not isinstance(effort, dict) or set(effort) != set(EFFORT_MODES) or any(v not in EFFORT_VALUES for v in effort.values()):
+            raise RosterRefused(f"profile {name}: effort_by_mode must hold exactly {', '.join(EFFORT_MODES)}, each null, off, low, medium or high")
         for role, spec in roles.items():
             _check_role(name, role, spec)
     return profiles
@@ -191,6 +200,12 @@ def load_roster_file(path=None):
 def probe_max_tokens(profile=None):
     """The probe's output cap for a profile (default: the active one), from config/roster.json."""
     return load_roster_file()[profile or active_profile()]["probe_max_tokens"]
+
+
+def effort_for_mode(mode, profile=None):
+    """The reasoning effort a call mode asks for (R1), from config/roster.json effort_by_mode: None keeps the role's own reasoning setting,
+    'off' sends no reasoning field, low/medium/high set the provider's effort. A mode not in the table gets None."""
+    return load_roster_file()[profile or active_profile()]["effort_by_mode"].get(mode)
 
 
 def load_profile(name=None, path=None):
@@ -291,6 +306,14 @@ def _length(value):
     return len(value) if isinstance(value, (str, list, dict)) else None
 
 
+def _reasoning_cap(model):
+    """The roster's reasoning.max_tokens for a model (the provider does not enforce it), or None for a model not on the roster."""
+    try:
+        return roster_state()["SETTINGS"][model]["reasoning"]["max_tokens"]
+    except (KeyError, TypeError):
+        return None
+
+
 def reply_facts(data, secrets=()):
     """What a reply says about itself, never its text: finish_reason, the integer usage fields and the reasoning tokens. A reply with no
     message text (choices[0].message.content is not a string) also keeps the keys of that message (redacted) and the lengths of its reasoning
@@ -304,6 +327,8 @@ def reply_facts(data, secrets=()):
     details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
     facts = {"finish_reason": choice.get("finish_reason"), "usage": {k: v for k, v in usage.items() if isinstance(v, int)},
              "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details.get("reasoning_tokens"), int) else None}
+    cap = _reasoning_cap(data.get("model"))
+    facts["reasoning_over_cap"] = None if facts["reasoning_tokens"] is None or cap is None else facts["reasoning_tokens"] > cap   # R1: which models ignore the cap
     if not isinstance(message.get("content"), str):
         facts["message_keys"] = sorted(redact(str(k), secrets) for k in message)
         facts["reasoning_len"] = _length(message.get("reasoning"))
@@ -338,7 +363,7 @@ def check_reply(kind, requested, data):
     text = message.get("content") if isinstance(message, dict) else None
     finish = choice.get("finish_reason") if choice else None
     if finish == "length" and not (isinstance(text, str) and text.strip()):
-        raise _Truncated("reply cut off at max_tokens with no text (content missing or empty)")
+        raise _TruncatedNoText("reply cut off at max_tokens with no text (content missing or empty)")
     if not isinstance(text, str):
         raise ReplyRejected("malformed reply: no message text")
     if finish == "length":
@@ -613,9 +638,10 @@ class OpenRouter:
                 summary[slot] = {"saved": True, "quota": "local", "note": "free_model_daily_requests absent (evidence only; not counted)"}
         return summary
 
-    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None):
+    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, effort=None):
         """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply). The model's settings
-        come from its roster role; the retry values apply to writer calls only."""
+        come from its roster role; the retry values apply to writer calls only. effort: a reasoning effort for a free call (None keeps the
+        role's setting, 'off' sends none); a cut-off reply with no text is retried with reasoning off at the same size (R1)."""
         if kind not in ("text", "writer", "reviewer"):
             raise ValueError(f"unknown reply kind {kind!r}")
         model = resolve(name)
@@ -642,7 +668,7 @@ class OpenRouter:
             reserved = self._reserve(model, slot, system, user, tokens)
             sent = self.clock()
             try:
-                status, headers, raw = self._send(model, slot, system, user, tokens, private, timeout)
+                status, headers, raw = self._send(model, slot, system, user, tokens, private, timeout, effort)
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
                 self._keep_request(model, None, self.clock() - sent)
                 self._note(model, None, f"{type(exc).__name__}: {exc}")
@@ -666,6 +692,13 @@ class OpenRouter:
                     raise self._err(ProviderUnavailable, f"{model}: reply came from provider {data.get('provider')!r}, not {pin_name!r}")
                 try:
                     text = check_reply(kind, model, data)
+                except _TruncatedNoText as exc:             # R1: the budget went to thinking; the same size with reasoning off, not a bigger budget
+                    self._note(model, 200, str(exc), data)
+                    if truncations == TRUNCATION_RETRIES or slot == "paid":
+                        raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens} with no text")
+                    truncations += 1
+                    effort = "off"
+                    continue
                 except _Truncated as exc:
                     self._note(model, 200, str(exc), data)
                     if truncations == TRUNCATION_RETRIES or slot == "paid":
@@ -691,7 +724,7 @@ class OpenRouter:
                 if limit == "minute":
                     self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute", attempts + 1)
                     retries += 1
-                elif kind == "reviewer":                # reviewer upstream 429: its own window; these do not count toward the breaker
+                elif kind in ("reviewer", "writer"):    # upstream 429: its own window (R1: writers get it too); these do not count toward the breaker
                     self._reviewer_window_wait(model, started, window, retry_after(headers), message, attempts + 1)
                     window += 1
                 else:
@@ -767,11 +800,11 @@ class OpenRouter:
         self.budget.free_used += 1
         return 0.0
 
-    def _send(self, model, slot, system, user, tokens, private, timeout_s):
+    def _send(self, model, slot, system, user, tokens, private, timeout_s, effort=None):
         """_post, inside the model's slot on the account ledger when the client is on it. The wait for the slot is bounded by the unit
         deadline, so it counts against the job's time."""
         if self.shared is None:
-            return self._post(model, slot, system, user, tokens, private, timeout_s)
+            return self._post(model, slot, system, user, tokens, private, timeout_s, effort)
         sl = _shared_limits()
         job_id, gen = self.shared
         try:
@@ -787,7 +820,7 @@ class OpenRouter:
         except TimeoutError as exc:
             raise self._err(ProviderUnavailable, f"{model}: no free model slot before the unit deadline ({exc})")
         try:
-            return self._post(model, slot, system, user, tokens, private, timeout_s)
+            return self._post(model, slot, system, user, tokens, private, timeout_s, effort)
         finally:
             slot_cm.__exit__(None, None, None)
 
@@ -805,7 +838,7 @@ class OpenRouter:
             _shared_limits().settle_review(job_id, gen, reserved, spent, home_dir=self.shared_home)
         return spent
 
-    def _post(self, model, slot, system, user, tokens, private, timeout_s):
+    def _post(self, model, slot, system, user, tokens, private, timeout_s, effort=None):
         settings = roster_state()["SETTINGS"][model]
         body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "max_tokens": tokens, "temperature": settings["temperature"]}
@@ -813,6 +846,10 @@ class OpenRouter:
             body["reasoning"] = dict(settings["reasoning"])
         if settings["sampling"]:
             body.update(settings["sampling"])
+        if slot == "free" and effort is not None:       # R1: the mode's effort replaces the role's reasoning; "off" sends no reasoning field
+            body.pop("reasoning", None)
+            if effort != "off":
+                body["reasoning"] = {"effort": effort}
         if slot == "paid":                              # a paid role's request never asks for more than its roster max_tokens
             body["max_tokens"] = min(tokens, settings["max_tokens"])
         provider = {}
