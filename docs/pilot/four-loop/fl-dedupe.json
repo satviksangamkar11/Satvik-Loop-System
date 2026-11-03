@@ -1,0 +1,43 @@
+{
+ "name": "fl-dedupe",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/four-loop/FL_DEDUPE_SPEC.md",
+ "files": [
+  "scripts/source/fl_dedupe.py",
+  "pieces/test_fl_dedupe.py"
+ ],
+ "tests": [
+  "pieces/test_fl_dedupe.py"
+ ],
+ "acceptance_tests": [
+  "tests/acceptance/fl_dedupe_acceptance.py"
+ ],
+ "negative_controls": [
+  {
+   "name": "sorted-set",
+   "replace": {
+    "scripts/source/fl_dedupe.py": "tests/controls/fl_dedupe_sorted_set.py"
+   },
+   "must_fail": [
+    "tests/acceptance/fl_dedupe_acceptance.py::test_order_of_first_occurrence"
+   ]
+  }
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/fl_dedupe_acceptance.py::test_order_of_first_occurrence",
+  "tests/acceptance/fl_dedupe_acceptance.py::test_empty",
+  "tests/acceptance/fl_dedupe_acceptance.py::test_input_not_changed"
+ ],
+ "fixers": [
+  "writer_a",
+  "writer_b"
+ ],
+ "reviewers": "by_lineage",
+ "budget": {
+  "free_requests": 40,
+  "review_usd": 0,
+  "paid_usd": 0
+ },
+ "deadline_min": 60
+}
