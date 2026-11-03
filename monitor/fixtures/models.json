@@ -96,11 +96,11 @@
         "temperature": null,
         "structured_outputs": null,
         "contracts": {
-          "planner_json": "verified",
-          "writer_file_blocks": "verified",
-          "repair_edit_blocks": "verified",
-          "repair_whole_file": "verified",
-          "reviewer_verdict": "verified",
+          "planner_json": "unverified",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
           "native_structured_output": "not-applicable"
         },
         "reasoning_mode": "unknown",

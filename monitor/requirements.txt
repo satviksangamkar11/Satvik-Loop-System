@@ -1,3 +1,5 @@
+# Run with ONE worker: the API assumes a single uvicorn worker (process-wide lock, idempotency store; docs/API_CONTRACT.md section 0):
+#   SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765 --workers 1
 fastapi>=0.110
 uvicorn>=0.29
 httpx>=0.27

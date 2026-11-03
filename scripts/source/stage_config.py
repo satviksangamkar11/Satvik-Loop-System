@@ -55,6 +55,20 @@ STAGES = {                                  # stage -> (role, mode); role None: 
 }
 STAGE_NAMES = tuple(STAGES)
 INHERITED = ("reviewer_reask", "review_fix_repair")     # model and via come from the job as it runs: never selectable
+# The output contract each stage needs from its model (docs/API_CONTRACT.md: contract, contract_state). The UI offers only models whose
+# required contract is verified. fallback: the contract of the whole-file repair a repair stage falls back to (None: no fallback).
+CONTRACT_OF = {                                  # stage -> (required_contract, fallback_contract)
+    "planner": ("planner_json", None),
+    "writer_a_write": ("writer_file_blocks", None),
+    "writer_b_write": ("writer_file_blocks", None),
+    "writer_a_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "writer_b_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "review_fix_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "specialist_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "reviewer_b": ("reviewer_verdict", None),
+    "reviewer_a": ("reviewer_verdict", None),
+    "reviewer_reask": ("reviewer_verdict", None),
+}
 WRITER_STAGES = ("writer_a_write", "writer_a_repair", "writer_b_write", "writer_b_repair")
 REVIEWER_STAGES = ("reviewer_b", "reviewer_a")
 OVERRIDE_KEYS = ("model", "via", "effort", "settings")

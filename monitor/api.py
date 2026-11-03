@@ -1,6 +1,8 @@
 """The Control Center API (docs/API_CONTRACT.md v1): a local FastAPI app under /api. Run from the repo root:
 
-    SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765
+    SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765 --workers 1
+
+One worker only: the process-wide lock and the idempotency store assume a single process (docs/API_CONTRACT.md section 0).
 
 Reads are GET; actions are POST, PUT, PATCH or DELETE. Each action runs through store.respond, so a repeat with the same Idempotency-Key
 returns the first response and runs nothing again. Errors use the contract's envelope. The routes hold no logic of their own: they parse the

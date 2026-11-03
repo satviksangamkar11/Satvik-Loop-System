@@ -504,7 +504,9 @@ def test_budget_and_stage_validation_codes(world):
 
 def test_over_max_output_is_refused_at_stage_validation(world):
     data = json.loads(mc.CATALOG_PATH.read_text())
-    next(e for e in data["openrouter"] if e["model_id"] == "dots-studio/dots-3-note-preview:free")["max_output_tokens"] = 32000
+    entry = next(e for e in data["openrouter"] if e["model_id"] == "dots-studio/dots-3-note-preview:free")
+    entry["max_output_tokens"] = 32000
+    entry["contracts"]["writer_file_blocks"] = True            # the writer stage's contract is verified (contract-not-verified is checked first)
     mc.CATALOG_PATH.write_text(json.dumps(data))
     r = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [
         {"stage": "writer_a_write", "settings": {"max_tokens": 10**7}}]})
@@ -879,3 +881,100 @@ def test_every_contract_route_is_registered(world):
 def test_requirements_file_and_docs_mention_it():
     assert "fastapi" in (REPO / "monitor" / "requirements.txt").read_text()
     assert "monitor/requirements.txt" in (REPO / "docs" / "API_CONTRACT.md").read_text()
+
+
+# ---------------------------------------------------------------- I2: required contract per stage; I16: Claude Code contracts; I15: limits; I17: one worker
+
+def _verify_in_catalog(world, model_id, **contracts):
+    """Records verified (true) contracts for a catalog model in the test's copy of config/models.json (what POST /models/verify writes)."""
+    data = json.loads(mc.CATALOG_PATH.read_text())
+    next(e for e in data["openrouter"] if e["model_id"] == model_id)["contracts"].update(contracts)
+    mc.CATALOG_PATH.write_text(json.dumps(data))
+
+
+def test_every_stage_row_carries_its_required_contract_and_fallback(world):
+    rows = {r["stage"]: r for r in world.client.get("/api/stages", params={"profile": "test"}).json()["stages"]}
+    assert set(sc.CONTRACT_OF) == set(sc.STAGE_NAMES)
+    for stage, row in rows.items():
+        required, fallback = sc.CONTRACT_OF[stage]
+        assert row["required_contract"] == required and row["fallback_contract"] == fallback, stage
+    for row in fixture("stages.json")["stages"]:                          # the fixture says the same
+        assert row["required_contract"] == sc.CONTRACT_OF[row["stage"]][0], row["stage"]
+        assert row["fallback_contract"] == sc.CONTRACT_OF[row["stage"]][1], row["stage"]
+    assert rows["planner"]["required_contract"] == "planner_json"
+    assert {rows[s]["required_contract"] for s in ("writer_a_write", "writer_b_write")} == {"writer_file_blocks"}
+    repairs = ("writer_a_repair", "writer_b_repair", "review_fix_repair", "specialist_repair")
+    assert {rows[s]["required_contract"] for s in repairs} == {"repair_edit_blocks"}
+    assert {rows[s]["fallback_contract"] for s in repairs} == {"repair_whole_file"}
+    assert {rows[s]["required_contract"] for s in ("reviewer_b", "reviewer_a", "reviewer_reask")} == {"reviewer_verdict"}
+    assert rows["writer_a_write"]["fallback_contract"] is None and rows["reviewer_b"]["fallback_contract"] is None
+
+
+def test_a_stage_change_is_refused_until_its_model_has_the_required_contract_verified(world):
+    write = {"profile": "test", "changes": [{"stage": "writer_a_write", "settings": {"temperature": 0.2}}]}
+    bad = world.client.post("/api/stages/validate", json=write)
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "contract-not-verified"
+    problem = bad.json()["error"]["details"]["problems"][0]
+    assert problem["stage"] == "writer_a_write" and "writer_file_blocks" in problem["message"]
+    repair = {"profile": "test", "changes": [{"stage": "writer_a_repair", "settings": {"temperature": 0.2}}]}
+    _verify_in_catalog(world, "dots-studio/dots-3-note-preview:free", writer_file_blocks=True)
+    assert world.client.post("/api/stages/validate", json=write).json() == {"valid": True, "problems": []}
+    refused = world.client.post("/api/stages/validate", json=repair)               # a repair needs repair_edit_blocks, not writer_file_blocks
+    assert refused.status_code == 400 and refused.json()["error"]["code"] == "contract-not-verified"
+    assert "repair_edit_blocks" in refused.json()["error"]["details"]["problems"][0]["message"]
+    _verify_in_catalog(world, "dots-studio/dots-3-note-preview:free", repair_edit_blocks=True)
+    assert world.client.post("/api/stages/validate", json=repair).json() == {"valid": True, "problems": []}
+
+
+def test_a_claude_code_model_is_not_a_valid_stage_model_while_its_contract_is_unverified(world):
+    change = {"profile": "production", "changes": [{"stage": "planner", "model": "haiku", "via": "claude_code", "effort": "high"}]}
+    r = world.client.post("/api/stages/validate", json=change)
+    assert r.status_code == 400 and r.json()["error"]["code"] == "contract-not-verified"
+    assert "planner_json unverified" in r.json()["error"]["details"]["problems"][0]["message"]
+
+
+def test_a_fresh_claude_code_entry_shows_its_contracts_unverified_with_text_validated(world):
+    rows = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
+    haiku = rows["haiku"]["capabilities"]
+    assert haiku["text_validated"] is True
+    contracts = haiku["contracts"]
+    assert set(contracts) == {"planner_json", "writer_file_blocks", "repair_edit_blocks", "repair_whole_file", "reviewer_verdict",
+                              "native_structured_output"}
+    text = {k: v for k, v in contracts.items() if k != "native_structured_output"}
+    assert text and set(text.values()) == {"unverified"}
+    assert contracts["native_structured_output"] == "not-applicable"
+    shown = next(m for m in fixture("models.json")["models"] if m["model_id"] == "haiku")["capabilities"]["contracts"]
+    assert shown == contracts                                              # the fixture matches the response
+
+
+def test_a_claude_code_model_cannot_be_verified_so_no_result_is_ever_recorded_for_it(world):
+    from monitor import config_api
+    world.monkeypatch.setattr(config_api, "make_client", lambda home: SimpleNamespace(own_job=lambda *a: None, release_job=lambda: False))
+    r = world.client.post("/api/models/verify", json={"model_id": "haiku", "contract": "writer_file_blocks"},
+                          headers={"Idempotency-Key": "verify-haiku-0001"})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "not-in-catalog"
+    models = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
+    assert models["haiku"]["capabilities"]["contracts"]["writer_file_blocks"] == "unverified"
+
+
+def test_a_job_review_usd_other_than_the_engine_value_is_refused_and_not_stored(world):
+    bad = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0.01}, headers={"Idempotency-Key": "limits-jrv-000001"})
+    assert bad.status_code == 422 and bad.json()["error"]["code"] == "not-applied-by-engine"
+    message = bad.json()["error"]["message"]
+    assert "0.05" in message and "production budget gate" in message and "0.01" in message
+    assert bad.json()["error"]["details"] == {"required": 0.05, "given": 0.01}
+    zero = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0}, headers={"Idempotency-Key": "limits-jrv-000002"})
+    assert zero.status_code == 422 and zero.json()["error"]["code"] == "not-applied-by-engine"
+    assert limits_config.load()["revision"] == 1 and limits_config.job_review_usd() == 0.05          # nothing was written
+    ok = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0.05, "sandbox_slots": 2},
+                          headers={"Idempotency-Key": "limits-jrv-000003"})
+    assert ok.status_code == 200 and ok.json() == {"revision": 2}
+
+
+def test_the_run_command_pins_one_worker_in_the_docs_the_requirements_and_the_app(world):
+    command = "python -m uvicorn monitor.api:app --port 8765 --workers 1"
+    assert command in (REPO / "monitor" / "requirements.txt").read_text(encoding="utf-8")
+    assert command in (REPO / "monitor" / "api.py").read_text(encoding="utf-8")
+    contract = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    section_0 = contract.split("## 0. Conventions", 1)[1].split("## 1. Enums", 1)[0]
+    assert command in section_0 and "single worker" in section_0.lower()
