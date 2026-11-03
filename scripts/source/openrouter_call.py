@@ -846,10 +846,8 @@ class OpenRouter:
             body["reasoning"] = dict(settings["reasoning"])
         if settings["sampling"]:
             body.update(settings["sampling"])
-        if slot == "free" and effort is not None:       # R1: the mode's effort replaces the role's reasoning; "off" sends no reasoning field
-            body.pop("reasoning", None)
-            if effort != "off":
-                body["reasoning"] = {"effort": effort}
+        if slot == "free" and effort is not None:       # R1: the mode's effort replaces the role's reasoning; "off" is an explicit switch
+            body["reasoning"] = {"enabled": False} if effort == "off" else {"effort": effort}   # no field would mean the provider's default, usually on
         if slot == "paid":                              # a paid role's request never asks for more than its roster max_tokens
             body["max_tokens"] = min(tokens, settings["max_tokens"])
         provider = {}

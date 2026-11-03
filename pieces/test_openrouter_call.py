@@ -264,7 +264,7 @@ def test_null_content_cut_off_at_max_tokens_is_retried_with_reasoning_off_at_the
     assert text == WRITER_OK and info["attempts"] == 2
     first, second = (p["body"] for p in fake.posts())
     assert [first["max_tokens"], second["max_tokens"]] == [1000, 1000]     # R1: the budget does not grow
-    assert "reasoning" in first and "reasoning" not in second             # R1: the retry turns reasoning off
+    assert "reasoning" in first and second["reasoning"] == {"enabled": False}   # R1: the retry turns reasoning off, explicitly
 
 
 def test_null_content_with_another_finish_reason_is_rejected_without_a_retry(tmp_path):
@@ -1088,7 +1088,7 @@ def test_a_free_call_sends_the_effort_it_is_given_and_off_sends_no_reasoning_fie
     built.call("writer_a", "system", "user", kind="writer")
     low, off, role_default = (p["body"] for p in fake.posts())
     assert low["reasoning"] == {"effort": "low"}
-    assert "reasoning" not in off
+    assert off["reasoning"] == {"enabled": False}                     # the exact off body: an explicit switch, not a missing field
     assert role_default["reasoning"] == {"max_tokens": 8000}          # no effort given: the role's own setting
 
 
