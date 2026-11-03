@@ -1,0 +1,32 @@
+import unittest
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+from fl_top import top_words
+
+class TestTopWords(unittest.TestCase):
+    def test_k_zero(self):
+        self.assertEqual(top_words("hello world", 0), [])
+
+    def test_negative_k_raises(self):
+        with self.assertRaises(ValueError):
+            top_words("hello", -1)
+
+    def test_basic_sorting(self):
+        text = "apple banana apple"
+        result = top_words(text, 1)
+        self.assertEqual(result, [('apple', 2)])
+
+    def test_equal_counts_sorted_by_word(self):
+        text = "apple banana"
+        result = top_words(text, 2)
+        self.assertEqual(result, [('apple', 1), ('banana', 1)])
+
+    def test_k_larger_than_unique_words(self):
+        text = "a b c"
+        result = top_words(text, 5)
+        self.assertEqual(len(result), 3)
+
+if __name__ == '__main__':
+    unittest.main()
