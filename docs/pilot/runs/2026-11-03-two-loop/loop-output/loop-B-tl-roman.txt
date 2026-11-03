@@ -1,0 +1,14 @@
+tl-roman: passed
+tl-roman passed None
+merge [('tl-roman-20261103-1914-7123', 'tests-failed')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:passed = 1
+finished:tests-failed = 1
+queue-wait = 1
+started = 2
+loop B exit: 0
+
+[exited with code 0]

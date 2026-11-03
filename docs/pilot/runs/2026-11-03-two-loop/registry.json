@@ -1,0 +1,71 @@
+{
+  "counter:429:google/gemma-4-26b-a4b-it:free": {
+    "count": 2
+  },
+  "counter:429:google/gemma-4-31b-it:free": {
+    "count": 3
+  },
+  "counter:429:xingchen-agi/xing4.0-29b-a4b:free": {
+    "count": 16
+  },
+  "counter:finished:passed": {
+    "count": 2
+  },
+  "counter:finished:tests-failed": {
+    "count": 2
+  },
+  "counter:queue-wait": {
+    "count": 1
+  },
+  "counter:started": {
+    "count": 2
+  },
+  "tl-roman": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713544.7693162,
+    "gen": 1,
+    "job": "tl-roman-20261103-1914-7123",
+    "result": {
+      "round": 4
+    },
+    "seq": 3,
+    "started": 1793713483.364584,
+    "state": "passed"
+  },
+  "tl-roman-20261103-1914-7123": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713548.4574945,
+    "gen": 1,
+    "job": "tl-roman-20261103-1914-7123",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.98s\n"
+    },
+    "seq": 4,
+    "started": 1793713548.4574945,
+    "state": "tests-failed"
+  },
+  "tl-slug": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713626.1235254,
+    "gen": 1,
+    "job": "tl-slug-20261103-1914-809d",
+    "result": {
+      "round": 4
+    },
+    "seq": 5,
+    "started": 1793713482.8207755,
+    "state": "passed"
+  },
+  "tl-slug-20261103-1914-809d": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713629.8257406,
+    "gen": 1,
+    "job": "tl-slug-20261103-1914-809d",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.81s\n"
+    },
+    "seq": 6,
+    "started": 1793713629.8257406,
+    "state": "tests-failed"
+  }
+}

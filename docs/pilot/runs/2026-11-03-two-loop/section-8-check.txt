@@ -1,0 +1,8 @@
+﻿section 8 check (RUNBOOK 8), run against origin/main 5de3b0c62b7debbd00689f8e30577ba79c4b5003
+1. registry (job-id rows): tl-slug-20261103-1914-809d = tests-failed, tl-roman-20261103-1914-7123 = tests-failed. name rows still read passed (see NOTES.md). tl-index: no row.
+2. origin/main scripts/source/ tl_* files:
+   (none: no tl_ file on origin/main)
+3. review_spent: 0
+4. config/roster.json opus lines (both must sit in the production block, which starts at line 54):
+   line 90: "model": "opus",
+   line 99: "model": "opus",

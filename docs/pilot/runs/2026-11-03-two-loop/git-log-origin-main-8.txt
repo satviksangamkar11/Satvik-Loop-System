@@ -1,0 +1,8 @@
+﻿5de3b0c Merge PR #33: loop_status.py, the pilot's own delivery (pilot r5)
+86003e0 Merge PR #32: closure (keep green, reviewer replies, test roster, any-model roles, launched-job commits)
+b487a33 Add loop_status script and its test (pilot r5 delivery)
+f7db576 Pilot spec: main(argv) takes the arguments without the program name
+199ef42 Merge roster-any-model: every role may be any OpenRouter model or any Claude Code model and effort
+a570243 Any roster role on any model: via openrouter or claude_code, set in config/roster.json only
+98aa24f Test roster: Nemotron Ultra writes as writer_b, Nemotron 3.5 Super reviews as reviewer_b
+fff13b7 2-loop runbook: the commit blocker is fixed (9160bdf)

@@ -1,0 +1,14 @@
+tl-slug: passed
+tl-slug passed None
+merge [('tl-slug-20261103-1914-809d', 'tests-failed')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:passed = 2
+finished:tests-failed = 2
+queue-wait = 1
+started = 2
+loop A exit: 0
+
+[exited with code 0]

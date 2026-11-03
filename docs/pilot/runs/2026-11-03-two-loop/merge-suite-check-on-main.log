@@ -1,0 +1,37 @@
+﻿selftest: []
+merge suite ok: False
+
+==================================== ERRORS ====================================
+_______________ ERROR collecting pieces/test_loop_acceptance.py ________________
+ImportError while importing test module '/work/pieces/test_loop_acceptance.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pieces/test_loop_acceptance.py:14: in <module>
+    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root
+pieces/test_fix_loop_review.py:11: in <module>
+    import fix_loop as fl
+scripts/source/fix_loop.py:15: in <module>
+    import yaml
+E   ModuleNotFoundError: No module named 'yaml'
+________________ ERROR collecting pieces/test_p0_acceptance.py _________________
+ImportError while importing test module '/work/pieces/test_p0_acceptance.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pieces/test_p0_acceptance.py:21: in <module>
+    import fix_loop as fl  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^
+scripts/source/fix_loop.py:15: in <module>
+    import yaml
+E   ModuleNotFoundError: No module named 'yaml'
+=========================== short test summary info ============================
+ERROR pieces/test_loop_acceptance.py
+ERROR pieces/test_p0_acceptance.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 0.85s
+

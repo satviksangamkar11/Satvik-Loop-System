@@ -1,0 +1,41 @@
+{
+  "day": "2026-11-03",
+  "free_cap": 1000,
+  "free_used": 62,
+  "minute": [
+    1793713579.1355488,
+    1793713610.3180761
+  ],
+  "notes": [
+    {
+      "job": "pilot-loop-status-20261103-0441-6704",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/openrouter per-key file: pilot call 1 of 5"
+    },
+    {
+      "job": "pilot-loop-status-20261103-0441-6704",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/openrouter per-key file: pilot call 2 of 5"
+    },
+    {
+      "job": "pilot-loop-status-20261103-0441-6704",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/openrouter per-key file: pilot call 3 of 5"
+    },
+    {
+      "job": "pilot-loop-status-20261103-0441-6704",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/openrouter per-key file: pilot call 4 of 5"
+    },
+    {
+      "job": "pilot-loop-status-20261103-0441-6704",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/openrouter per-key file: pilot call 5 of 5"
+    },
+    {
+      "job": "probe-raw-two-calls-20261103-0503-d606",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/ledger/limits.json: probe call 1 of 2"
+    },
+    {
+      "job": "probe-raw-two-calls-20261103-0503-d606",
+      "note": "migrated from D:/aai work/wt-B-pilot2/_loop/ledger/limits.json: probe call 2 of 2"
+    }
+  ],
+  "review_reserved": 0,
+  "review_spent": 0
+}
