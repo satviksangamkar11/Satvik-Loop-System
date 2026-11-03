@@ -1,6 +1,7 @@
 {
   "health": {
     "backend": "ok",
+    "profile": "test",
     "engine_version": "b6569d8",
     "docker": "ok",
     "sandbox_image": "ok",
@@ -19,6 +20,7 @@
     "stop": false
   },
   "limits": {
+    "revision": 1,
     "leases": [
       {
         "job_id": "fl-top-20261103-2309-7d15",
