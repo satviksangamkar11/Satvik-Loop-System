@@ -40,10 +40,21 @@ def _acquire_worker(folder, n):
 
 
 def _claim_holder(folder, path, started):
+    """Holds a claim for a minute. `started` is a file the child writes once it holds the claim (a file, not a multiprocessing.Event: the
+    Docker sandbox runs with --ipc none, so there is no shared memory for a semaphore)."""
     claim = pc.ClaimStore(folder).claim([path], "child")
-    started.set()
+    Path(started).write_text("in", encoding="utf-8")
     time.sleep(60)
     claim.release()
+
+
+def _wait_for_file(path, timeout_s):
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        if Path(path).is_file():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 # ---------------------------------------------------------------- ledger
@@ -238,12 +249,12 @@ def test_claim_spellings_conflict(tmp_path, monkeypatch):
 
 def test_claim_of_killed_child_is_free_at_once_but_its_job_id_waits_for_staleness(tmp_path):
     ctx = multiprocessing.get_context("spawn")
-    started = ctx.Event()
+    started = tmp_path / "child-holds-the-claim"
     target = tmp_path / "t.py"
-    child = ctx.Process(target=_claim_holder, args=(str(tmp_path), str(target), started))
+    child = ctx.Process(target=_claim_holder, args=(str(tmp_path), str(target), str(started)))
     child.start()
     try:
-        assert started.wait(60)
+        assert _wait_for_file(started, 60)
         with pytest.raises(pc.ClaimConflict):
             pc.ClaimStore(tmp_path).claim([target], "parent")
     finally:

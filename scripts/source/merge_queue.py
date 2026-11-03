@@ -34,10 +34,14 @@ def add_index_line(wt, job_id) -> bool:
     return True
 
 
+SUITE_INCLUDE = ("pieces", "scripts", "config", "tests", "docs")    # the folders the merge check copies into the sandbox
+
+
 def default_suite(wt):
-    """Docker sandbox, no network: every acceptance test first, then the full suite. No usable sandbox means no merge."""
+    """Docker sandbox, no network: every acceptance test first, then the full suite. No usable sandbox means no merge. The copy holds
+    every folder the suite reads (SUITE_INCLUDE): without config/ the roster cannot load (found in the 2-loop test, 2026-11-03)."""
     from sandbox_runner import DockerSandbox
-    sandbox = DockerSandbox(include=["pieces", "scripts"])
+    sandbox = DockerSandbox(include=list(SUITE_INCLUDE))
     problems = sandbox.selftest()
     if problems:
         return False, "sandbox unusable: " + "; ".join(problems)

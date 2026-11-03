@@ -109,3 +109,23 @@ def test_a_failing_suite_ends_tests_failed_and_nothing_is_pushed(tmp_path):
     a = start(env, "alpha", "a.txt", "A\n")
     assert env.queue.drain() == [(a["job_id"], "tests-failed")]
     assert git(env.origin, "rev-parse", "main") == before
+
+
+def test_the_merge_check_copies_every_folder_the_suite_reads(monkeypatch, tmp_path):
+    """2026-11-03 (2-loop test): the sandbox copy held only pieces/ and scripts/, so config/roster.json was missing and the suite could not
+    load the roster; nothing ever merged. The copy now holds config/, tests/ and docs/ too."""
+    import merge_queue as mq
+    import sandbox_runner
+    seen = {}
+
+    class Recorder:
+        def __init__(self, include=None, **kwargs):
+            seen["include"] = list(include or [])
+
+        def selftest(self):
+            return ["stop here"]
+
+    monkeypatch.setattr(sandbox_runner, "DockerSandbox", Recorder)
+    ok, why = mq.default_suite(tmp_path)
+    assert not ok and "stop here" in why
+    assert {"pieces", "scripts", "config", "tests", "docs"} <= set(seen["include"])
