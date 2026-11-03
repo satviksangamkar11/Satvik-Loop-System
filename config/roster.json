@@ -1,9 +1,12 @@
 {
   "schema_version": 1,
+  "revision": 1,
   "profiles": {
     "test": {
       "probe_max_tokens": 256, "repair_max_tokens": 10000,
       "effort_by_mode": {"write": "high", "repair": "low", "review": "low", "review-reask": "low"},
+      "stages": {"planner": {}, "writer_a_write": {}, "writer_a_repair": {}, "writer_b_write": {}, "writer_b_repair": {},
+                 "reviewer_b": {}, "reviewer_a": {}, "reviewer_reask": {}, "specialist_repair": {}, "review_fix_repair": {}},
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",
@@ -54,6 +57,8 @@
     "production": {
       "probe_max_tokens": 256, "repair_max_tokens": 10000,
       "effort_by_mode": {"write": "high", "repair": "low", "review": "low", "review-reask": "low"},
+      "stages": {"planner": {}, "writer_a_write": {}, "writer_a_repair": {}, "writer_b_write": {}, "writer_b_repair": {},
+                 "reviewer_b": {}, "reviewer_a": {}, "reviewer_reask": {}, "specialist_repair": {}, "review_fix_repair": {}},
       "roles": {
         "writer_a": {
           "model": "dots-studio/dots-3-note-preview:free",

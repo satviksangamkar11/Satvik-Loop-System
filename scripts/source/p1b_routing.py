@@ -17,6 +17,7 @@ Injected `models` interface:
   package -> {"files": {path: lines}, "spec_count": n}: the review package of the last review call (evidence_ok checks a FIX FIRST against it).
 
 Only the roster's exact IDs appear here. The owner's roster is read from openrouter_call, never copied, so there is one place to change it."""
+import contextvars
 import json
 import re
 import time
@@ -25,8 +26,23 @@ from pathlib import Path
 
 import openrouter_call as oc
 
-def _m(role):
-    """The roster model for a role, read from the active profile at call time."""
+# The job's own roles view while walk() runs: {role: {"model", "paid", ...}} from its frozen stage snapshot, or a function returning it (the
+# models object's ladder_roles). A context variable, so two jobs on two threads each see their own; None means the roster (roster_state).
+_JOB_ROLES = contextvars.ContextVar("p1b_job_roles", default=None)
+
+
+def _roles_view(snapshot=None):
+    source = snapshot if snapshot is not None else _JOB_ROLES.get()
+    view = source() if callable(source) else source
+    return view
+
+
+def _m(role, snapshot=None):
+    """The model for a role: from `snapshot` (a roles view) when given, else from the running job's snapshot (set by walk), else the roster
+    read from the active profile at call time."""
+    view = _roles_view(snapshot)
+    if view is not None:
+        return view[role]["model"]
     return oc.roster_state()["ROLES"][role]
 
 
@@ -228,8 +244,10 @@ def panel_for(origin, unavailable=(), specs=None):
     """The reviewers for a job's code whose fresh writer was `origin`, from the roster's reviewer roles in panel order: the free reviewer
     (reviewer_b) first, then reviewer_a (the paid reviewer, or the non_author_writer role of the test profile). A slot takes the free writer
     that did not write the code (backup_writer) when its model is the author, is down, or is the non_author_writer role; a paid slot is never
-    replaced. The paid reviewer is last, so it is called only after the first reviewer says READY. The author is never on its own panel."""
-    specs = oc.ROLE_SPECS if specs is None else specs
+    replaced. The paid reviewer is last, so it is called only after the first reviewer says READY. The author is never on its own panel.
+    `specs` defaults to the running job's snapshot roles (walk), else the roster."""
+    if specs is None:
+        specs = _roles_view() or oc.ROLE_SPECS
     models = {role: spec["model"] for role, spec in specs.items()}
     writers = (models["writer_a"], models["writer_b"])
     if origin not in writers + (models["reviewer_b"],):
@@ -251,7 +269,7 @@ def panel_for(origin, unavailable=(), specs=None):
 def _paid_reviewers():
     """The models of the reviewer roles marked paid, however they are called (OpenRouter or Claude Code): panel_for never replaces such a slot,
     so a failure there has no substitute either."""
-    specs = oc.ROLE_SPECS
+    specs = _roles_view() or oc.ROLE_SPECS
     return {specs[role]["model"] for role in oc.REVIEWER_ROLES if specs[role]["paid"] and specs[role]["model"] not in oc.SENTINELS}
 
 
@@ -381,13 +399,17 @@ def _review(files, models, lineage, down):
 
 def walk(job, models, lineage, clock=time.monotonic):
     """The production ladder for one unit. Returns Outcome(status, reason, failing). Statuses: passed, review-fix, escalate, blocked,
-    provider-unavailable, budget-exceeded, quota-exhausted, needs_review, deadline."""
+    provider-unavailable, budget-exceeded, quota-exhausted, needs_review, deadline. A models object with `ladder_roles` (the production
+    runner with a stage snapshot) gives the role models for this walk; without it they are the roster's."""
+    token = _JOB_ROLES.set(getattr(models, "ladder_roles", None))
     try:
         return _ladder(job, models, lineage, clock)
     except BudgetStop as exc:
         return Outcome("budget-exceeded", str(exc))
     except QuotaStop as exc:
         return Outcome("quota-exhausted", str(exc))
+    finally:
+        _JOB_ROLES.reset(token)
 
 
 def _ladder(job, models, lineage, clock):
