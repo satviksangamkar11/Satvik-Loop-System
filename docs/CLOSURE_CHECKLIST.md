@@ -17,7 +17,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 - [x] **Loop-built helpers:** `api_budget.py` (`c85ebe0`) and `api_idempotency.py` (`c5a9267`) on `main`, merged by the loop itself at $0.
 
 ## B. Remaining
-1. [ ] **`ah-shape` loop job.** Done when `scripts/source/api_shape.py` is on `origin/main`, and Local agent 1's evidence branch
+1. [x] **`ah-shape` loop job.** Done: all 3 helpers on main (`999668e`), evidence on `ah-run-2026-11-04` (`ec62c18`). Done when `scripts/source/api_shape.py` is on `origin/main`, and Local agent 1's evidence branch
    `ah-run-2026-11-04` is pushed. If it escalated, read its `results/<job_id>/` (`events.jsonl`, `review_NN.txt`, `test_NN.txt`), fix the spec
    or the test only if the test is wrong, and re-queue with `try_enqueue(..., rerun=True)`.
 2. [ ] **The P2 API subagent finishes** on worktree branch `p2-api`, which already has 5+ commits. Done when it reports: every contract route
@@ -56,7 +56,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I2 | The stages response has no **required contract** per stage, so the UI cannot filter which models are eligible (the UI repair noted it) | Add `required_contract` to each `GET /stages` row, and a fixture (item 4) | The UI shows only models whose required contract is `verified` |
 | I3 | Planner calls emit no events (`plan_job` is not hooked) | `plan_job` emits `attempt-start` / `attempt-end` with stage `planner` (item 3) | A test sees planner events |
 | I4 | Backup-writer review stage names are best effort (`reviewer_b` until a READY, then `reviewer_a`) | Record the real slot in `_review` / the events (item 3) | A test of a backup review shows the correct stage |
-| I5 | Lease leak (fixed in #36) not yet confirmed in a real run | Check the `ah-run` leases: each job's own client lease is `released: true` | Confirmed from the evidence |
+| I5 ✅ | Lease leak (fixed in #36) not yet confirmed in a real run. **Confirmed 2026-11-04:** 6 of 6 ah-* leases have `released: true` (branch `i5-lease-check`) | Check the `ah-run` leases: each job's own client lease is `released: true` | Confirmed from the evidence |
 | I6 | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
 | I7 ✅ | `npm ci` reports 5 moderate vulnerabilities | **Done 2026-11-04:** `npm audit --omit=dev` → 0 vulnerabilities (runtime clean). All 5 moderate are dev-only: `minimatch` under eslint and typescript-eslint, lint tooling only, not in the built app | Recorded |
 | I8 | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
