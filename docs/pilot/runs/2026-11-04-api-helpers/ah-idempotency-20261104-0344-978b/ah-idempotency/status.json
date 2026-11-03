@@ -1,0 +1,65 @@
+{
+  "name": "ah-idempotency",
+  "schema_version": 1,
+  "state": "passed",
+  "profile": "production",
+  "tests_passed": true,
+  "review_verdict": "READY",
+  "reason": "READY from: nvidia/nemotron-3.5-super-vl:free, nvidia/nemotron-3-ultra-550b-a55b:free",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "green"
+    },
+    {
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    }
+  ],
+  "coder_calls": 1,
+  "reviewer_calls": {
+    "nvidia/nemotron-3.5-super-vl:free": 1,
+    "nvidia/nemotron-3-ultra-550b-a55b:free": 1
+  },
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/ah_idempotency_acceptance.py": "08147a6af2d2de0e10c01eec34c9a1f75da11afe30e9da446ab584d0584f6914",
+      "tests/controls/ah_idempotency_memory_last_wins.py": "2ddd7365ca5d951088c573181c7190c87f9c9777dbb97cfa50034498576f8f39"
+    },
+    "calibration": "passed",
+    "stage_snapshot": {
+      "sha256": "6a673bfad9c54e50db2a42053f8b230ef845cf95771872678c5a33747f144796",
+      "revision": 1
+    },
+    "tested_hash": "770b57c52b9b5b66bedcc0927d8f9e3fb7656af92278ccb593bce0c5e09a3356",
+    "final_hash": "770b57c52b9b5b66bedcc0927d8f9e3fb7656af92278ccb593bce0c5e09a3356",
+    "reviewed_hash": "770b57c52b9b5b66bedcc0927d8f9e3fb7656af92278ccb593bce0c5e09a3356",
+    "review_hashes": [
+      "770b57c52b9b5b66bedcc0927d8f9e3fb7656af92278ccb593bce0c5e09a3356",
+      "770b57c52b9b5b66bedcc0927d8f9e3fb7656af92278ccb593bce0c5e09a3356"
+    ],
+    "budget": {
+      "free_requests_used": 3,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": []
+  },
+  "updated": "2026-11-03T22:18:19Z"
+}

@@ -1,0 +1,16 @@
+{
+  "started": {
+    "reviewer_a": {
+      "at": "2026-11-03T22:15:12Z",
+      "revision": 1
+    },
+    "reviewer_b": {
+      "at": "2026-11-03T22:15:03Z",
+      "revision": 1
+    },
+    "writer_a_write": {
+      "at": "2026-11-03T22:14:13Z",
+      "revision": 1
+    }
+  }
+}

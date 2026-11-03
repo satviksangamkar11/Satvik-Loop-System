@@ -1,0 +1,330 @@
+{
+  "profile": "test",
+  "resolved": {
+    "planner": {
+      "effort": null,
+      "model": "fake",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": null,
+        "max_tokens_cap": null,
+        "reasoning": null,
+        "sampling": null,
+        "temperature": null,
+        "timeout_s": null
+      },
+      "source": {
+        "effort": "none",
+        "model": "role planner",
+        "settings": "role planner",
+        "via": "role planner"
+      },
+      "via": "openrouter"
+    },
+    "review_fix_repair": {
+      "effort": null,
+      "model": null,
+      "model_selectable": false,
+      "settings": {},
+      "source": {
+        "effort": "inherited from the current writer by lineage",
+        "model": "inherited from the current writer by lineage",
+        "settings": "inherited from the current writer by lineage",
+        "via": "inherited from the current writer by lineage"
+      },
+      "via": null
+    },
+    "reviewer_a": {
+      "effort": "low",
+      "model": "non_author_writer",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": null,
+        "max_tokens_cap": null,
+        "reasoning": null,
+        "sampling": null,
+        "temperature": null,
+        "timeout_s": null
+      },
+      "source": {
+        "effort": "effort_by_mode.review",
+        "model": "role reviewer_a",
+        "settings": "role reviewer_a",
+        "via": "role reviewer_a"
+      },
+      "via": "openrouter"
+    },
+    "reviewer_b": {
+      "effort": "low",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 16000,
+        "max_tokens_cap": 72000,
+        "reasoning": {
+          "max_tokens": 8000
+        },
+        "sampling": null,
+        "temperature": 0.1,
+        "timeout_s": 600
+      },
+      "source": {
+        "effort": "effort_by_mode.review",
+        "model": "role reviewer_b",
+        "settings": "role reviewer_b",
+        "via": "role reviewer_b"
+      },
+      "via": "openrouter"
+    },
+    "reviewer_reask": {
+      "effort": null,
+      "model": null,
+      "model_selectable": false,
+      "settings": {},
+      "source": {
+        "effort": "inherited from the triggering reviewer",
+        "model": "inherited from the triggering reviewer",
+        "settings": "inherited from the triggering reviewer",
+        "via": "inherited from the triggering reviewer"
+      },
+      "via": null
+    },
+    "specialist_repair": {
+      "effort": "low",
+      "model": "off",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 10000,
+        "max_tokens_cap": null,
+        "reasoning": null,
+        "sampling": null,
+        "temperature": null,
+        "timeout_s": null
+      },
+      "source": {
+        "effort": "effort_by_mode.repair",
+        "model": "role repair",
+        "settings": "role repair + profile repair_max_tokens",
+        "via": "role repair"
+      },
+      "via": "openrouter"
+    },
+    "writer_a_repair": {
+      "effort": "low",
+      "model": "dots-studio/dots-3-note-preview:free",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 10000,
+        "max_tokens_cap": 72000,
+        "reasoning": {
+          "max_tokens": 8000
+        },
+        "retry_max_tokens": 72000,
+        "retry_timeout_s": 1800,
+        "sampling": null,
+        "temperature": 0.1,
+        "timeout_s": 1200
+      },
+      "source": {
+        "effort": "effort_by_mode.repair",
+        "model": "role writer_a",
+        "settings": "role writer_a + profile repair_max_tokens",
+        "via": "role writer_a"
+      },
+      "via": "openrouter"
+    },
+    "writer_a_write": {
+      "effort": "high",
+      "model": "dots-studio/dots-3-note-preview:free",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 40000,
+        "max_tokens_cap": 72000,
+        "reasoning": {
+          "max_tokens": 8000
+        },
+        "retry_max_tokens": 72000,
+        "retry_timeout_s": 1800,
+        "sampling": null,
+        "temperature": 0.1,
+        "timeout_s": 1200
+      },
+      "source": {
+        "effort": "effort_by_mode.write",
+        "model": "role writer_a",
+        "settings": "role writer_a",
+        "via": "role writer_a"
+      },
+      "via": "openrouter"
+    },
+    "writer_b_repair": {
+      "effort": "low",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 10000,
+        "max_tokens_cap": 72000,
+        "reasoning": {
+          "max_tokens": 8000
+        },
+        "retry_max_tokens": 72000,
+        "retry_timeout_s": 1800,
+        "sampling": null,
+        "temperature": 0.1,
+        "timeout_s": 1200
+      },
+      "source": {
+        "effort": "effort_by_mode.repair",
+        "model": "role writer_b",
+        "settings": "role writer_b + profile repair_max_tokens",
+        "via": "role writer_b"
+      },
+      "via": "openrouter"
+    },
+    "writer_b_write": {
+      "effort": "high",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "model_selectable": true,
+      "settings": {
+        "max_tokens": 40000,
+        "max_tokens_cap": 72000,
+        "reasoning": {
+          "max_tokens": 8000
+        },
+        "retry_max_tokens": 72000,
+        "retry_timeout_s": 1800,
+        "sampling": null,
+        "temperature": 0.1,
+        "timeout_s": 1200
+      },
+      "source": {
+        "effort": "effort_by_mode.write",
+        "model": "role writer_b",
+        "settings": "role writer_b",
+        "via": "role writer_b"
+      },
+      "via": "openrouter"
+    }
+  },
+  "revision": 1,
+  "roster": {
+    "effort_by_mode": {
+      "repair": "low",
+      "review": "low",
+      "review-reask": "low",
+      "write": "high"
+    },
+    "repair_max_tokens": 10000,
+    "roles": {
+      "planner": {
+        "model": "fake",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": null,
+          "max_tokens_cap": null,
+          "reasoning": null,
+          "sampling": null,
+          "temperature": null,
+          "timeout_s": null
+        }
+      },
+      "repair": {
+        "model": "off",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": null,
+          "max_tokens_cap": null,
+          "reasoning": null,
+          "sampling": null,
+          "temperature": null,
+          "timeout_s": null
+        }
+      },
+      "reviewer_a": {
+        "model": "non_author_writer",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": null,
+          "max_tokens_cap": null,
+          "reasoning": null,
+          "sampling": null,
+          "temperature": null,
+          "timeout_s": null
+        }
+      },
+      "reviewer_b": {
+        "model": "nvidia/nemotron-3.5-super-vl:free",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": 16000,
+          "max_tokens_cap": 72000,
+          "reasoning": {
+            "max_tokens": 8000
+          },
+          "sampling": null,
+          "temperature": 0.1,
+          "timeout_s": 600
+        }
+      },
+      "writer_a": {
+        "model": "dots-studio/dots-3-note-preview:free",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": 40000,
+          "max_tokens_cap": 72000,
+          "reasoning": {
+            "max_tokens": 8000
+          },
+          "retry_max_tokens": 72000,
+          "retry_timeout_s": 1800,
+          "sampling": null,
+          "temperature": 0.1,
+          "timeout_s": 1200
+        }
+      },
+      "writer_b": {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "paid": false,
+        "pricing": null,
+        "provider": null,
+        "settings": {
+          "max_tokens": 40000,
+          "max_tokens_cap": 72000,
+          "reasoning": {
+            "max_tokens": 8000
+          },
+          "retry_max_tokens": 72000,
+          "retry_timeout_s": 1800,
+          "sampling": null,
+          "temperature": 0.1,
+          "timeout_s": 1200
+        }
+      }
+    },
+    "stages": {
+      "planner": {},
+      "review_fix_repair": {},
+      "reviewer_a": {},
+      "reviewer_b": {},
+      "reviewer_reask": {},
+      "specialist_repair": {},
+      "writer_a_repair": {},
+      "writer_a_write": {},
+      "writer_b_repair": {},
+      "writer_b_write": {}
+    }
+  },
+  "roster_revision": 1,
+  "schema_version": 1,
+  "taken": "2026-11-03T22:14:13Z"
+}

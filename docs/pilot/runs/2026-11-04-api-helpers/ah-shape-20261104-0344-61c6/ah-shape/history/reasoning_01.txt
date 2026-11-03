@@ -1,0 +1,852 @@
+The user wants me to create two files based on the specification for an API shape comparison module. Let me analyze the spec carefully:
+
+1. `scripts/source/api_shape.py` - The main module with `shape_diff(expected, actual, path='$')` function
+2. `pieces/test_api_shape.py` - Test file
+
+Let me understand the rules:
+
+- `shape_diff(expected, actual, path='$')` returns a list of str problems
+- Empty list means shapes match
+- Dict comparison:
+  - Each key in expected missing from actual: `'missing <path>.<key>'`
+  - Each extra key in actual: `'extra <path>.<key>'`
+  - Matching keys compared recursively with path `'<path>.<key>'`
+  - Keys compared in sorted order
+- List comparison:
+  - If expected is empty list, any actual list matches
+  - Otherwise, each item in actual compared with expected[0], path `'<path>[<i>]'`
+  - Non-list actual gives `'type <path>: expected list'`
+- None matches anything (unknown is null)
+- Types: bool, int/float (numbers match each other), str, dict, list
+- Type mismatch: `'type <path>: expected <name>'` where name is bool, number, str, dict, list
+- Bool never matches a number
+- Problems returned in order found
+- No network calls, no printing
+
+Let me think about the type matching rules more carefully:
+- bool vs bool: match
+- bool vs number: mismatch (bool never matches number)
+- bool vs str: mismatch
+- bool vs dict: mismatch
+- bool vs list: mismatch
+- number vs number: match (int and float match each other)
+- number vs bool: mismatch
+- number vs str: mismatch
+- number vs dict: mismatch
+- number vs list: mismatch
+- str vs str: match
+- str vs bool: mismatch
+- str vs number: mismatch
+- str vs dict: mismatch
+- str vs list: mismatch
+- dict vs dict: match (recursively compare)
+- dict vs anything else: mismatch
+- list vs list: match (recursively compare)
+- list vs anything else: mismatch
+- None matches anything
+
+For the type name in error messages:
+- bool -> 'bool'
+- int/float -> 'number'
+- str -> 'str'
+- dict -> 'dict'
+- list -> 'list'
+
+Let me write the implementation:
+
+```python
+def shape_diff(expected, actual, path='$'):
+    problems = []
+    
+    # None matches anything
+    if expected is None or actual is None:
+        return problems
+    
+    # Get types
+    exp_type = type(expected)
+    act_type = type(actual)
+    
+    # Handle bool specially since bool is subclass of int
+    exp_is_bool = isinstance(expected, bool)
+    act_is_bool = isinstance(actual, bool)
+    
+    # If both are dicts
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        exp_keys = sorted(expected.keys())
+        act_keys = sorted(actual.keys())
+        for key in exp_keys:
+            if key not in actual:
+                problems.append(f'missing {path}.{key}')
+        for key in act_keys:
+            if key not in expected:
+                problems.append(f'extra {path}.{key}')
+        for key in exp_keys:
+            if key in actual:
+                problems.extend(shape_diff(expected[key], actual[key], f'{path}.{key}'))
+        return problems
+    
+    # If expected is list
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            problems.append(f'type {path}: expected list')
+            return problems
+        if len(expected) == 0:
+            return problems  # empty expected matches any list
+        for i, act_item in enumerate(actual):
+            problems.extend(shape_diff(expected[0], act_item, f'{path}[{i}]'))
+        return problems
+    
+    # Handle bool vs number
+    if exp_is_bool and not act_is_bool and isinstance(actual, (int, float)):
+        problems.append(f'type {path}: expected bool')
+        return problems
+    if act_is_bool and not exp_is_bool and isinstance(expected, (int, float)):
+        problems.append(f'type {path}: expected number')
+        return problems
+    
+    # Handle bool vs non-bool
+    if exp_is_bool:
+        if not act_is_bool:
+            problems.append(f'type {path}: expected bool')
+        return problems
+    if act_is_bool:
+        problems.append(f'type {path}: expected {get_type_name(expected)}')
+        return problems
+    
+    # Handle numbers
+    if isinstance(expected, (int, float)):
+        if isinstance(actual, (int, float)):
+            return problems
+        problems.append(f'type {path}: expected number')
+        return problems
+    
+    # Handle strings
+    if isinstance(expected, str):
+        if isinstance(actual, str):
+            return problems
+        problems.append(f'type {path}: expected str')
+        return problems
+    
+    # If we get here, types don't match
+    problems.append(f'type {path}: expected {get_type_name(expected)}')
+    return problems
+
+
+def get_type_name(val):
+    if isinstance(val, bool):
+        return 'bool'
+    if isinstance(val, (int, float)):
+        return 'number'
+    if isinstance(val, str):
+        return 'str'
+    if isinstance(val, dict):
+        return 'dict'
+    if isinstance(val, list):
+        return 'list'
+    return 'unknown'
+```
+
+Wait, let me reconsider the logic. The spec says:
+- None on either side matches anything
+- bool, int/float, str, dict, list are the types
+- A mismatch gives 'type <path>: expected <name>'
+- A bool never matches a number
+
+Let me restructure the code to be cleaner:
+
+```python
+def shape_diff(expected, actual, path='$'):
+    problems = []
+    
+    # None matches anything
+    if expected is None or actual is None:
+        return problems
+    
+    # Both are dicts
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        exp_keys = sorted(expected.keys())
+        act_keys = sorted(actual.keys())
+        for key in exp_keys:
+            if key not in actual:
+                problems.append(f'missing {path}.{key}')
+        for key in act_keys:
+            if key not in expected:
+                problems.append(f'extra {path}.{key}')
+        for key in exp_keys:
+            if key in actual:
+                problems.extend(shape_diff(expected[key], actual[key], f'{path}.{key}'))
+        return problems
+    
+    # Expected is list
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            problems.append(f'type {path}: expected list')
+            return problems
+        if len(expected) == 0:
+            return problems
+        for i, act_item in enumerate(actual):
+            problems.extend(shape_diff(expected[0], act_item, f'{path}[{i}]'))
+        return problems
+    
+    # Check type compatibility
+    exp_is_bool = isinstance(expected, bool)
+    act_is_bool = isinstance(actual, bool)
+    exp_is_num = isinstance(expected, (int, float)) and not exp_is_bool
+    act_is_num = isinstance(actual, (int, float)) and not act_is_bool
+    exp_is_str = isinstance(expected, str)
+    act_is_str = isinstance(actual, str)
+    
+    # bool vs number is a mismatch
+    if exp_is_bool and act_is_num:
+        problems.append(f'type {path}: expected bool')
+        return problems
+    if exp_is_num and act_is_bool:
+        problems.append(f'type {path}: expected number')
+        return problems
+    
+    # Same type checks
+    if exp_is_bool and act_is_bool:
+        return problems
+    if exp_is_num and act_is_num:
+        return problems
+    if exp_is_str and act_is_str:
+        return problems
+    
+    # Mismatch
+    problems.append(f'type {path}: expected {get_type_name(expected)}')
+    return problems
+```
+
+Actually, let me think about this more carefully. The spec says "bool, int/float (numbers match each other), str, dict and list are the types". So the valid types are: bool, number, str, dict, list.
+
+When expected is a dict and actual is not a dict (and not None), we should get 'type <path>: expected dict'.
+When expected is a list and actual is not a list (and not None), we should get 'type <path>: expected list'.
+
+Let me restructure:
+
+```python
+def shape_diff(expected, actual, path='$'):
+    problems = []
+    
+    # None matches anything
+    if expected is None or actual is None:
+        return problems
+    
+    # Both are dicts
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            problems.append(f'type {path}: expected dict')
+            return problems
+        exp_keys = sorted(expected.keys())
+        act_keys = sorted(actual.keys())
+        for key in exp_keys:
+            if key not in actual:
+                problems.append(f'missing {path}.{key}')
+        for key in act_keys:
+            if key not in expected:
+                problems.append(f'extra {path}.{key}')
+        for key in exp_keys:
+            if key in actual:
+                problems.extend(shape_diff(expected[key], actual[key], f'{path}.{key}'))
+        return problems
+    
+    # Expected is list
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            problems.append(f'type {path}: expected list')
+            return problems
+        if len(expected) == 0:
+            return problems
+        for i, act_item in enumerate(actual):
+            problems.extend(shape_diff(expected[0], act_item, f'{path}[{i}]'))
+        return problems
+    
+    # Expected is bool
+    if isinstance(expected, bool):
+        if not isinstance(actual, bool):
+            problems.append(f'type {path}: expected bool')
+            return problems
+        return problems
+    
+    # Expected is number
+    if isinstance(expected, (int, float)):
+        if isinstance(actual, bool):
+            problems.append(f'type {path}: expected number')
+            return problems
+        if not isinstance(actual, (int, float)):
+            problems.append(f'type {path}: expected number')
+            return problems
+        return problems
+    
+    # Expected is str
+    if isinstance(expected, str):
+        if not isinstance(actual, str):
+            problems.append(f'type {path}: expected str')
+            return problems
+        return problems
+    
+    # Should not reach here
+    return problems
+```
+
+This looks cleaner. Let me trace through some examples:
+
+1. `shape_diff({'a': 1}, {'a': 1})` -> both dicts, keys match, both numbers -> []
+2. `shape_diff({'a': 1}, {'a': '1'})` -> both dicts, key 'a' matches, expected number, actual str -> ['type $.a: expected number']
+3. `shape_diff({'a': 1}, {'b': 1})` -> missing $.a, extra $.b -> ['missing $.a', 'extra $.b']
+4. `shape_diff([1, 2], [1, 2, 3])` -> expected non-empty list, compare 1 with 1 (ok), 1 with 2 (ok), 1 with 3 (ok) -> []
+5. `shape_diff([], [1, 2, 3])` -> empty expected -> []
+6. `shape_diff([1], "hello")` -> expected list, actual str -> ['type $: expected list']
+7. `shape_diff(True, 1)` -> expected bool, actual number -> ['type $: expected bool']
+8. `shape_diff(1, True)` -> expected number, actual bool -> ['type $: expected number']
+9. `shape_diff(None, anything)` -> []
+10. `shape_diff(1, None)` -> []
+
+Wait, for case 4: `shape_diff([1, 2], [1, 2, 3])` - expected is [1, 2], which is non-empty. So we compare each actual item with expected[0] = 1. So we compare 1 with 1 (ok), 1 with 2 (ok), 1 with 3 (ok). Result is []. That seems right per the spec.
+
+For case 5: `shape_diff([], [1, 2, 3])` - expected is empty, so any list matches. Result is [].
+
+For case 6: `shape_diff([1], "hello")` - expected is list, actual is str. Result is ['type $: expected list'].
+
+For case 7: `shape_diff(True, 1)` - expected is bool, actual is number (int). Since bool never matches number, we get 'type $: expected bool'.
+
+For case 8: `shape_diff(1, True)` - expected is number, actual is bool. We get 'type $: expected number'.
+
+This all looks correct.
+
+Now let me write the test file. I should test various scenarios:
+
+```python
+import unittest
+from scripts.source.api_shape import shape_diff
+
+
+class TestApiShape(unittest.TestCase):
+    
+    def test_none_matches_anything(self):
+        self.assertEqual(shape_diff(None, 1), [])
+        self.assertEqual(shape_diff(1, None), [])
+        self.assertEqual(shape_diff(None, None), [])
+        self.assertEqual(shape_diff(None, {'a': 1}), [])
+        self.assertEqual(shape_diff({'a': 1}, None), [])
+    
+    def test_dict_exact_match(self):
+        self.assertEqual(shape_diff({'a': 1, 'b': 'hello'}, {'a': 1, 'b': 'hello'}), [])
+    
+    def test_dict_missing_key(self):
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 1})
+        self.assertEqual(result, ['missing $.b'])
+    
+    def test_dict_extra_key(self):
+        result = shape_diff({'a': 1}, {'a': 1, 'b': 2})
+        self.assertEqual(result, ['extra $.b'])
+    
+    def test_dict_missing_and_extra(self):
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 1, 'c': 3})
+        self.assertEqual(result, ['missing $.b', 'extra $.c'])
+    
+    def test_dict_nested(self):
+        result = shape_diff({'a': {'x': 1}}, {'a': {'y': 2}})
+        self.assertEqual(result, ['missing $.a.x', 'extra $.a.y'])
+    
+    def test_dict_sorted_keys(self):
+        # Keys should be checked in sorted order
+        result = shape_diff({'b': 1, 'a': 2}, {'a': 2})
+        self.assertEqual(result, ['missing $.b'])
+    
+    def test_dict_type_mismatch(self):
+        result = shape_diff({'a': 1}, 'not a dict')
+        self.assertEqual(result, ['type $: expected dict'])
+    
+    def test_list_empty_matches_any(self):
+        self.assertEqual(shape_diff([], [1, 2, 3]), [])
+        self.assertEqual(shape_diff([], []), [])
+    
+    def test_list_nonempty_compares_first(self):
+        self.assertEqual(shape_diff([1], [1, 2, 3]), [])
+        self.assertEqual(shape_diff([{'a': 1}], [{'a': 1}, {'a': 2}]), [])
+    
+    def test_list_type_mismatch(self):
+        result = shape_diff([1], 'not a list')
+        self.assertEqual(result, ['type $: expected list'])
+    
+    def test_list_nested(self):
+        result = shape_diff([{'a': 1}], [{'b': 2}])
+        self.assertEqual(result, ['missing $[0].a', 'extra $[0].b'])
+    
+    def test_bool_matches_bool(self):
+        self.assertEqual(shape_diff(True, True), [])
+        self.assertEqual(shape_diff(False, False), [])
+    
+    def test_bool_never_matches_number(self):
+        result = shape_diff(True, 1)
+        self.assertEqual(result, ['type $: expected bool'])
+        
+        result = shape_diff(1, True)
+        self.assertEqual(result, ['type $: expected number'])
+    
+    def test_bool_type_mismatch(self):
+        result = shape_diff(True, 'hello')
+        self.assertEqual(result, ['type $: expected bool'])
+        
+        result = shape_diff(False, 1)
+        self.assertEqual(result, ['type $: expected bool'])
+    
+    def test_number_matches_number(self):
+        self.assertEqual(shape_diff(1, 1), [])
+        self.assertEqual(shape_diff(1, 2), [])
+        self.assertEqual(shape_diff(1.5, 1), [])
+        self.assertEqual(shape_diff(1, 1.5), [])
+    
+    def test_number_type_mismatch(self):
+        result = shape_diff(1, 'hello')
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, True)
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, {'a': 1})
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, [1])
+        self.assertEqual(result, ['type $: expected number'])
+    
+    def test_str_matches_str(self):
+        self.assertEqual(shape_diff('hello', 'hello'), [])
+        self.assertEqual(shape_diff('hello', 'world'), [])
+    
+    def test_str_type_mismatch(self):
+        result = shape_diff('hello', 1)
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', True)
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', {'a': 1})
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', [1])
+        self.assertEqual(result, ['type $: expected str'])
+    
+    def test_problems_in_order(self):
+        # Problems should be returned in the order they are found
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 'x', 'c': 3})
+        # Sorted keys: a, b for expected; a, c for actual
+        # First check missing: b is missing -> 'missing $.b'
+        # Then check extra: c is extra -> 'extra $.c'
+        # Then compare matching keys: a -> type mismatch
+        self.assertEqual(result, ['missing $.b', 'extra $.c', 'type $.a: expected number'])
+    
+    def test_nested_dict_in_list(self):
+        result = shape_diff([{'a': 1}], [{'a': 1}, {'b': 2}])
+        # Compare first actual with expected[0]
+        # [{'a': 1}] vs {'a': 1} -> both dicts, keys match, numbers match -> []
+        # [{'a': 1}] vs {'b': 2} -> missing $[1].a, extra $[1].b
+        self.assertEqual(result, ['missing $[1].a', 'extra $[1].b'])
+    
+    def test_deep_nested(self):
+        expected = {'users': [{'name': str, 'age': int}]}
+        actual = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]}
+        self.assertEqual(shape_diff(expected, actual), [])
+
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+Wait, I need to check the test for `test_problems_in_order`. Let me trace through:
+
+expected = {'a': 1, 'b': 2}
+actual = {'a': 'x', 'c': 3}
+
+Sorted expected keys: ['a', 'b']
+Sorted actual keys: ['a', 'c']
+
+Missing keys (in expected but not in actual): 'b' -> 'missing $.b'
+Extra keys (in actual but not in expected): 'c' -> 'extra $.c'
+Matching keys: 'a' -> compare expected['a']=1 with actual['a']='x' -> number vs str -> 'type $.a: expected number'
+
+So the result should be: ['missing $.b', 'extra $.c', 'type $.a: expected number']
+
+That matches my test. Good.
+
+For `test_nested_dict_in_list`:
+expected = [{'a': 1}]
+actual = [{'a': 1}, {'b': 2}]
+
+expected is non-empty list, so compare each actual item with expected[0] = {'a': 1}
+
+i=0: actual[0] = {'a': 1}, compare with {'a': 1} -> both dicts, key 'a' matches, 1 vs 1 -> []
+i=1: actual[1] = {'b': 2}, compare with {'a': 1} -> missing $[1].a, extra $[1].b
+
+Result: ['missing $[1].a', 'extra $[1].b']
+
+That matches.
+
+For `test_deep_nested`:
+expected = {'users': [{'name': str, 'age': int}]}
+actual = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]}
+
+Both are dicts with key 'users'.
+Compare expected['users'] = [{'name': str, 'age': int}] with actual['users'] = [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]
+
+Expected is non-empty list, so compare each actual item with expected[0] = {'name': str, 'age': int}
+
+i=0: actual[0] = {'name': 'Alice', 'age': 30}, compare with {'name': str, 'age': int}
+  Both dicts, keys match
+  'name': str vs 'Alice' -> str vs str -> []
+  'age': int vs 30 -> number vs number -> []
+  Result: []
+
+i=1: actual[1] = {'name': 'Bob', 'age': 25}, compare with {'name': str, 'age': int}
+  Same as above -> []
+
+Result: []
+
+This is correct. The expected uses type objects (str, int) as placeholders, and the actual has concrete values. Since str matches str and int matches int (number), this works.
+
+Wait, but `str` and `int` are types, not values. In Python, `isinstance(str, type)` is True, but `isinstance(str, str)` is False. Let me check...
+
+Actually, `str` is a type. `isinstance(str, str)` is False because `str` is a type, not a string instance. But `isinstance('hello', str)` is True.
+
+So in my code, when expected is `str` (the type), `isinstance(expected, bool)` is False, `isinstance(expected, (int, float))` is False (str is not an int or float), `isinstance(expected, str)` is False (str is a type, not a string instance).
+
+So my code would fall through to the end and return an empty list, which is wrong.
+
+Hmm, but the spec says "bool, int/float (numbers match each other), str, dict and list are the types". So the expected values can be actual values or types? Let me re-read the spec...
+
+The spec says `shape_diff(expected, actual, path='$')` compares two JSON-like values. JSON-like values would be things like dicts, lists, strings, numbers, booleans, null. Types like `str` and `int` are not JSON-like values.
+
+But in my test `test_deep_nested`, I used `str` and `int` as expected values. That's not really JSON-like. Let me reconsider...
+
+Actually, looking at the spec again: "A dict must have exactly the same keys", "A list in expected: when expected is empty any list matches; otherwise each item of actual is compared with expected[0]". This suggests that expected values are concrete JSON-like values, not types.
+
+So my test `test_deep_nested` is actually invalid for the spec. The expected should have concrete values, not types. Let me fix the test:
+
+```python
+def test_deep_nested(self):
+    expected = {'users': [{'name': 'Alice', 'age': 30}]}
+    actual = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]}
+    self.assertEqual(shape_diff(expected, actual), [])
+```
+
+This is valid. Expected has one user, actual has two users. Since expected list is non-empty, each actual item is compared with expected[0]. Both actual items match expected[0] in shape (same keys, same types of values).
+
+OK, let me finalize the code and tests.
+
+Actually, wait. Let me re-read the spec one more time to make sure I haven't missed anything.
+
+"shape_diff(expected, actual, path='$') compares two JSON-like values and returns a list of str problems; [] means the shapes match."
+
+"A dict must have exactly the same keys: each key of expected missing from actual gives 'missing <path>.<key>', and each extra key in actual gives 'extra <path>.<key>'. Matching keys are compared recursively, in sorted key order, with path '<path>.<key>'."
+
+"A list in expected: when expected is empty any list matches; otherwise each item of actual is compared with expected[0], with path '<path>[<i>]'. A non-list actual gives 'type <path>: expected list'."
+
+"None on either side matches anything (unknown is null)."
+
+"bool, int/float (numbers match each other), str, dict and list are the types; a mismatch gives 'type <path>: expected <name>' with name one of bool, number, str, dict, list. A bool never matches a number."
+
+"Problems are returned in the order they are found."
+
+"The module makes no network call and prints nothing."
+
+OK, I think my implementation is correct. Let me also make sure the module path is correct. The spec says "The module is scripts/source/api_shape.py". So the import in the test file should be `from scripts.source.api_shape import shape_diff`.
+
+But wait, for the test to work, the `scripts/source/` directory needs to have an `__init__.py` file, or the test needs to be run from the right directory. Actually, in Python 3, namespace packages work without `__init__.py` files, but it depends on how the test is run.
+
+Let me add an `__init__.py` to be safe... Actually, the spec says the expected files are:
+- scripts/source/api_shape.py: (new file)
+- pieces/test_api_shape.py: (new file)
+
+So I should only create these two files. The test file will import from `scripts.source.api_shape`. For this to work, the test might need to be run from the project root directory, or the project root needs to be in the Python path.
+
+Actually, I think the simplest approach is to just write the import as specified and let the user handle the path. Or I could use a relative import... but the test file is in `pieces/` and the module is in `scripts/source/`, so a relative import would be `from ..scripts.source.api_shape import shape_diff` which is a bit weird.
+
+Let me just use `from scripts.source.api_shape import shape_diff` and assume the project root is in the Python path.
+
+Actually, looking at the example format again, the user says "Reply in exactly this format (an example, one file):" and shows a single file. But the spec says there are two files. So I need to output two FILE blocks.
+
+Let me finalize my code:
+
+For `scripts/source/api_shape.py`:
+
+```python
+def shape_diff(expected, actual, path='$'):
+    """Compare two JSON-like values and return a list of problems.
+    
+    Returns an empty list if the shapes match.
+    """
+    problems = []
+    
+    # None matches anything (unknown is null)
+    if expected is None or actual is None:
+        return problems
+    
+    # Dict comparison
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            problems.append(f'type {path}: expected dict')
+            return problems
+        exp_keys = sorted(expected.keys())
+        act_keys = sorted(actual.keys())
+        for key in exp_keys:
+            if key not in actual:
+                problems.append(f'missing {path}.{key}')
+        for key in act_keys:
+            if key not in expected:
+                problems.append(f'extra {path}.{key}')
+        for key in exp_keys:
+            if key in actual:
+                problems.extend(shape_diff(expected[key], actual[key], f'{path}.{key}'))
+        return problems
+    
+    # List comparison
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            problems.append(f'type {path}: expected list')
+            return problems
+        if len(expected) == 0:
+            return problems  # empty expected matches any list
+        for i, act_item in enumerate(actual):
+            problems.extend(shape_diff(expected[0], act_item, f'{path}[{i}]'))
+        return problems
+    
+    # Bool comparison
+    if isinstance(expected, bool):
+        if not isinstance(actual, bool):
+            problems.append(f'type {path}: expected bool')
+            return problems
+        return problems
+    
+    # Number comparison
+    if isinstance(expected, (int, float)):
+        if isinstance(actual, bool):
+            problems.append(f'type {path}: expected number')
+            return problems
+        if not isinstance(actual, (int, float)):
+            problems.append(f'type {path}: expected number')
+            return problems
+        return problems
+    
+    # String comparison
+    if isinstance(expected, str):
+        if not isinstance(actual, str):
+            problems.append(f'type {path}: expected str')
+            return problems
+        return problems
+    
+    # Should not reach here for valid JSON-like values
+    return problems
+```
+
+For `pieces/test_api_shape.py`:
+
+```python
+import unittest
+from scripts.source.api_shape import shape_diff
+
+
+class TestApiShape(unittest.TestCase):
+    
+    def test_none_matches_anything(self):
+        self.assertEqual(shape_diff(None, 1), [])
+        self.assertEqual(shape_diff(1, None), [])
+        self.assertEqual(shape_diff(None, None), [])
+        self.assertEqual(shape_diff(None, {'a': 1}), [])
+        self.assertEqual(shape_diff({'a': 1}, None), [])
+    
+    def test_dict_exact_match(self):
+        self.assertEqual(shape_diff({'a': 1, 'b': 'hello'}, {'a': 1, 'b': 'hello'}), [])
+    
+    def test_dict_missing_key(self):
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 1})
+        self.assertEqual(result, ['missing $.b'])
+    
+    def test_dict_extra_key(self):
+        result = shape_diff({'a': 1}, {'a': 1, 'b': 2})
+        self.assertEqual(result, ['extra $.b'])
+    
+    def test_dict_missing_and_extra(self):
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 1, 'c': 3})
+        self.assertEqual(result, ['missing $.b', 'extra $.c'])
+    
+    def test_dict_nested(self):
+        result = shape_diff({'a': {'x': 1}}, {'a': {'y': 2}})
+        self.assertEqual(result, ['missing $.a.x', 'extra $.a.y'])
+    
+    def test_dict_sorted_keys(self):
+        result = shape_diff({'b': 1, 'a': 2}, {'a': 2})
+        self.assertEqual(result, ['missing $.b'])
+    
+    def test_dict_type_mismatch(self):
+        result = shape_diff({'a': 1}, 'not a dict')
+        self.assertEqual(result, ['type $: expected dict'])
+    
+    def test_list_empty_matches_any(self):
+        self.assertEqual(shape_diff([], [1, 2, 3]), [])
+        self.assertEqual(shape_diff([], []), [])
+    
+    def test_list_nonempty_compares_first(self):
+        self.assertEqual(shape_diff([1], [1, 2, 3]), [])
+        self.assertEqual(shape_diff([{'a': 1}], [{'a': 1}, {'a': 2}]), [])
+    
+    def test_list_type_mismatch(self):
+        result = shape_diff([1], 'not a list')
+        self.assertEqual(result, ['type $: expected list'])
+    
+    def test_list_nested(self):
+        result = shape_diff([{'a': 1}], [{'b': 2}])
+        self.assertEqual(result, ['missing $[0].a', 'extra $[0].b'])
+    
+    def test_bool_matches_bool(self):
+        self.assertEqual(shape_diff(True, True), [])
+        self.assertEqual(shape_diff(False, False), [])
+    
+    def test_bool_never_matches_number(self):
+        result = shape_diff(True, 1)
+        self.assertEqual(result, ['type $: expected bool'])
+        
+        result = shape_diff(1, True)
+        self.assertEqual(result, ['type $: expected number'])
+    
+    def test_bool_type_mismatch(self):
+        result = shape_diff(True, 'hello')
+        self.assertEqual(result, ['type $: expected bool'])
+        
+        result = shape_diff(False, 1)
+        self.assertEqual(result, ['type $: expected bool'])
+    
+    def test_number_matches_number(self):
+        self.assertEqual(shape_diff(1, 1), [])
+        self.assertEqual(shape_diff(1, 2), [])
+        self.assertEqual(shape_diff(1.5, 1), [])
+        self.assertEqual(shape_diff(1, 1.5), [])
+    
+    def test_number_type_mismatch(self):
+        result = shape_diff(1, 'hello')
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, True)
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, {'a': 1})
+        self.assertEqual(result, ['type $: expected number'])
+        
+        result = shape_diff(1, [1])
+        self.assertEqual(result, ['type $: expected number'])
+    
+    def test_str_matches_str(self):
+        self.assertEqual(shape_diff('hello', 'hello'), [])
+        self.assertEqual(shape_diff('hello', 'world'), [])
+    
+    def test_str_type_mismatch(self):
+        result = shape_diff('hello', 1)
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', True)
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', {'a': 1})
+        self.assertEqual(result, ['type $: expected str'])
+        
+        result = shape_diff('hello', [1])
+        self.assertEqual(result, ['type $: expected str'])
+    
+    def test_problems_in_order(self):
+        result = shape_diff({'a': 1, 'b': 2}, {'a': 'x', 'c': 3})
+        self.assertEqual(result, ['missing $.b', 'extra $.c', 'type $.a: expected number'])
+    
+    def test_nested_dict_in_list(self):
+        result = shape_diff([{'a': 1}], [{'a': 1}, {'b': 2}])
+        self.assertEqual(result, ['missing $[1].a', 'extra $[1].b'])
+    
+    def test_deep_nested(self):
+        expected = {'users': [{'name': 'Alice', 'age': 30}]}
+        actual = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]}
+        self.assertEqual(shape_diff(expected, actual), [])
+
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+Wait, I should double check the `test_problems_in_order` test. Let me trace through the code:
+
+expected = {'a': 1, 'b': 2}
+actual = {'a': 'x', 'c': 3}
+
+Both are dicts.
+exp_keys = sorted(['a', 'b']) = ['a', 'b']
+act_keys = sorted(['a', 'c']) = ['a', 'c']
+
+Missing keys (in expected but not in actual):
+- 'a' is in actual -> skip
+- 'b' is not in actual -> 'missing $.b'
+
+Extra keys (in actual but not in expected):
+- 'a' is in expected -> skip
+- 'c' is not in expected -> 'extra $.c'
+
+Matching keys (in both):
+- 'a' is in both -> compare expected['a']=1 with actual['a']='x'
+  - expected is int (number), actual is str
+  - Not None, not dict, not list, not bool
+  - isinstance(1, (int, float)) is True
+  - isinstance('x', bool) is False
+  - isinstance('x', (int, float)) is False
+  - So we get 'type $.a: expected number'
+
+Result: ['missing $.b', 'extra $.c', 'type $.a: expected number']
+
+This matches my test. Good.
+
+Let me also verify the `test_nested_dict_in_list` test:
+
+expected = [{'a': 1}]
+actual = [{'a': 1}, {'b': 2}]
+
+expected is a list, non-empty.
+actual is a list.
+
+For i=0: actual[0] = {'a': 1}, compare with expected[0] = {'a': 1}
+  Both dicts, key 'a' in both, compare 1 with 1 -> numbers match -> []
+  Result: []
+
+For i=1: actual[1] = {'b': 2}, compare with expected[0] = {'a': 1}
+  Both dicts
+  exp_keys = ['a'], act_keys = ['b']
+  Missing: 'a' not in actual -> 'missing $[1].a'
+  Extra: 'b' not in expected -> 'extra $[1].b'
+  No matching keys
+  Result: ['missing $[1].a', 'extra $[1].b']
+
+Total result: ['missing $[1].a', 'extra $[1].b']
+
+This matches. Good.
+
+One more thing - I should make sure the `test_deep_nested` test is correct:
+
+expected = {'users': [{'name': 'Alice', 'age': 30}]}
+actual = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]}
+
+Both are dicts with key 'users'.
+Compare expected['users'] = [{'name': 'Alice', 'age': 30}] with actual['users'] = [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}]
+
+Expected is non-empty list.
+For i=0: actual[0] = {'name': 'Alice', 'age': 30}, compare with expected[0] = {'name': 'Alice', 'age': 30}
+  Both dicts, keys 'name' and 'age' in both
+  'name': 'Alice' vs 'Alice' -> str vs str -> []
+  'age': 30 vs 30 -> number vs number -> []
+  Result: []
+
+For i=1: actual[1] = {'name': 'Bob', 'age': 25}, compare with expected[0] = {'name': 'Alice', 'age': 30}
+  Both dicts, keys 'name' and 'age' in both
+  'name': 'Alice' vs 'Bob' -> str vs str -> []
+  'age': 30 vs 25 -> number vs number -> []
+  Result: []
+
+Total result: []
+
+This is correct. The shape matches because both items in the actual list have the same keys with the same types of values as the first item in the expected list.
+
+OK, I'm satisfied with the implementation and tests. Let me write the final response.

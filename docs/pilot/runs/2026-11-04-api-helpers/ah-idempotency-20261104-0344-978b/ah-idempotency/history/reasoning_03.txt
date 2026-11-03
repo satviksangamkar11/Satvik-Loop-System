@@ -1,0 +1,71 @@
+Let me review the code against the spec and checks.
+
+First, let me understand the spec:
+- SPEC 1: Module is scripts/source/api_idempotency.py, uses only Python standard library
+- SPEC 2: IdempotencyStore(folder, ttl_s=86400, clock=time.time) keeps one JSON file per key in folder (created when missing)
+- SPEC 3: Valid key is str of 8-128 chars, each letter, digit, '-' or '_'. Other keys make get/put raise ValueError
+- SPEC 4: put(key, response) stores dict response with time clock() and returns it. If stored unexpired response exists, put doesn't change it and returns stored response (first write wins)
+- SPEC 5: get(key) returns stored response dict, or None when none or older than ttl_s by clock()
+- SPEC 6: Expired entry treated as absent, so put stores new response over it
+- SPEC 7: Each file written whole: temp file in same folder, then os.replace. File that cannot be read as JSON counts as absent
+- SPEC 8: Module makes no network call and prints nothing
+
+Now let me check the implementation:
+
+1. SPEC 1: ✓ Uses only standard library (json, os, re, tempfile, time)
+2. SPEC 2: ✓ Creates folder if missing (line 18-19), stores one JSON file per key
+3. SPEC 3: ✓ _KEY_RE regex matches ^[A-Za-z0-9_-]{8,128}$, _is_valid_key checks this, get/put raise ValueError
+4. SPEC 4: ✓ put stores with timestamp, returns response. First write wins logic at lines 68-72
+5. SPEC 5: ✓ get returns response or None if missing/expired
+6. SPEC 6: ✓ Expired entries are treated as absent (lines 68-72 check if ts exists and not expired)
+7. SPEC 7: ✓ _write uses tempfile.mkstemp then os.replace (lines 38-48). _read returns None on JSON decode error (line 33)
+8. SPEC 8: ✓ No network calls, no prints
+
+Now let me check the tests cover all specs:
+- test_put_get_roundtrip: basic put/get
+- test_first_write_wins: SPEC 4 first write wins
+- test_get_missing_key_returns_none: SPEC 5
+- test_stored_file_contains_ts_and_response: file format
+- test_invalid_key_too_short_raises: SPEC 3
+- test_invalid_key_too_long_raises: SPEC 3
+- test_invalid_key_bad_chars_raise: SPEC 3
+- test_valid_key_boundary_lengths: SPEC 3 boundaries
+- test_non_string_key_raises: SPEC 3
+- test_entry_expires_after_ttl: SPEC 5, 6
+- test_put_overwrites_expired_entry: SPEC 6
+- test_within_ttl_is_not_expired: SPEC 5
+- test_default_ttl_is_86400: SPEC 2 default ttl
+- test_unreadable_json_treated_as_absent: SPEC 7
+- test_missing_ts_treated_as_absent: SPEC 7
+- test_folder_is_created_when_missing: SPEC 2
+- test_file_written_whole_via_tempfile_and_replace: SPEC 7
+
+Acceptance tests also cover:
+- test_first_write_wins
+- test_missing_and_expired
+- test_bad_keys_raise
+- test_survives_a_new_instance
+
+All specs have tests. No code special-cases test values. Edge cases handled (boundary lengths, expired, corrupt files, missing ts, folder creation). Nothing changed outside spec. No security/data-loss risk (atomic writes, proper error handling).
+
+Wait, let me double-check SPEC 3: "A valid key is a str of 8 to 128 characters, each a letter, a digit, '-' or '_'." The regex is ^[A-Za-z0-9_-]{8,128}$ which matches exactly that. Good.
+
+SPEC 4: "If a stored, unexpired response for key already exists, put does not change it and returns the stored response (the first write wins)." The code at lines 68-72 checks if data exists, has ts, and not expired, then returns existing response. Good.
+
+SPEC 5: "get(key) returns the stored response dict, or None when there is none or when it is older than ttl_s seconds by clock()." Lines 53-61 handle this. Good.
+
+SPEC 6: "An expired entry is treated as absent, so put stores the new response over it." The put logic at lines 68-72 only returns existing if ts exists AND not expired. If expired, it falls through to write new. Good.
+
+SPEC 7: "Each file is written whole: a temporary file in the same folder, then os.replace. A file that cannot be read as JSON counts as absent." _write uses mkstemp in same folder, then os.replace. _read catches ValueError (JSON decode error) and returns None. Good.
+
+SPEC 8: No network, no prints. Good.
+
+CHECK 1: Every spec clause has code and test. Yes.
+CHECK 2: No code special-cases test values. The code doesn't reference any test-specific values. Good.
+CHECK 3: Edge cases handled. Boundary lengths (8, 128), expired, corrupt JSON, missing ts, folder creation, atomic writes. Good.
+CHECK 4: Nothing changed outside spec. Only the two files in the diff. Good.
+CHECK 5: No security or data-loss risk. Atomic writes prevent corruption. Proper validation. Good.
+
+Everything looks correct. The implementation matches the spec and all tests pass.
+
+Verdict: READY

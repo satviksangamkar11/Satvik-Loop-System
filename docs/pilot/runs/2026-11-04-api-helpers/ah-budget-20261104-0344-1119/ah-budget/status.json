@@ -1,0 +1,65 @@
+{
+  "name": "ah-budget",
+  "schema_version": 1,
+  "state": "passed",
+  "profile": "production",
+  "tests_passed": true,
+  "review_verdict": "READY",
+  "reason": "READY from: nvidia/nemotron-3.5-super-vl:free, nvidia/nemotron-3-ultra-550b-a55b:free",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "green"
+    },
+    {
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    }
+  ],
+  "coder_calls": 1,
+  "reviewer_calls": {
+    "nvidia/nemotron-3.5-super-vl:free": 1,
+    "nvidia/nemotron-3-ultra-550b-a55b:free": 1
+  },
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/ah_budget_acceptance.py": "2569b71bb6e4d3c3891e9fe7061577795d25e8e0762403d1d956e539ecf467d4",
+      "tests/controls/ah_budget_always_free.py": "8b81463f4627e39dd35ce5044bddf790d7b8aac30fc7373b9fece60d6ae6b97e"
+    },
+    "calibration": "passed",
+    "stage_snapshot": {
+      "sha256": "6a673bfad9c54e50db2a42053f8b230ef845cf95771872678c5a33747f144796",
+      "revision": 1
+    },
+    "tested_hash": "51e725c580abd7b85559875c3e23ff9c762fcdfff39c2978c05ebf7cdb19173d",
+    "final_hash": "51e725c580abd7b85559875c3e23ff9c762fcdfff39c2978c05ebf7cdb19173d",
+    "reviewed_hash": "51e725c580abd7b85559875c3e23ff9c762fcdfff39c2978c05ebf7cdb19173d",
+    "review_hashes": [
+      "51e725c580abd7b85559875c3e23ff9c762fcdfff39c2978c05ebf7cdb19173d",
+      "51e725c580abd7b85559875c3e23ff9c762fcdfff39c2978c05ebf7cdb19173d"
+    ],
+    "budget": {
+      "free_requests_used": 3,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": []
+  },
+  "updated": "2026-11-03T22:15:24Z"
+}

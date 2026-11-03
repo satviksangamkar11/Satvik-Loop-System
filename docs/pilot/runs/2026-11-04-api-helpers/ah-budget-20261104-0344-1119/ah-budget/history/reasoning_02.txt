@@ -1,0 +1,49 @@
+The user wants me to review the files against the spec and checks. I need to provide at most 5 findings, each on ONE line, in the format:
+- file:line [SPEC n|CHECK n]: <what breaks, under 25 words>
+
+Then end with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`.
+
+Let me analyze the code against the spec.
+
+SPEC 1: module uses only Python standard library. The code uses no imports, so yes.
+SPEC 2: returns dict with exactly keys worst_case_usd, per_stage, problems. Yes.
+SPEC 3: stages maps stage name to dict with model, max_tokens, prompt_tokens. catalog maps model id to paid, price_in, price_out. Code handles this.
+SPEC 4: model not in catalog gives per_stage[stage] = None and problem unknown-model. Lines 10-13. Yes.
+SPEC 5: paid False costs 0.0. Lines 17-19. Yes.
+SPEC 6: paid model with either price None gives per_stage None and problem unknown-price. Lines 24-27. Yes.
+SPEC 7: Otherwise cost = prompt_tokens * price_in / 1000000 + max_tokens * price_out / 1000000. Lines 29-33. Yes.
+SPEC 8: worst_case_usd is sum of per_stage when no stage is None, else None. Empty stages gives 0.0, {}, []. Lines 35-38. Yes.
+SPEC 9: problems in order of stages dict. Inputs not changed. Yes, iterates in order, doesn't modify inputs.
+SPEC 10: no network call, prints nothing. Yes.
+
+All tests pass. The code looks correct.
+
+Wait, let me double check SPEC 8: "worst_case_usd is the sum of per_stage when no stage is None, else None." The code does `if any(v is None for v in per_stage.values()): worst_case = None else: worst_case = sum(per_stage.values()) if per_stage else 0.0`. That's correct.
+
+Everything looks good. No findings. Verdict: READY.
+
+But wait, I should check if there are any subtle issues. Let me look at the acceptance test `test_free_stages_cost_zero`:
+- model 'f' with paid False, prices None. Result should be 0.0, per_stage {'a': 0.0}, problems []. Code: paid False -> 0.0, continue. Correct.
+
+`test_paid_stage_uses_both_prices`: max_tokens=16000, prompt_tokens=30000, price_in=0.15, price_out=0.5. Cost = 30000*0.15/1e6 + 16000*0.5/1e6 = (4500 + 8000)/1e6 = 12500/1e6 = 0.0125. The test checks `abs(r['per_stage']['r'] - (30000 * 0.15 + 16000 * 0.5) / 1e6) < 1e-12`. Code computes `prompt_tokens * price_in / 1000000 + max_tokens * price_out / 1000000`. Due to floating point, `30000 * 0.15 / 1000000 + 16000 * 0.5 / 1000000` vs `(30000 * 0.15 + 16000 * 0.5) / 1e6`. These might differ slightly in floating point but within 1e-12. Test passed.
+
+Everything is green. No findings needed.
+
+The instructions say: "If the code is right, give no finding line." and "End your reply with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`."
+
+So I should output just:
+## Verdict: READY
+
+Wait, but should I include any findings? The code appears correct. All tests pass. So no findings.
+
+Let me make sure there isn't a subtle bug. Let me re-read carefully.
+
+One thing: SPEC 2 says "returns a dict with exactly the keys worst_case_usd, per_stage and problems." The code returns exactly those three keys. Good.
+
+SPEC 9: "The inputs are not changed." The code doesn't mutate stages or catalog. It reads info["model"] etc. It doesn't assign to them. Good.
+
+I think it's READY.
+
+Actually, let me reconsider whether I need to output anything besides the verdict. The format says "Reply with at most 5 findings... End your reply with exactly one line: ## Verdict: ..." So if no findings, just the verdict line.
+
+I'll output just the verdict line.

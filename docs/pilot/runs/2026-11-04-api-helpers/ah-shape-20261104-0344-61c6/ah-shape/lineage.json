@@ -1,0 +1,17 @@
+{
+  "pieces/test_api_shape.py": {
+    "chain": [
+      "dots-studio/dots-3-note-preview:free"
+    ],
+    "last": "dots-studio/dots-3-note-preview:free",
+    "origin": "dots-studio/dots-3-note-preview:free"
+  },
+  "schema_version": 1,
+  "scripts/source/api_shape.py": {
+    "chain": [
+      "dots-studio/dots-3-note-preview:free"
+    ],
+    "last": "dots-studio/dots-3-note-preview:free",
+    "origin": "dots-studio/dots-3-note-preview:free"
+  }
+}

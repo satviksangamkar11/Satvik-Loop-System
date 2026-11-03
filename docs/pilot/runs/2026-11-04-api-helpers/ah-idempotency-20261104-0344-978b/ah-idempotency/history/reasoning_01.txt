@@ -1,0 +1,248 @@
+The user wants me to create two files: the implementation and the test file for an idempotency store. Let me carefully read the spec.
+
+Key requirements:
+1. Module: `scripts/source/api_idempotency.py`
+2. Uses only Python standard library
+3. `IdempotencyStore(folder, ttl_s=86400, clock=time.time)` - keeps one JSON file per key in folder
+4. Valid key: str of 8 to 128 characters, each a letter, digit, '-' or '_'. Otherwise ValueError.
+5. `put(key, response)` stores dict response with time clock() and returns it. If stored unexpired response exists, doesn't change it, returns stored (first write wins).
+6. `get(key)` returns stored response dict, or None when none or older than ttl_s by clock().
+7. Expired entry treated as absent, so put stores new response over it.
+8. Each file written whole: temp file in same folder, then os.replace. Unreadable JSON counts as absent.
+9. No network call, prints nothing.
+
+Test file: `pieces/test_api_idempotency.py`
+
+Let me write the implementation.
+
+```python
+import json
+import os
+import re
+import time
+import tempfile
+
+
+_KEY_RE = re.compile(r'^[A-Za-z0-9_-]{8,128}$')
+
+
+class IdempotencyStore:
+    def __init__(self, folder, ttl_s=86400, clock=time.time):
+        self._folder = folder
+        self._ttl_s = ttl_s
+        self._clock = clock
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+
+    def _path_for(self, key):
+        return os.path.join(self._folder, key + '.json')
+
+    def _read(self, path):
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            return data
+        except (OSError, ValueError):
+            return None
+
+    def _write(self, path, data):
+        fd, tmp_path = tempfile.mkstemp(dir=self._folder)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(data, f)
+            os.replace(tmp_path, path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+
+    def get(self, key):
+        if not isinstance(key, str) or not _KEY_RE.match(key):
+            raise ValueError(f"Invalid key: {key!r}")
+        path = self._path_for(key)
+        data = self._read(path)
+        if data is None:
+            return None
+        ts = data.get('ts')
+        if ts is None:
+            return None
+        if self._clock() - ts > self._ttl_s:
+            return None
+        return data.get('response')
+
+    def put(self, key, response):
+        if not isinstance(key, str) or not _KEY_RE.match(key):
+            raise ValueError(f"Invalid key: {key!r}")
+        path = self._path_for(key)
+        data = self._read(path)
+        if data is not None:
+            ts = data.get('ts')
+            if ts is not None and self._clock() - ts <= self._ttl_s:
+                return data.get('response')
+        new_data = {'ts': self._clock(), 'response': response}
+        self._write(path, new_data)
+        return response
+```
+
+Wait, need to think about the validation. The spec says "Any other key makes get and put raise ValueError." So both get and put must validate. Also need to handle non-str keys — a non-str would fail the regex match attempt, so I should check isinstance first.
+
+Also, the spec says "A valid key is a str of 8 to 128 characters, each a letter, a digit, '-' or '_'." So the regex `^[A-Za-z0-9_-]{8,128}$` works.
+
+Now for the test file. Let me write comprehensive tests.
+
+```python
+import json
+import os
+import tempfile
+import time
+import unittest
+
+from api_idempotency import IdempotencyStore
+
+
+class TestIdempotencyStore(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.clock_calls = [0.0]
+        def clock():
+            return self.clock_calls[0]
+        self.clock = clock
+        self.store = IdempotencyStore(self.tmp, ttl_s=100, clock=clock)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_put_get_roundtrip(self):
+        resp = {'status': 200, 'body': 'hello'}
+        self.assertEqual(self.store.put('valid_key_1', resp), resp)
+        self.assertEqual(self.store.get('valid_key_1'), resp)
+
+    def test_first_write_wins(self):
+        resp1 = {'v': 1}
+        resp2 = {'v': 2}
+        self.store.put('first_key_1', resp1)
+        self.store.put('first_key_1', resp2)
+        self.assertEqual(self.store.get('first_key_1'), resp1)
+
+    def test_get_missing(self):
+        self.assertIsNone(self.store.get('missing_key_1'))
+
+    def test_invalid_key_short(self):
+        with self.assertRaises(ValueError):
+            self.store.put('short', {'a': 1})
+        with self.assertRaises(ValueError):
+            self.store.get('short')
+
+    def test_invalid_key_long(self):
+        long_key = 'a' * 129
+        with self.assertRaises(ValueError):
+            self.store.put(long_key, {'a': 1})
+
+    def test_invalid_key_chars(self):
+        with self.assertRaises(ValueError):
+            self.store.put('bad key!!!', {'a': 1})
+        with self.assertRaises(ValueError):
+            self.store.put('key with spaces', {'a': 1})
+
+    def test_ttl_expiry(self):
+        resp = {'x': 1}
+        self.store.put('exp_key_1', resp)
+        self.clock_calls[0] = 200  # beyond ttl of 100
+        self.assertIsNone(self.store.get('exp_key_1'))
+        # put after expiry overwrites
+        new_resp = {'x': 2}
+        result = self.store.put('exp_key_1', new_resp)
+        self.assertEqual(result, new_resp)
+        self.clock_calls[0] = 200
+        self.assertEqual(self.store.get('exp_key_1'), new_resp)
+
+    def test_unreadable_json_treated_as_absent(self):
+        path = os.path.join(self.tmp, 'corrupt_key.json')
+        with open(path, 'w') as f:
+            f.write('not json')
+        self.assertIsNone(self.store.get('corrupt_key'))
+        # put should overwrite
+        resp = {'ok': True}
+        result = self.store.put('corrupt_key', resp)
+        self.assertEqual(result, resp)
+        self.assertEqual(self.store.get('corrupt_key'), resp)
+
+    def test_folder_created(self):
+        new_dir = os.path.join(self.tmp, 'sub', 'folder')
+        store = IdempotencyStore(new_dir, clock=self.clock)
+        store.put('nested_key_1', {'a': 1})
+        self.assertEqual(store.get('nested_key_1'), {'a': 1})
+
+    def test_default_ttl(self):
+        # default ttl 86400
+        store = IdempotencyStore(os.path.join(self.tmp, 'default'), clock=self.clock)
+        self.clock_calls[0] = 100000
+        store.put('default_key', {'b': 2})
+        self.clock_calls[0] = 100000 + 86399
+        self.assertEqual(store.get('default_key'), {'b': 2})
+        self.clock_calls[0] = 100000 + 86401
+        self.assertIsNone(store.get('default_key'))
+
+    def test_file_written_whole(self):
+        # verify os.replace semantics by reading file directly
+        self.store.put('atomic_key_1', {'c': 3})
+        path = os.path.join(self.tmp, 'atomic_key_1.json')
+        with open(path) as f:
+            data = json.load(f)
+        self.assertEqual(data['response'], {'c': 3})
+        self.assertIn('ts', data)
+
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+Hmm, the test file is in `pieces/` directory but imports `from api_idempotency import IdempotencyStore`. The module is in `scripts/source/api_idempotency.py`. The test file path is `pieces/test_api_idempotency.py`. The import needs to work. Since the test file is in `pieces/` and the module in `scripts/source/`, a simple `from api_idempotency import` won't work unless the path is set up. But the spec just says to create the files. Let me think about what import style to use.
+
+The spec says "The module is scripts/source/api_idempotency.py". The test file is `pieces/test_api_idempotency.py`. For the test to import, it might need `sys.path` manipulation. But maybe I should just use a relative-ish import or add sys.path. Let me use a sys.path insert in the test file to be safe, or just import with the assumption that tests run with proper path. Actually, to be robust, I'll add sys.path manipulation.
+
+Actually, let me keep it simple and just do `from api_idempotency import IdempotencyStore` but add the path. Hmm, but that's a bit hacky. Let me think about what's most likely expected.
+
+Given the directory structure, the test probably needs to add `scripts/source` to path. I'll include that.
+
+Actually, let me reconsider. The test file might be run from the repo root with `python -m pieces.test_api_idempotency` or similar. In that case, `from api_idempotency import` would fail. To be safe, I'll add:
+
+```python
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+```
+
+That makes the test self-contained.
+
+Let me finalize both files.
+
+One more consideration: the `_write` method with mkstemp creates a file with restrictive permissions, but that's fine. Also, on exception, I clean up. Actually os.fdopen(fd) — if json.dump fails, the fd might leak? os.fdopen takes ownership, so if it fails to open... actually os.fdopen won't fail typically. If json.dump raises, the with block closes the file. Then os.replace would fail since tmp file has garbage. Let me handle: if json.dump fails, we should remove tmp and re-raise. Let me restructure:
+
+```python
+def _write(self, path, data):
+    fd, tmp_path = tempfile.mkstemp(dir=self._folder)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+```
+
+Good.
+
+Also need to think: what if folder doesn't exist in __init__? Spec says "created when missing" referring to the folder. So I create it. Good.
+
+Let me also double check the regex: letters (A-Za-z), digits (0-9), '-' or '_'. Yes.
+
+Edge: key with exactly 8 chars valid, exactly 128 valid, 7 invalid, 129 invalid. Regex {8,128} handles.
+
+Now, the get validation — should get raise ValueError for invalid key even if file doesn't exist? Spec says "Any other key makes get and put raise ValueError." So yes, validate first.
+
+Let me write final files.

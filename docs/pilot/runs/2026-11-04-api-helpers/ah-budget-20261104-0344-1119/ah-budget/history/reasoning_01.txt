@@ -1,0 +1,380 @@
+The user wants me to create two files based on the specification. Let me analyze the spec carefully.
+
+The module `scripts/source/api_budget.py` should implement a function `worst_case_usd(stages, catalog)` that:
+
+1. Takes two dicts:
+   - `stages`: maps stage name to `{"model": str, "max_tokens": int, "prompt_tokens": int}`
+   - `catalog`: maps model id to `{"paid": bool, "price_in_usd_per_mtok": float or None, "price_out_usd_per_mtok": float or None}`
+
+2. Returns a dict with exactly three keys: `worst_case_usd`, `per_stage`, `problems`.
+
+3. Logic:
+   - For each stage in order of `stages` dict:
+     - If model not in catalog: `per_stage[stage] = None`, add problem `{"code": "unknown-model", "stage": stage}`
+     - If model has `paid` False: cost is 0.0 for that stage
+     - If model is paid and either price is None: `per_stage[stage] = None`, add problem `{"code": "unknown-price", "stage": stage}`
+     - Otherwise: cost = `prompt_tokens * price_in_usd_per_mtok / 1000000 + max_tokens * price_out_usd_per_mtok / 1000000`
+   - `worst_case_usd` = sum of per_stage values when no stage is None, else None. Empty stages gives 0.0.
+   - `problems` = list of problems in order of stages dict.
+   - Inputs are not changed.
+   - No network calls, no printing.
+
+Let me write the implementation.
+
+For the test file, I need to create comprehensive tests.
+
+Let me write both files now.
+
+```python
+# scripts/source/api_budget.py
+
+def worst_case_usd(stages, catalog):
+    per_stage = {}
+    problems = []
+    
+    for stage, info in stages.items():
+        model = info["model"]
+        max_tokens = info["max_tokens"]
+        prompt_tokens = info["prompt_tokens"]
+        
+        if model not in catalog:
+            per_stage[stage] = None
+            problems.append({"code": "unknown-model", "stage": stage})
+            continue
+        
+        model_info = catalog[model]
+        
+        if not model_info["paid"]:
+            per_stage[stage] = 0.0
+            continue
+        
+        price_in = model_info["price_in_usd_per_mtok"]
+        price_out = model_info["price_out_usd_per_mtok"]
+        
+        if price_in is None or price_out is None:
+            per_stage[stage] = None
+            problems.append({"code": "unknown-price", "stage": stage})
+            continue
+        
+        cost = prompt_tokens * price_in / 1000000 + max_tokens * price_out / 1000000
+        per_stage[stage] = cost
+    
+    if any(v is None for v in per_stage.values()):
+        worst_case = None
+    else:
+        worst_case = sum(per_stage.values()) if per_stage else 0.0
+    
+    return {
+        "worst_case_usd": worst_case,
+        "per_stage": per_stage,
+        "problems": problems
+    }
+```
+
+Wait, let me re-read: "An empty stages dict gives worst_case_usd 0.0, per_stage {} and problems []."
+
+So for empty stages, `worst_case_usd` should be `0.0`, not `None`. My code handles that because `per_stage` is empty, `any(...)` is `False`, and `sum([])` is `0`, but I need to make sure it's `0.0` not `0`. Let me adjust.
+
+Actually `sum([])` returns `0` (int), not `0.0`. So I should handle that. Let me use `sum(per_stage.values()) if per_stage else 0.0`.
+
+Let me also think about the case where all stages have valid costs but the sum could be a float. That's fine.
+
+Now for the test file, I should write comprehensive tests covering all the cases mentioned in the spec.
+
+Let me write the test file:
+
+```python
+# pieces/test_api_budget.py
+
+import pytest
+from scripts.source.api_budget import worst_case_usd
+
+
+def test_empty_stages():
+    result = worst_case_usd({}, {})
+    assert result == {
+        "worst_case_usd": 0.0,
+        "per_stage": {},
+        "problems": []
+    }
+
+
+def test_unknown_model():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {}
+    result = worst_case_usd(stages, catalog)
+    assert result == {
+        "worst_case_usd": None,
+        "per_stage": {"stage1": None},
+        "problems": [{"code": "unknown-model", "stage": "stage1"}]
+    }
+
+
+def test_free_model():
+    stages = {
+        "stage1": {
+            "model": "free-model",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {
+        "free-model": {
+            "paid": False,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    assert result == {
+        "worst_case_usd": 0.0,
+        "per_stage": {"stage1": 0.0},
+        "problems": []
+    }
+
+
+def test_paid_model_with_unknown_price():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": None,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    assert result == {
+        "worst_case_usd": None,
+        "per_stage": {"stage1": None},
+        "problems": [{"code": "unknown-price", "stage": "stage1"}]
+    }
+
+
+def test_paid_model_with_unknown_price_out():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": None
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    assert result == {
+        "worst_case_usd": None,
+        "per_stage": {"stage1": None},
+        "problems": [{"code": "unknown-price", "stage": "stage1"}]
+    }
+
+
+def test_valid_paid_model():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    expected_cost = 50 * 10.0 / 1000000 + 100 * 20.0 / 1000000
+    assert result == {
+        "worst_case_usd": expected_cost,
+        "per_stage": {"stage1": expected_cost},
+        "problems": []
+    }
+
+
+def test_multiple_stages():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        },
+        "stage2": {
+            "model": "claude",
+            "max_tokens": 200,
+            "prompt_tokens": 75
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        },
+        "claude": {
+            "paid": True,
+            "price_in_usd_per_mtok": 5.0,
+            "price_out_usd_per_mtok": 15.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    cost1 = 50 * 10.0 / 1000000 + 100 * 20.0 / 1000000
+    cost2 = 75 * 5.0 / 1000000 + 200 * 15.0 / 1000000
+    assert result == {
+        "worst_case_usd": cost1 + cost2,
+        "per_stage": {"stage1": cost1, "stage2": cost2},
+        "problems": []
+    }
+
+
+def test_mixed_stages_with_error():
+    stages = {
+        "stage1": {
+            "model": "unknown-model",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        },
+        "stage2": {
+            "model": "gpt-4",
+            "max_tokens": 200,
+            "prompt_tokens": 75
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    cost2 = 75 * 10.0 / 1000000 + 200 * 20.0 / 1000000
+    assert result == {
+        "worst_case_usd": None,
+        "per_stage": {"stage1": None, "stage2": cost2},
+        "problems": [{"code": "unknown-model", "stage": "stage1"}]
+    }
+
+
+def test_problems_in_order():
+    stages = {
+        "stage1": {
+            "model": "unknown-model",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        },
+        "stage2": {
+            "model": "bad-price",
+            "max_tokens": 200,
+            "prompt_tokens": 75
+        }
+    }
+    catalog = {
+        "bad-price": {
+            "paid": True,
+            "price_in_usd_per_mtok": None,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    assert result["problems"] == [
+        {"code": "unknown-model", "stage": "stage1"},
+        {"code": "unknown-price", "stage": "stage2"}
+    ]
+
+
+def test_inputs_not_changed():
+    stages = {
+        "stage1": {
+            "model": "gpt-4",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        }
+    }
+    catalog = {
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    stages_copy = dict(stages)
+    catalog_copy = dict(catalog)
+    worst_case_usd(stages, catalog)
+    assert stages == stages_copy
+    assert catalog == catalog_copy
+
+
+def test_free_model_with_multiple_stages():
+    stages = {
+        "stage1": {
+            "model": "free-model",
+            "max_tokens": 100,
+            "prompt_tokens": 50
+        },
+        "stage2": {
+            "model": "gpt-4",
+            "max_tokens": 200,
+            "prompt_tokens": 75
+        }
+    }
+    catalog = {
+        "free-model": {
+            "paid": False,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        },
+        "gpt-4": {
+            "paid": True,
+            "price_in_usd_per_mtok": 10.0,
+            "price_out_usd_per_mtok": 20.0
+        }
+    }
+    result = worst_case_usd(stages, catalog)
+    cost2 = 75 * 10.0 / 1000000 + 200 * 20.0 / 1000000
+    assert result == {
+        "worst_case_usd": cost2,
+        "per_stage": {"stage1": 0.0, "stage2": cost2},
+        "problems": []
+    }
+```
+
+Wait, I need to think about the import path. The test file is at `pieces/test_api_budget.py` and the module is at `scripts/source/api_budget.py`. The import should probably be `from scripts.source.api_budget import worst_case_usd`. But the test might need to be run from the project root. Let me keep it as is.
+
+Actually, let me reconsider. The spec says the module is `scripts/source/api_budget.py`. The test file is `pieces/test_api_budget.py`. The import path might need to handle the directory structure. But since the spec doesn't specify how tests are run, I'll use the straightforward import.
+
+Let me finalize both files.
+
+Actually, let me double-check the spec for any edge cases I might have missed:
+
+- "A model with paid False costs 0.0 for that stage." - handled.
+- "worst_case_usd is the sum of per_stage when no stage is None, else None." - handled.
+- "An empty stages dict gives worst_case_usd 0.0, per_stage {} and problems []." - handled.
+- "problems are listed in the order of the stages dict." - handled by iterating in dict order.
+- "The inputs are not changed." - handled, we don't modify inputs.
+- "The module makes no network call and prints nothing." - handled.
+
+One thing: the spec says "For each stage: a model that is not in catalog gives per_stage[stage] = None and a problem {"code": "unknown-model", "stage": stage}." This is the first check. Then "A model with paid False costs 0.0 for that stage." Then "A paid model with either price None gives per_stage[stage] = None and a problem {"code": "unknown-price", "stage": stage}." Then the cost calculation.
+
+My implementation follows this order correctly.
+
+Let me also consider: what if a model is in catalog but the catalog entry doesn't have the expected keys? The spec doesn't mention this, so I'll assume the inputs are well-formed.
+
+I think my implementation is correct. Let me write the final answer.

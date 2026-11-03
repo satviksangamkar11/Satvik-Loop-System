@@ -1,0 +1,147 @@
+Let me review the code against the spec and checks.
+
+First, let me understand the spec:
+- SPEC 1: Module is scripts/source/api_shape.py, uses only stdlib
+- SPEC 2: shape_diff(expected, actual, path='$') returns list of str problems; [] means match
+- SPEC 3: Dict must have exactly same keys; missing gives 'missing <path>.<key>', extra gives 'extra <path>.<key>'; matching keys compared recursively in sorted key order with path '<path>.<key>'
+- SPEC 4: List in expected: empty expected matches any list; otherwise each item of actual compared with expected[0] with path '<path>[<i>]'; non-list actual gives 'type <path>: expected list'
+- SPEC 5: None on either side matches anything
+- SPEC 6: Types: bool, int/float (numbers match each other), str, dict, list; mismatch gives 'type <path>: expected <name>' with name one of bool, number, str, dict, list; bool never matches number
+- SPEC 7: Problems returned in order found
+- SPEC 8: No network calls, prints nothing
+
+Now let me check the implementation:
+
+Looking at the code in scripts/source/api_shape.py:
+
+1. None handling (lines 8-10): Returns empty list if either is None. This matches SPEC 5.
+
+2. Dict comparison (lines 12-28): 
+   - Checks if actual is dict, returns type error if not (SPEC 3, 6)
+   - Gets sorted keys for both (SPEC 3 says "in sorted key order")
+   - Reports missing keys first (lines 19-21), then extra keys (lines 22-24), then recurses on matching keys (lines 25-27)
+   - This matches SPEC 3 and SPEC 7 (order: missing, extra, then recursive)
+
+3. List comparison (lines 30-39):
+   - Checks if actual is list, returns type error if not (SPEC 4, 6)
+   - If expected is empty, returns empty problems (SPEC 4: "when expected is empty any list matches")
+   - Otherwise compares each actual item with expected[0] with path '<path>[<i>]' (SPEC 4)
+   - This matches SPEC 4
+
+4. Bool comparison (lines 41-46): Checks if actual is bool, returns type error if not (SPEC 6)
+
+5. Number comparison (lines 48-56): 
+   - Checks if actual is bool first (bool never matches number per SPEC 6)
+   - Then checks if actual is int/float
+   - This matches SPEC 6
+
+6. String comparison (lines 58-63): Checks if actual is str, returns type error if not (SPEC 6)
+
+Now let me check the tests against the spec:
+
+The tests in pieces/test_api_shape.py cover:
+- None matches anything (SPEC 5)
+- Dict exact match, missing key, extra key, missing and extra, nested, sorted keys, type mismatch (SPEC 3)
+- List empty matches any, nonempty compares first, type mismatch, nested (SPEC 4)
+- Bool matches bool, never matches number, type mismatch (SPEC 6)
+- Number matches number, type mismatch (SPEC 6)
+- String matches string, type mismatch (SPEC 6)
+- Problems in order (SPEC 7)
+- Nested dict in list, deep nested
+
+The acceptance tests also cover:
+- Same shape is empty
+- Missing and extra keys
+- Type mismatches
+- Null matches anything
+- List items and paths
+
+All tests pass according to the results.
+
+Now let me check the CHECKS:
+
+CHECK 1: Every spec clause has code and a test.
+- SPEC 1: Module exists, uses stdlib only ✓
+- SPEC 2: Function signature and return type ✓
+- SPEC 3: Dict comparison code and tests ✓
+- SPEC 4: List comparison code and tests ✓
+- SPEC 5: None handling code and tests ✓
+- SPEC 6: Type comparison code and tests ✓
+- SPEC 7: Order of problems - code handles order (missing, extra, then recursive), test_problems_in_order tests this ✓
+- SPEC 8: No network/print - code doesn't do either ✓
+
+CHECK 2: No code special-cases test values.
+- The code doesn't have any hardcoded test values. It's generic. ✓
+
+CHECK 3: Edge cases are handled.
+- None handling ✓
+- Empty list matches any list ✓
+- Bool vs number distinction ✓
+- Sorted keys for dict ✓
+- Nested structures ✓
+
+CHECK 4: Nothing changed outside the spec.
+- Only the api_shape.py and test file are new. No other files modified. ✓
+
+CHECK 5: No security or data-loss risk.
+- Pure comparison function, no I/O, no network, no file operations. ✓
+
+Wait, let me double-check the list comparison logic. SPEC 4 says: "when expected is empty any list matches; otherwise each item of actual is compared with expected[0]"
+
+The code at lines 35-38:
+```python
+if len(expected) == 0:
+    return problems
+for i, act_item in enumerate(actual):
+    problems.extend(shape_diff(expected[0], act_item, f'{path}[{i}]'))
+```
+
+This matches the spec. But wait - what if expected has multiple items? The spec says "each item of actual is compared with expected[0]". So only the first item of expected is used as the template. The code does exactly that.
+
+But let me check the test: `test_list_nonempty_compares_first` tests `shape_diff([1], [1, 2, 3])` and `shape_diff([{'a': 1}], [{'a': 1}, {'a': 2}])` both return []. This is correct per spec.
+
+And `test_nested_dict_in_list` tests `shape_diff([{'a': 1}], [{'a': 1}, {'b': 2}])` expecting `['missing $[1].a', 'extra $[1].b']`. This is correct - the second item in actual is compared against expected[0] which is {'a': 1}, so it finds missing 'a' and extra 'b'.
+
+The acceptance test `test_list_items_and_paths` tests `shape_diff({'l': [{'k': 1}]}, {'l': [{'k': 1}, {'k': 'x'}]})` expecting `['type $.l[1].k: expected number']`. This is correct - the second item's 'k' is 'x' (str) but expected[0] has 'k': 1 (number).
+
+Everything looks correct. All tests pass. The implementation matches the spec.
+
+Let me also verify the order of problems for dict: SPEC 3 says "each key of expected missing from actual gives 'missing <path>.<key>', and each extra key in actual gives 'extra <path>.<key>'. Matching keys are compared recursively, in sorted key order"
+
+The code does:
+1. Loop through exp_keys (sorted) and report missing
+2. Loop through act_keys (sorted) and report extra
+3. Loop through exp_keys (sorted) and recurse on matching keys
+
+This matches the spec order: missing first, then extra, then recursive comparisons in sorted key order.
+
+The test `test_problems_in_order` expects `['missing $.b', 'extra $.c', 'type $.a: expected number']` for `shape_diff({'a': 1, 'b': 2}, {'a': 'x', 'c': 3})`. 
+
+Let's trace:
+- expected keys: ['a', 'b'] (sorted)
+- actual keys: ['a', 'c'] (sorted)
+- Missing: 'b' -> 'missing $.b'
+- Extra: 'c' -> 'extra $.c'
+- Recurse on 'a': expected=1 (number), actual='x' (str) -> 'type $.a: expected number'
+
+Order: missing $.b, extra $.c, type $.a: expected number. Matches the test expectation.
+
+Everything is correct. The code is ready.
+
+Wait, I should also check if there's any issue with the path format. SPEC 3 says path '<path>.<key>' and SPEC 4 says path '<path>[<i>]'.
+
+The code uses:
+- Dict: f'{path}.{key}' 
+- List: f'{path}[{i}]'
+
+Starting path is '$'. So for root dict key 'a', path becomes '$.a'. For list index 0, path becomes '$[0]'. This matches the test expectations like 'missing $.b', 'extra $.c', 'type $.a: expected number', 'missing $[0].a', 'type $.l[1].k: expected number'.
+
+All good.
+
+One more thing: SPEC 6 says "bool, int/float (numbers match each other), str, dict and list are the types; a mismatch gives 'type <path>: expected <name>' with name one of bool, number, str, dict, list."
+
+The code uses 'bool', 'number', 'str', 'dict', 'list' in the error messages. This matches.
+
+The code also correctly handles bool vs number: bool check comes before number check, and number check explicitly rejects bool.
+
+I think everything is correct. The verdict should be READY.

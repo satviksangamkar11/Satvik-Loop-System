@@ -1,0 +1,7 @@
+{
+  "job_id": "ah-idempotency-20261104-0344-978b",
+  "state": "merged",
+  "base": "9173c9d6745ad48b63c0320b2f8c31aa95bfc5b0",
+  "head": "526bd5a7520e545924b6a19dc98f18469033e4fe",
+  "attempts": 1
+}

@@ -1,0 +1,65 @@
+{
+  "name": "ah-shape",
+  "schema_version": 1,
+  "state": "passed",
+  "profile": "production",
+  "tests_passed": true,
+  "review_verdict": "READY",
+  "reason": "READY from: nvidia/nemotron-3.5-super-vl:free, nvidia/nemotron-3-ultra-550b-a55b:free",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "green"
+    },
+    {
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    }
+  ],
+  "coder_calls": 1,
+  "reviewer_calls": {
+    "nvidia/nemotron-3.5-super-vl:free": 1,
+    "nvidia/nemotron-3-ultra-550b-a55b:free": 1
+  },
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/ah_shape_acceptance.py": "e4d3394db61f48f381a10441f2381358135c05e7698b474307a65edd9aa62413",
+      "tests/controls/ah_shape_always_match.py": "c14c9b2ea5ce3254375165dfbb10df54eff62007fd4a4332a523acea8ccc9a95"
+    },
+    "calibration": "passed",
+    "stage_snapshot": {
+      "sha256": "d09d12ad2377f8a7f730409a779dd0cb2402cea65370ff325d64c3245c6f4077",
+      "revision": 1
+    },
+    "tested_hash": "04042ef026e1f5f6794b7e3618b45c642760bc8de110b56b190a5c504759b618",
+    "final_hash": "04042ef026e1f5f6794b7e3618b45c642760bc8de110b56b190a5c504759b618",
+    "reviewed_hash": "04042ef026e1f5f6794b7e3618b45c642760bc8de110b56b190a5c504759b618",
+    "review_hashes": [
+      "04042ef026e1f5f6794b7e3618b45c642760bc8de110b56b190a5c504759b618",
+      "04042ef026e1f5f6794b7e3618b45c642760bc8de110b56b190a5c504759b618"
+    ],
+    "budget": {
+      "free_requests_used": 3,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": []
+  },
+  "updated": "2026-11-03T22:17:59Z"
+}

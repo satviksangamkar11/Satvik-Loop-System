@@ -1,0 +1,369 @@
+The user wants me to review the files against the spec and checks, and provide at most 5 findings, each on one line in a specific format. Then end with a verdict line.
+
+Let me analyze the code against the spec carefully.
+
+SPEC 1: Module uses only Python standard library. The code uses only builtins, no imports. OK.
+
+SPEC 2: shape_diff(expected, actual, path='$') compares two JSON-like values and returns list of str problems; [] means match. OK.
+
+SPEC 3: Dict must have exactly same keys. Missing key: 'missing <path>.<key>'. Extra key: 'extra <path>.<key>'. Matching keys compared recursively in sorted key order, path '<path>.<key>'.
+
+Looking at code lines 12-28:
+- exp_keys = sorted(expected.keys())
+- act_keys = sorted(actual.keys())
+- First loop: for key in exp_keys: if key not in actual: missing
+- Second loop: for key in act_keys: if key not in expected: extra
+- Third loop: for key in exp_keys: if key in actual: recurse
+
+Wait, SPEC 3 says "Matching keys are compared recursively, in sorted key order". The code does missing first (sorted), then extra (sorted), then recursive (sorted). 
+
+But there's an ordering issue with SPEC 7: "Problems are returned in the order they are found."
+
+Let me check the acceptance test test_type_mismatches:
+```python
+assert m.shape_diff({'a': 1, 'b': 's', 'c': True}, {'a': 's', 'b': 2, 'c': 1}) == ['type $.a: expected number', 'type $.b: expected str', 'type $.c: expected bool']
+```
+
+With the code: exp_keys sorted = ['a', 'b', 'c']. No missing, no extra. Then recursive in sorted order: a, b, c. So result is ['type $.a: expected number', 'type $.b: expected str', 'type $.c: expected bool']. That matches.
+
+test_problems_in_order:
+```python
+result = shape_diff({'a': 1, 'b': 2}, {'a': 'x', 'c': 3})
+self.assertEqual(result, ['missing $.b', 'extra $.c', 'type $.a: expected number'])
+```
+
+Code: exp_keys = ['a', 'b']. Missing: 'b' not in actual -> 'missing $.b'. act_keys = ['a', 'c']. Extra: 'c' not in expected -> 'extra $.c'. Then recursive for keys in exp_keys that are in actual: 'a' -> recurse shape_diff(1, 'x', '$.a') -> 'type $.a: expected number'. Result: ['missing $.b', 'extra $.c', 'type $.a: expected number']. Matches.
+
+So ordering: missing (sorted), extra (sorted), then recursive (sorted). This seems consistent with tests.
+
+Now let me check SPEC 4: List in expected: when expected is empty any list matches; otherwise each item of actual is compared with expected[0], with path '<path>[<i>]'. A non-list actual gives 'type <path>: expected list'.
+
+Code lines 30-39: OK.
+
+SPEC 5: None on either side matches anything. Code line 9: if expected is None or actual is None: return problems. OK.
+
+But wait - there's a subtle issue. SPEC 5 says "None on either side matches anything (unknown is null)." The code returns empty problems if either is None. But what about when expected is a dict and actual is None? Line 9 catches actual is None first, returns []. That's correct per spec.
+
+SPEC 6: bool, int/float (numbers match each other), str, dict and list are the types; a mismatch gives 'type <path>: expected <name>' with name one of bool, number, str, dict, list. A bool never matches a number.
+
+Code: 
+- Dict check first (line 13). But wait, what if expected is a dict and actual is None? Line 9 catches it. OK.
+- List check (line 30).
+- Bool check (line 42). Note: bool is checked before number. Good, because isinstance(True, int) is True in Python. So if we checked number first, True would match as number. The code checks bool first. Good.
+- Number check (line 48): checks if actual is bool first -> expected number. Then checks if actual is (int, float). Good.
+- String check (line 59).
+
+Wait, there's an ordering issue. What if expected is a bool and actual is a dict? Line 42: isinstance(expected, bool) -> True. actual is not bool -> 'type $: expected bool'. But per SPEC 6, a mismatch gives 'type <path>: expected <name>'. The expected type is bool (since expected is bool). So 'expected bool' is correct.
+
+But what about the order of type checks? The code checks dict, list, bool, number, str. What if expected is a number and actual is a dict? Line 48: isinstance(expected, (int, float)) -> True. actual is dict, not bool, not (int, float) -> 'type $: expected number'. Correct.
+
+What if expected is a str and actual is a dict? Line 59 -> 'type $: expected str'. Correct.
+
+Now, there's a subtle issue with SPEC 6 and the order. Consider expected is a dict, actual is a list. Line 13: isinstance(expected, dict) -> True. actual is not dict -> 'type $: expected dict'. Correct per spec (expected is dict, so expected dict).
+
+Consider expected is a list, actual is a dict. Line 30 -> 'type $: expected list'. Correct.
+
+Now, what about the case where expected is None? Handled at line 9. What about actual being a type not in the spec? The spec says the types are bool, number, str, dict, list. If actual is something else (like a set), the code would fall through all checks and return []. But that's an edge case not really in spec. JSON-like values don't include sets.
+
+Now let me think about whether there are any actual violations.
+
+Let me re-read SPEC 3 carefully: "A dict must have exactly the same keys: each key of expected missing from actual gives 'missing <path>.<key>', and each extra key in actual gives 'extra <path>.<key>'. Matching keys are compared recursively, in sorted key order, with path '<path>.<key>'."
+
+The code does missing keys loop, then extra keys loop, then recursive loop. All in sorted key order. This matches the tests.
+
+Now, is there a problem with the ordering relative to SPEC 7? SPEC 7 says problems are returned in the order they are found. The code's order is: all missing, then all extra, then all recursive. Is that "the order they are found"? It's a defined order. The tests pass. So it's consistent with the tests and acceptance.
+
+Hmm, but let me think about whether the spec intends a different interleaving. "Matching keys are compared recursively, in sorted key order" - this suggests that for each key in sorted order, we might check missing/extra and recurse. But the code separates them into three passes. The tests explicitly test this order (test_problems_in_order expects missing, extra, then type). So the code matches the tests.
+
+Actually wait, let me reconsider. The test test_problems_in_order expects ['missing $.b', 'extra $.c', 'type $.a: expected number']. With the code's three-pass approach, we get exactly that. If we did a single pass in sorted key order (a, b, c), we'd get: key 'a' is in both, recurse -> type $.a; key 'b' missing -> missing $.b; key 'c' extra -> extra $.c. That would be ['type $.a: expected number', 'missing $.b', 'extra $.c'], which does NOT match the test. So the three-pass approach is required by the tests. Good, the code matches.
+
+Now let me check the acceptance test test_same_shape_is_empty:
+```python
+assert m.shape_diff({'a': 1, 'b': [{'x': 's'}]}, {'a': 2.5, 'b': [{'x': 't'}, {'x': 'u'}]}) == []
+```
+- expected dict, actual dict. Keys match. Recurse 'a': 1 vs 2.5 -> number vs number -> []. Recurse 'b': [{'x': 's'}] vs [{'x': 't'}, {'x': 'u'}]. Expected list non-empty. Compare each actual item with expected[0] = {'x': 's'}. 
+  - i=0: {'x': 't'} vs {'x': 's'} -> keys match, recurse 'x': 's' vs 't' -> str vs str -> [].
+  - i=1: {'x': 'u'} vs {'x': 's'} -> [].
+- Result []. Matches.
+
+test_list_items_and_paths:
+```python
+assert m.shape_diff({'l': [{'k': 1}]}, {'l': [{'k': 1}, {'k': 'x'}]}) == ['type $.l[1].k: expected number']
+```
+- 'l': [{'k': 1}] vs [{'k': 1}, {'k': 'x'}]. Compare each with {'k': 1}.
+  - i=0: {'k': 1} vs {'k': 1} -> [].
+  - i=1: {'k': 'x'} vs {'k': 1} -> recurse 'k': 1 vs 'x' -> expected number, actual str -> 'type $.l[1].k: expected number'. 
+- Result matches.
+
+test_type_mismatches:
+```python
+assert m.shape_diff({'a': 1, 'b': 's', 'c': True}, {'a': 's', 'b': 2, 'c': 1}) == ['type $.a: expected number', 'type $.b: expected str', 'type $.c: expected bool']
+```
+- Keys a, b, c all present. Recurse sorted: a: 1 vs 's' -> expected number, actual str -> 'type $.a: expected number'. b: 's' vs 2 -> expected str, actual number -> 'type $.b: expected str'. c: True vs 1 -> expected bool, actual number (not bool) -> 'type $.c: expected bool'. Matches.
+
+test_null_matches_anything:
+```python
+assert m.shape_diff({'a': None, 'b': 1}, {'a': {'z': 1}, 'b': None}) == []
+```
+- 'a': None vs {'z': 1} -> expected is None -> []. 'b': 1 vs None -> actual is None -> []. Result []. Matches.
+
+Everything seems to pass. The results show all tests passed.
+
+Now, are there any findings? Let me think very carefully about potential spec violations.
+
+One thing: SPEC 6 says "A bool never matches a number." The code handles this: bool checked before number, and number check rejects bool actual. Good.
+
+But wait, there's a subtle issue with the order of type checking and SPEC 6's "a mismatch gives 'type <path>: expected <name>'". The <name> should be the expected type's name. Let me verify each branch:
+- expected dict, actual not dict: 'expected dict'. Correct.
+- expected list, actual not list: 'expected list'. Correct.
+- expected bool, actual not bool: 'expected bool'. Correct.
+- expected number, actual bool or not number: 'expected number'. Correct.
+- expected str, actual not str: 'expected str'. Correct.
+
+Now, what about when expected is a number and actual is a bool? The number branch: `if isinstance(actual, bool): problems.append(f'type {path}: expected number')`. Correct - bool never matches number.
+
+What about when expected is a bool and actual is a number? The bool branch: `if not isinstance(actual, bool): 'expected bool'`. Since actual is a number (not bool), 'expected bool'. Correct.
+
+Now, is there any issue with the None check happening before type checks? SPEC 5: None on either side matches anything. So if expected is None and actual is a dict, return []. Code does that. If expected is a dict and actual is None, return []. Code does that (line 9 before line 13). Good.
+
+Hmm, but consider: expected is None, actual is None. Returns []. Good.
+
+Now, is there a problem with the code not handling the case where expected is some other type? The spec only defines bool, number, str, dict, list. If expected is, say, a set, the code falls through to `return problems` at line 65, returning []. But that's not really a spec violation since JSON-like values don't include sets. And there's no test for it.
+
+Let me think about CHECK 1: every spec clause has code and a test.
+- SPEC 1: standard library - code uses no imports. Is there a test? Not explicitly, but it's a property of the code. Hmm. "every spec clause (SPEC n) has code and a test." SPEC 1 is about the module using only stdlib. There's no explicit test for that, but it's trivially true. This is a CHECK, not a SPEC finding necessarily. But the finding format references SPEC n or CHECK n.
+
+Actually, the task is to find what breaks. Let me look for actual breaks.
+
+Let me reconsider the dict ordering more carefully against SPEC 3 and SPEC 7.
+
+SPEC 3: "Matching keys are compared recursively, in sorted key order, with path '<path>.<key>'."
+
+The code's recursive loop is `for key in exp_keys: if key in actual: ...`. exp_keys is sorted. So recursive comparisons happen in sorted key order. Good.
+
+But the overall order is: missing (sorted), extra (sorted), recursive (sorted). Is this consistent with "Problems are returned in the order they are found" (SPEC 7)? The tests define what "found" means, and they pass. So I think it's fine.
+
+Actually, wait. Let me reconsider whether there's a real bug. Let me think about a case not covered by tests.
+
+Consider expected = {'b': 1, 'a': None}, actual = {'a': 'hello', 'c': 2}.
+- exp_keys sorted = ['a', 'b']. Missing: 'a' is in actual, 'b' not in actual -> 'missing $.b'. 
+- act_keys sorted = ['a', 'c']. Extra: 'a' in expected, 'c' not in expected -> 'extra $.c'.
+- Recursive for keys in exp_keys in actual: 'a' -> shape_diff(None, 'hello', '$.a') -> None matches -> [].
+- Result: ['missing $.b', 'extra $.c'].
+
+That seems fine.
+
+Now, is there an issue with the None check short-circuiting recursive comparisons? Consider expected = {'a': None}, actual = {'a': 'hello'}. Line 9 is only at the top level call. When we recurse into shape_diff(None, 'hello', '$.a'), line 9 catches it and returns []. Good, that's per SPEC 5.
+
+OK here's a potential subtle issue. SPEC 5 says "None on either side matches anything (unknown is null)." This means if expected is None, it matches anything, AND if actual is None, it matches anything. The code returns [] immediately if either is None. This means if expected is a dict and actual is None, we return [] without reporting that actual is missing keys. That's per spec (None matches anything). Good.
+
+Now let me think about whether there's a finding at all. All tests pass, including acceptance. The code seems correct.
+
+But wait, let me look more carefully. There might be an issue with SPEC 3 ordering vs the implementation when there are both missing keys and type mismatches.
+
+Actually, the tests all pass and the results are green. The task says "If the code is right, give no finding line." and end with READY.
+
+But let me be very careful. Let me re-examine the list comparison and path format.
+
+SPEC 4: "each item of actual is compared with expected[0], with path '<path>[<i>]'."
+
+Code: `f'{path}[{i}]'`. For path='$', i=0 -> '$[0]'. The acceptance test expects '$[1].k' etc. Let me verify: shape_diff({'l': [{'k': 1}]}, {'l': [{'k': 1}, {'k': 'x'}]}). 
+- Top: dict, key 'l'. Recurse shape_diff([{'k': 1}], [{'k': 1}, {'k': 'x'}], '$.l').
+- List: expected non-empty. i=0: shape_diff({'k': 1}, {'k': 1}, '$.l[0]'). i=1: shape_diff({'k': 1}, {'k': 'x'}, '$.l[1]').
+  - In the i=1 recursion: dict, key 'k' in both. Recurse shape_diff(1, 'x', '$.l[1].k') -> 'type $.l[1].k: expected number'. 
+- Result: ['type $.l[1].k: expected number']. Matches acceptance.
+
+Good.
+
+Now, is there any issue with bool being a subclass of int? In the number branch, expected is (int, float). If expected is True (bool), it's caught by the bool branch first (line 42). If expected is 1 (int, not bool), bool branch skipped, number branch: actual is bool -> 'expected number'. Good. If expected is 1 and actual is 1.5 -> number matches. Good.
+
+What if expected is True and actual is True? Bool branch: actual is bool -> []. Good.
+
+What if expected is False and actual is 0? Bool branch: actual is 0, not bool -> 'type $: expected bool'. Per SPEC 6, bool never matches number, and 0 is a number. So 'expected bool' is correct. Good.
+
+I don't see any actual violations. All tests pass, acceptance passes.
+
+Wait, but the task is a "REVIEW TASK" and they expect possibly findings. Let me re-read very carefully for a subtle bug.
+
+Let me reconsider SPEC 3: "Matching keys are compared recursively, in sorted key order". 
+
+The code does three separate loops over sorted keys. But consider the interaction between "extra" keys and recursion. The extra keys loop runs before recursion. That's fine per tests.
+
+Hmm, but actually, let me reconsider whether the order violates SPEC 7 in a way that a hidden test might catch. The visible tests all pass. The acceptance tests all pass. I should only report what I can verify breaks.
+
+Let me think about CHECK 2: "no code special-cases test values." The code doesn't special-case test values. OK.
+
+CHECK 3: "edge cases are handled." None, empty list, bool/number, nested. Seems handled.
+
+CHECK 4: "nothing changed outside the spec." The diff shows only the two new files. OK.
+
+CHECK 5: "no security or data-loss risk." No network, no prints. OK.
+
+So is the verdict READY?
+
+Hold on. Let me reconsider one thing about SPEC 3 and the order of operations vs SPEC 7 more rigorously, because this is the kind of subtle thing that could be a finding.
+
+Actually, I realize there might be a genuine issue. Let me re-read SPEC 3:
+
+"A dict must have exactly the same keys: each key of expected missing from actual gives 'missing <path>.<key>', and each extra key in actual gives 'extra <path>.<key>'. Matching keys are compared recursively, in sorted key order, with path '<path>.<key>'."
+
+This describes three things: missing keys, extra keys, and recursive comparison of matching keys. It doesn't strictly specify the interleaving order between missing/extra and recursive. SPEC 7 says "Problems are returned in the order they are found." The implementation defines an order: missing, extra, recursive. The tests confirm this order. So it's self-consistent.
+
+But here's a thought: is the implementation's order actually what a natural reading of "order they are found" would produce? If you iterate sorted keys once and for each key handle missing/extra/recurse, you'd get a different order. But the tests explicitly want missing-before-extra-before-recursive-type. Since the tests are the spec's concrete expression and they pass, I'll treat it as correct.
+
+Actually, wait. Let me reconsider test_problems_in_order once more. The test name is "test_problems_in_order" and it expects ['missing $.b', 'extra $.c', 'type $.a: expected number']. This test was written to match the implementation. So it's circular but consistent. The acceptance tests don't test this specific interleaving beyond what's shown. test_type_mismatches has all keys present so no missing/extra. So the interleaving order isn't tested by acceptance beyond the piece tests.
+
+Given all visible tests pass, and I can't find a spec violation, the verdict should be READY with no findings.
+
+But wait, let me reconsider if there's a real bug with None and dict ordering. 
+
+Consider expected = {'a': 1}, actual = None. SPEC 5: None on either side matches anything. So actual=None matches expected={'a':1} -> []. Code: line 9, actual is None -> return []. Correct.
+
+Consider expected = None, actual = {'a': 1}. Code: line 9, expected is None -> []. Correct.
+
+OK what about this: expected is a list, actual is None. Code line 9 -> []. Per SPEC 5, correct.
+
+Now, what about expected = [], actual = None? Line 9 -> []. Per SPEC 4 (empty list matches any) and SPEC 5 (None matches anything), correct.
+
+I'm fairly confident there are no findings. But let me think about whether the task expects me to find something. The instructions say "If the code is right, give no finding line." So it's legitimate to have zero findings and READY.
+
+However, let me reconsider the bool/number interaction once more, specifically a tricky case: expected is a number (int), actual is a bool. 
+
+SPEC 6: "A bool never matches a number." So expected number, actual bool -> mismatch 'type $: expected number'. Code line 50-52: if isinstance(actual, bool): 'expected number'. Correct.
+
+expected is a bool, actual is a number. -> 'type $: expected bool'. Code line 43-45. Correct.
+
+Both correct.
+
+Now, one more: the code checks `isinstance(expected, (int, float))` at line 48. But bool is a subclass of int. However, the bool branch (line 42) comes before the number branch (line 48). So if expected is True, it's caught by bool branch. If expected is 1 (int), bool branch: isinstance(1, bool) is False, so skipped. Then number branch. Good. So expected=1 (int) is handled by number branch, not bool branch. Correct - 1 is a number.
+
+But what about expected=True? isinstance(True, bool) is True, so bool branch. actual=True -> []. actual=1 -> 'expected bool'. Correct per "bool never matches number".
+
+Alright. I'm confident: no findings, READY.
+
+Wait, actually, let me reconsider one potential issue with SPEC 3 and the recursive call path when there are missing/extra keys. The code reports missing and extra for ALL keys first, THEN recurses into matching keys. This means even if a key is missing, we don't recurse into it (can't, it's not in actual). For extra keys, we don't recurse (not in expected). For matching keys, we recurse. This is correct.
+
+But consider: expected = {'a': {'x': 1}}, actual = {'a': 'hello', 'b': 2}. 
+- Missing: none (a in actual). 
+- Extra: 'b' -> 'extra $.b'.
+- Recursive 'a': shape_diff({'x': 1}, 'hello', '$.a') -> expected dict, actual str -> 'type $.a: expected dict'.
+- Result: ['extra $.b', 'type $.a: expected dict'].
+
+Is that the right order? Extra before recursive type. Per the implementation's three-pass, yes. Is there a test for this? Not exactly, but test_problems_in_order establishes missing, extra, then recursive. Here it's extra then recursive (no missing). Consistent.
+
+OK, I'm now confident there are no findings. Let me also double check the file paths in findings would be... but there are no findings.
+
+Actually, hold on. Let me reconsider the possibility that there IS a subtle bug that the tests don't catch but the spec does.
+
+SPEC 4: "A list in expected: when expected is empty any list matches; otherwise each item of actual is compared with expected[0], with path '<path>[<i>]'. A non-list actual gives 'type <path>: expected list'."
+
+The code: if expected is list and actual is not list -> 'type {path}: expected list' and return. Good. If expected empty -> return []. Good. Otherwise compare each actual item with expected[0]. Good.
+
+But what if expected is a list and actual is a list, but expected is non-empty and actual is empty? Then the loop over actual items does nothing, returns []. So shape_diff([1], []) == []. Is that per spec? "each item of actual is compared with expected[0]" - if actual has no items, nothing to compare, so []. That seems reasonable. Not explicitly tested but consistent.
+
+What if expected is [1] and actual is []? Returns []. Per spec, each item of actual (none) compared -> []. OK.
+
+Now, what about expected = [1, 2], actual = ['a', 'b', 'c']? Compare each actual item with expected[0]=1. 'a' vs 1 -> 'type $[0]: expected number'. 'b' vs 1 -> 'type $[1]: expected number'. 'c' vs 1 -> 'type $[2]: expected number'. So three problems. The spec says compare each item of actual with expected[0]. So yes, all three. The code does that. Good. (The expected[1]=2 is ignored, per spec which only uses expected[0].)
+
+OK everything checks out. No findings.
+
+Hmm, wait. Let me reconsider whether I'm missing something about the dict recursion and None. 
+
+SPEC 5: "None on either side matches anything (unknown is null)."
+
+Consider expected = {'a': None, 'b': 1}, actual = {'a': None, 'b': 2}. 
+- 'a': None vs None -> line 9 -> [].
+- 'b': 1 vs 2 -> number vs number -> [].
+- Result []. Correct.
+
+Consider expected = {'a': None}, actual = {'a': [1,2,3]}. -> expected None -> []. Correct per spec.
+
+Alright. Final decision: no findings, verdict READY.
+
+Actually, wait. Let me reconsider the problem statement once more. It says "Review the files against the spec and the checks." and "Reply with at most 5 findings." It allows zero findings. "If the code is right, give no finding line."
+
+Given all tests pass (both piece tests and locked acceptance tests), and I've reviewed the spec thoroughly, the code is right. Verdict: READY.
+
+But let me reconsider one more time if there's a genuine spec violation I'm glossing over.
+
+SPEC 6: "bool, int/float (numbers match each other), str, dict and list are the types; a mismatch gives 'type <path>: expected <name>' with name one of bool, number, str, dict, list."
+
+Note: the type name for int/float is "number". The code uses 'expected number'. Good. For bool, 'expected bool'. For str, 'expected str'. For dict, 'expected dict'. For list, 'expected list'. All correct.
+
+Now, the order of type checking in code: dict, list, bool, number, str. 
+
+Is there a case where the wrong type name is reported? Consider expected is a dict, actual is a bool. Code: dict branch (line 13), actual not dict -> 'type $: expected dict'. Per spec, expected is dict, mismatch -> 'expected dict'. Correct. (Even though actual is a bool, the expected type is dict.)
+
+Consider expected is a bool, actual is a dict. Code: bool branch (line 42), actual not bool -> 'type $: expected bool'. Expected is bool -> 'expected bool'. Correct.
+
+Consider expected is a list, actual is a number. Code: list branch -> 'expected list'. Correct.
+
+Consider expected is a number, actual is a list. Code: number branch -> actual not bool, not (int,float) -> 'expected number'. Correct.
+
+All good.
+
+One last consideration: the code uses `isinstance(expected, dict)` etc. In Python, this is fine for JSON-like values. No imports. SPEC 1 satisfied.
+
+I'm confident. Zero findings, READY.
+
+Wait, I want to reconsider whether there might be an issue with how the code handles the case where `expected` is a `dict` but `actual` is also a `dict`, and there's a key whose values differ in type, combined with missing/extra. The ordering is fixed by tests. Fine.
+
+Also, let me reconsider: the problem says "at most 5 findings". Zero is allowed. And "If the code is right, give no finding line." So I'll give no finding lines and end with READY.
+
+Actually, hold on, let me reconsider the acceptance test file path and loading. The acceptance test loads MODULE = Path(__file__).parents[2] / "scripts/source/api_shape.py". The file is at scripts/source/api_shape.py. parents[2] of tests/acceptance/ah_shape_acceptance.py: __file__ is .../tests/acceptance/ah_shape_acceptance.py. parents[0] = acceptance, parents[1] = tests, parents[2] = repo root. So MODULE = repo_root / "scripts/source/api_shape.py". Correct. And it's locked, we don't edit it. It passes.
+
+Everything is green. Final answer: no findings, ## Verdict: READY.
+
+Let me make sure the format: "End your reply with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`." And findings before that, each on one line. Since no findings, just the verdict line.
+
+Actually, should I include any findings? Let me be extra careful and re-read the code for a bug related to SPEC 3 ordering vs SPEC 7 that a strict reviewer might flag.
+
+The spec says matching keys compared recursively "in sorted key order". The code does this. The missing and extra are also in sorted key order. The only question is the global interleaving. SPEC 7: "Problems are returned in the order they are found." This is vague but the tests pin it down. Since tests pass, no finding.
+
+I'm confident. No findings.
+
+Hmm, but actually, let me reconsider whether there's a real discrepancy: the code reports ALL missing keys, then ALL extra keys, then ALL recursive problems. A strict reading of "in the order they are found" combined with "matching keys are compared recursively in sorted key order" might suggest a single sorted pass. But the visible test test_problems_in_order explicitly validates the three-pass order. So within this package, the spec+tests define three-pass order. No violation.
+
+Final: READY, no findings.
+
+Wait, I realize I should double-check: is there any chance the intended answer is that there IS a bug? Let me think about the bool/number and the `isinstance(expected, (int, float))` check ordering relative to dict/list.
+
+What if expected is a dict and actual is a number? Code: dict branch -> actual not dict -> 'type $: expected dict'. Correct (expected dict).
+
+What if expected is a number and actual is a dict? Code: not dict, not list, not bool, then number branch -> actual not bool, not (int,float) -> 'type $: expected number'. Correct.
+
+No issue.
+
+OK, truly final: no findings, READY.
+
+Actually, let me reconsider one subtle thing about SPEC 5 and the early return interacting with SPEC 3's "exactly the same keys". 
+
+If expected = {'a': 1, 'b': None} and actual = {'a': 1}. 
+- exp_keys sorted = ['a', 'b']. Missing: 'a' in actual, 'b' not in actual -> 'missing $.b'. 
+- act_keys = ['a']. Extra: none.
+- Recursive 'a': shape_diff(1, 1, '$.a') -> [].
+- Result: ['missing $.b'].
+
+But wait, expected['b'] is None. Per SPEC 5, None matches anything. But 'b' is missing from actual entirely. SPEC 3 says missing key gives 'missing <path>.<key>'. Does SPEC 5's "None matches anything" mean a missing key whose expected value is None should NOT be reported? 
+
+Hmm. SPEC 5: "None on either side matches anything (unknown is null)." This is about when a value IS None. If the key is missing from actual, there's no value on the actual side at all (not None, just absent). SPEC 3 explicitly says "each key of expected missing from actual gives 'missing <path>.<key>'". So even if expected['b'] is None, if 'b' is missing from actual, it's 'missing $.b'. 
+
+The code: line 9 only triggers when the function is called with expected=None or actual=None as the top values. For a missing key, the key isn't in actual, so we never call shape_diff(expected['b'], None). We just report 'missing $.b'. So expected={'b': None}, actual={} -> 'missing $.b'. Is that correct per spec? 
+
+SPEC 3: missing key -> 'missing'. SPEC 5: None matches anything. These could conflict if expected value is None and key is missing. But SPEC 3 is about key presence, SPEC 5 is about value being None. A missing key means there's no actual value to be None. So 'missing $.b' seems right. The code reports 'missing $.b'. 
+
+Is there a test? test_none_matching_anything has shape_diff({'a': 1}, None) -> [] (actual is None entirely). And shape_diff(None, {'a': 1}) -> []. But not the case expected={'a': None}, actual={}. 
+
+Per spec, I think 'missing $.a' is correct for expected={'a': None}, actual={}, because the key is missing. The code does that. So no bug.
+
+But wait, could a strict reader say SPEC 5 means "if expected value is None, it matches anything including missing"? That's a stretch. "None on either side matches anything" refers to the value None being present. A missing key is not None. So code is correct.
+
+OK, I'm confident now. No findings. READY.
+
+Let me write the final response: just the verdict line since no findings. Actually, the instructions say findings are optional ("at most 5", "If the code is right, give no finding line"). So I'll output only the verdict line.
+
+Wait, but should I output anything before the verdict? The format example shows findings then verdict. With no findings, just the verdict line is fine. Let me output exactly:
+
+## Verdict: READY
+
+That's the reply.
