@@ -97,7 +97,7 @@ def client_for(root, job, keys=None):
     budget = job["budget"]
     client = oc.OpenRouter(oc.load_keys() if keys is None else keys, Path(root) / "_loop" / "openrouter",
                            budget=oc.JobBudget(free_requests=budget["free_requests"], review_usd=budget["review_usd"]))
-    client.set_job(*oc.shared_job(job["name"], Path(root) / "_loop"))     # launched or --solo: every call counts on the shared ledger (Track L)
+    client.set_job(*oc.shared_job(job.get("name") or "production-client", Path(root) / "_loop"))     # launched or --solo: every call counts on the shared ledger (Track L)
     return client
 
 

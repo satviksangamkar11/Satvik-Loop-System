@@ -14,7 +14,6 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -72,17 +71,13 @@ def _inside(child, parent) -> bool:
 
 
 def _git_worktree(path):
-    """The top folder of the git worktree that holds `path` (the nearest existing folder is asked), or None when it is in none."""
-    probe = Path(path)
-    while not probe.exists() and probe.parent != probe:
-        probe = probe.parent
-    try:
-        res = subprocess.run(["git", "-C", str(probe), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None                       # no git here: nothing to check against
-    if res.returncode != 0:
-        return None
-    return res.stdout.strip() or None
+    """The folder of the git worktree that holds `path`, or None. A worktree or a repository has a `.git` entry at its top (a folder, or a
+    file in a linked worktree), so the nearest ancestor with one is the answer. No subprocess: a production job must start no other process."""
+    here = Path(os.path.realpath(str(path)))
+    for folder in (here, *here.parents):
+        if (folder / ".git").exists():
+            return str(folder)
+    return None
 
 
 def home(loops=1, fallback=None, worktrees=()) -> Path:
