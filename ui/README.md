@@ -1,34 +1,29 @@
-# Satvik Loop Control Center UI (`ui/`) — Revision 3 Verified
+# Satvik Loop Control Center UI (`ui/`)
 
-Production-quality React 19 + TypeScript + Vite + Tailwind CSS Control Center UI for the **Satvik Loop System**, aligned strictly with `docs/API_CONTRACT.md`, `docs/UI_ENGINE_HANDOFF.md`, `docs/ARCHITECTURE_REVISION_4.md`, and the 12 baseline fixtures.
+React 19 + TypeScript + Vite + Tailwind control center for the Satvik Loop System. The contract is `docs/API_CONTRACT.md`; the canonical sample responses are `monitor/fixtures/*.json`, and they are the truth.
 
-## Revision 3 Audit Fixes Verified
+## Modes
 
-1. **Authoritative LIVE Mode Loading (`src/App.tsx`, `src/pages/DashboardPage.tsx`, `src/pages/SystemPage.tsx`)**
-   - Switching to or starting in `LIVE` mode (`VITE_SATVIK_DATA_MODE=live`) immediately clears all demonstration state, enters an explicit `LIVE • CONNECTING` state, and fetches all required FastAPI endpoints at `0ms` (`getOverview`, `getJobs`, `getModels`, `getStages`, `getSystemHealth`, `getSystemLimits`, plus page-specific `getLoop`, `getLoopEvents`, `getResult`, and `getResultDiff`).
-   - Demonstration data is never carried into a live screen.
+- `npm run dev`: MOCK mode. Reads answer from the fixtures in `monitor/fixtures/` (unmodified). Anything that needs a live engine (a provider probe, a budget check, an archive) returns 503 instead of an invented result.
+- `npm run dev:live`: LIVE mode against `http://127.0.0.1:8765/api`. Mode comes from `VITE_DATA_MODE` in `.env.mock` / `.env.live`. For debugging only, `window.__SATVIK_DATA_MODE__` overrides it.
 
-2. **Exact `API_CONTRACT.md` Normalizer Fidelity (`src/api/normalizer.ts`)**
-   - `normalizeOverview()` maps `stop`, `loops_running`, `queue_depth`, `jobs_waiting`, `pace`, `review_usd_today`, `review_cap_usd`, `free_today`, and `sandbox_slots` (`"1/2"`, number, or object) with **zero** hardcoded demonstration defaults.
-   - `normalizeJob()` preserves `model`, `lease` (`alive`, `holder_pid`, `heartbeat_age_s`, `heartbeat_at`), and `stages` execution status maps/arrays.
+## Rules the code follows
 
-3. **Full Mutation Wire Compatibility (`src/api/client.ts`)**
-   - `POST /api/system/stop` -> `{"stop": true}`
-   - `POST /api/jobs/validate` -> `{"valid": true, "problems": []}`
-   - `POST /api/jobs` -> `{"queued": true, "queue_file": "...", "stage_snapshot": {...}}`
-   - `POST /api/loops/start` -> `{"started": 2}`
-   - `POST /api/models` -> direct `Model` object
-   - `DELETE /api/models/{id}` -> HTTP `204 No Content` empty body handled safely without calling `response.json()` on empty payload
-   - `POST /api/plans` -> HTTP `202 Accepted` (`{"plan_id": "...", "status": "planning"}`) followed by `GET /api/plans/{id}`
-   - `buildValidZipArchiveBytes()` computes real IEEE 802.3 CRC-32 checksums verified by `zipfile.testzip()`.
+- Absent or unknown backend values are `null` and render as "Unknown". Nothing is defaulted (no sandbox count, review ceiling, price, job id or status is invented).
+- A contract is "verified" only on `POST /models/verify` result `pass`. `fail` is failed, and a missing or malformed result is unverified.
+- Claude Code models are a subscription: no USD figure.
+- Every mutation sends an `Idempotency-Key` (RFC-4122 v4). Payloads follow contract section 3; `POST /jobs` sends `stages` as a keyed object.
+- `PUT /system/limits` stays locked until the backend supplies a revision (Gap C-08).
 
-## Running Portable Tests & Development Server
+## Scripts
 
 ```bash
-# Run the portable Node.js transport & normalizer test suite (works with zero external dependencies)
-node --test tests/transport.test.mjs
-
-# Install dependencies and start Vite dev server
-npm install
-npm run dev
+npm ci
+npm run typecheck     # tsc --noEmit
+npm run lint          # eslint
+npm run build         # tsc -b && vite build
+npm run test:unit     # vitest, against the fixtures in monitor/fixtures/
+npm run test:e2e      # Playwright, LIVE mode against tests/fake_fastapi_server.mjs
 ```
+
+`test:e2e` uses the preinstalled Chromium at `/opt/pw-browsers/chromium` when it exists, and does not run `playwright install`.

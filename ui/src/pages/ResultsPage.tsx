@@ -1,10 +1,13 @@
 import React from 'react';
 import { Download } from 'lucide-react';
-import type { JobRecord } from '../api/types';
+import type { JobRecord, ResultRecord } from '../api/types';
+import { fmtBool, fmtInt, fmtStr, fmtUsd } from '../api/format';
 
 export interface ResultsPageProps {
   jobs: JobRecord[];
-  selectedResultJob: JobRecord | null;
+  selectedResultJobId: string | null;
+  result: ResultRecord | null;
+  diffFiles: Array<{ path: string; unified_diff: string }>;
   resultsSearch: string;
   resultsOutcomeFilter: string;
   resultsTab: 'assertions' | 'reviews' | 'diff' | 'lineage' | 'calls' | 'artifacts';
@@ -12,19 +15,19 @@ export interface ResultsPageProps {
   bgPanel: string;
   bgSubtle: string;
   textMuted: string;
+  formatTimestamp: (iso: string | null | undefined) => string;
   onChangeSearch: (q: string) => void;
   onChangeOutcomeFilter: (f: string) => void;
   onSelectResultJob: (jobId: string) => void;
-  onChangeTab: (
-    t: 'assertions' | 'reviews' | 'diff' | 'lineage' | 'calls' | 'artifacts'
-  ) => void;
+  onChangeTab: (t: 'assertions' | 'reviews' | 'diff' | 'lineage' | 'calls' | 'artifacts') => void;
   onDownloadArchive: (jobId: string) => void;
-  onSimulateMergeComplete: (jobId: string) => void;
 }
 
 export const ResultsPage: React.FC<ResultsPageProps> = ({
   jobs,
-  selectedResultJob,
+  selectedResultJobId,
+  result,
+  diffFiles,
   resultsSearch,
   resultsOutcomeFilter,
   resultsTab,
@@ -32,30 +35,26 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
   bgPanel,
   bgSubtle,
   textMuted,
+  formatTimestamp,
   onChangeSearch,
   onChangeOutcomeFilter,
   onSelectResultJob,
   onChangeTab,
   onDownloadArchive,
-  onSimulateMergeComplete,
 }) => {
+  const job = jobs.find((j) => j.job_id === selectedResultJobId) ?? null;
+  const hashes = job?.hashes ?? null;
+  const integrityEqual =
+    hashes !== null && hashes.tested !== null && hashes.tested === hashes.reviewed && hashes.reviewed === hashes.delivered;
+
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg md:text-xl font-bold tracking-tight">
-          6. Results &amp; Archival Ledger (/results)
-        </h1>
+        <h1 className="text-lg md:text-xl font-bold tracking-tight">6. Results (/results)</h1>
         <p className={`text-xs ${textMuted}`}>
-          Four independent top-level verdicts (`end_state != test_verdict != reviewer_verdict !=
-          merge_state`), candidate SHA-256 hash equality verification, `restored-green` evidence,
-          and real binary Blob ZIP archive download ({'(GET /api/results/{id}/download)'}).
+          Four verdicts from GET /results/{'{id}'} and the job detail: end_state, tests, reviewer verdict and merge_state.
+          The archive ZIP downloads from GET /results/{'{id}'}/download.
         </p>
-      </div>
-
-      <div className="p-2.5 rounded border border-slate-800 bg-slate-900/50 text-xs font-mono text-slate-300">
-        Adapter Notice (Gap C-03): GET /api/results collection pagination is not yet specified in
-        docs/API_CONTRACT.md. Filtering obtained job records client-side via typed normalizer
-        `normalizeJob()`.
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
@@ -63,10 +62,10 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
           <div className="space-y-2">
             <input
               type="text"
-              aria-label="Search Results by Job ID or Spec"
+              aria-label="Search Results by Job ID"
               value={resultsSearch}
               onChange={(e) => onChangeSearch(e.target.value)}
-              placeholder="Search job_id or spec_id..."
+              placeholder="Search job_id"
               className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono"
             />
             <select
@@ -75,243 +74,145 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
               onChange={(e) => onChangeOutcomeFilter(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs font-mono"
             >
-              <option value="all">All Outcomes</option>
-              <option value="passed">end_state: passed</option>
-              <option value="review-open">end_state: review-open</option>
-              <option value="escalate">end_state: escalate</option>
-              <option value="quota-exhausted">end_state: quota-exhausted</option>
+              <option value="all">All end_state values</option>
+              <option value="passed">passed</option>
+              <option value="review-open">review-open</option>
+              <option value="escalate">escalate</option>
+              <option value="quota-exhausted">quota-exhausted</option>
             </select>
           </div>
 
           <div className="space-y-2 max-h-[560px] overflow-y-auto pr-1">
             {jobs
               .filter((j) => {
-                if (
-                  resultsSearch &&
-                  !j.job_id.toLowerCase().includes(resultsSearch.toLowerCase()) &&
-                  !j.spec_id.toLowerCase().includes(resultsSearch.toLowerCase())
-                ) {
-                  return false;
-                }
-                if (resultsOutcomeFilter !== 'all' && j.end_state !== resultsOutcomeFilter) {
-                  return false;
-                }
+                if (resultsSearch && !j.job_id.toLowerCase().includes(resultsSearch.toLowerCase())) return false;
+                if (resultsOutcomeFilter !== 'all' && j.end_state !== resultsOutcomeFilter) return false;
                 return true;
               })
               .map((j) => {
-                const isSel = selectedResultJob?.job_id === j.job_id;
+                const isSel = selectedResultJobId === j.job_id;
                 return (
                   <button
                     key={j.job_id}
                     type="button"
+                    data-testid={`result-select-${j.job_id}`}
                     onClick={() => onSelectResultJob(j.job_id)}
                     className={`w-full text-left p-2.5 rounded border text-xs font-mono space-y-1 transition ${
-                      isSel
-                        ? 'bg-sky-500/15 border-sky-400'
-                        : 'bg-slate-900/50 border-slate-800 hover:border-slate-700'
+                      isSel ? 'bg-sky-500/15 border-sky-400' : 'bg-slate-900/50 border-slate-800 hover:border-slate-700'
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-sky-300">{j.job_id}</span>
-                      <span className="px-1.5 py-0.5 rounded bg-black/40 text-[10px]">
-                        {j.end_state || j.derived_state}
-                      </span>
+                      <span className="font-bold text-sky-300 truncate">{j.job_id}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-black/40 text-[10px]">{fmtStr(j.end_state ?? j.derived_state)}</span>
                     </div>
-                    <div className="text-[11px] text-slate-400">{j.job_path}</div>
-                    <div className="text-[10px] text-slate-300 flex flex-wrap gap-2">
-                      <span>Test: {j.test_verdict}</span>
-                      <span>Rev: {j.reviewer_verdict}</span>
-                      <span>Merge: {j.merge_state}</span>
-                    </div>
+                    <div className="text-[10px] text-slate-300">Merge: {fmtStr(j.merge_state)}</div>
                   </button>
                 );
               })}
+            {jobs.length === 0 && <p className={`text-xs ${textMuted}`}>No jobs from GET /api/jobs.</p>}
           </div>
         </div>
 
-        {/* Right Detail Panel (8 cols) */}
-        {selectedResultJob ? (
+        {job ? (
           <div className="lg:col-span-8 space-y-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono">
               <div className={`p-3 rounded-md border ${bgPanel}`}>
-                <div className="text-[10px] text-slate-400">1. JOB VERDICT (`end_state`)</div>
-                <div className="text-base font-bold text-sky-300 mt-1">
-                  {selectedResultJob.end_state || selectedResultJob.derived_state}
-                </div>
+                <div className="text-[10px] text-slate-400">END_STATE</div>
+                <div className="text-base font-bold text-sky-300 mt-1">{fmtStr(result?.end_state ?? job.end_state)}</div>
               </div>
               <div className={`p-3 rounded-md border ${bgPanel}`}>
-                <div className="text-[10px] text-slate-400">2. SANDBOX TESTS</div>
+                <div className="text-[10px] text-slate-400">TESTS</div>
                 <div className="text-base font-bold text-emerald-300 mt-1">
-                  {selectedResultJob.test_verdict}
+                  {result?.tests ? fmtBool(result.tests.passed, 'passed', 'failed') : job.tests_passed !== undefined ? fmtBool(job.tests_passed, 'passed', 'failed') : 'Unknown'}
                 </div>
               </div>
               <div className={`p-3 rounded-md border ${bgPanel}`}>
-                <div className="text-[10px] text-slate-400">3. INDEPENDENT REVIEW</div>
-                <div className="text-base font-bold text-amber-300 mt-1">
-                  {selectedResultJob.reviewer_verdict}
-                </div>
+                <div className="text-[10px] text-slate-400">REVIEWER VERDICT</div>
+                <div className="text-base font-bold text-amber-300 mt-1">{fmtStr(job.review_verdict)}</div>
               </div>
               <div className={`p-3 rounded-md border ${bgPanel}`}>
-                <div className="text-[10px] text-slate-400">4. MERGE (`merge_state`)</div>
-                <div className="text-base font-bold text-purple-300 mt-1">
-                  {selectedResultJob.merge_state === 'none'
-                    ? 'Not merged (none)'
-                    : selectedResultJob.merge_state}
-                </div>
+                <div className="text-[10px] text-slate-400">MERGE_STATE</div>
+                <div className="text-base font-bold text-purple-300 mt-1">{fmtStr(result?.merge_state ?? job.merge_state)}</div>
               </div>
             </div>
 
             <div className={`rounded-md border p-3.5 space-y-2 text-xs font-mono ${bgPanel}`}>
-              {selectedResultJob.normalization_note && (
-                <div className="p-2 rounded bg-sky-950/50 border border-sky-700/60 text-sky-200 text-[11px]">
-                  ✓ {selectedResultJob.normalization_note}
-                </div>
-              )}
-              {selectedResultJob.restored_green && (
-                <div className="p-2.5 rounded bg-emerald-950/50 border border-emerald-600/60 text-emerald-200">
-                  <strong>RESTORED-GREEN CANDIDATE RETAINED:</strong>{' '}
-                  {selectedResultJob.restored_green_note}
-                </div>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px] pt-1">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[11px]">
                 <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                  <span className="text-slate-400 block">tested_sha256:</span>
-                  <code>{selectedResultJob.hashes.tested_sha256 || 'n/a'}</code>
+                  <span className="text-slate-400 block">tested:</span>
+                  <code className="break-all">{fmtStr(hashes?.tested ?? null)}</code>
                 </div>
                 <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                  <span className="text-slate-400 block">reviewed_sha256:</span>
-                  <code>{selectedResultJob.hashes.reviewed_sha256 || 'n/a'}</code>
+                  <span className="text-slate-400 block">reviewed:</span>
+                  <code className="break-all">{fmtStr(hashes?.reviewed ?? null)}</code>
                 </div>
                 <div className="p-2 rounded bg-slate-900 border border-slate-800">
-                  <span className="text-slate-400 block">delivered_sha256:</span>
-                  <code>{selectedResultJob.hashes.delivered_sha256 || 'n/a'}</code>
+                  <span className="text-slate-400 block">delivered:</span>
+                  <code className="break-all">{fmtStr(hashes?.delivered ?? null)}</code>
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <span className="text-[11px]">
-                  Integrity Gate (`tested == reviewed == delivered`):{' '}
-                  <strong
-                    className={
-                      selectedResultJob.hashes.integrity_equal
-                        ? 'text-emerald-400'
-                        : 'text-amber-400'
-                    }
-                  >
-                    {selectedResultJob.hashes.integrity_equal
-                      ? 'EQUAL & VERIFIED'
-                      : 'INCOMPLETE / NOT DELIVERED'}
+                  Integrity (tested = reviewed = delivered):{' '}
+                  <strong className={integrityEqual ? 'text-emerald-400' : 'text-amber-400'}>
+                    {integrityEqual ? 'EQUAL' : 'NOT EQUAL OR NOT RECORDED'}
                   </strong>
                 </span>
-
-                {selectedResultJob.merge_state === 'pending' && (
-                  <button
-                    type="button"
-                    onClick={() => onSimulateMergeComplete(selectedResultJob.job_id)}
-                    className="px-2.5 py-1 rounded bg-emerald-500 text-slate-950 font-bold text-xs"
-                  >
-                    Simulate Automatic Merge Completion (Scenario 3)
-                  </button>
-                )}
+                <button
+                  type="button"
+                  data-testid="download-archive-btn"
+                  disabled={job.archive?.available !== true || pendingAction === 'download-archive'}
+                  onClick={() => onDownloadArchive(job.job_id)}
+                  className={`px-3 py-1 rounded text-xs font-mono font-semibold inline-flex items-center gap-1.5 ${
+                    job.archive?.available === true
+                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {job.archive?.available === true ? 'Download archive ZIP' : 'Archive not available'}
+                </button>
               </div>
             </div>
 
             <div className={`rounded-md border p-4 space-y-3 ${bgPanel}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
-                <div className="flex flex-wrap gap-1 text-xs font-mono">
-                  {(
-                    [
-                      { id: 'reviews', label: '1. Reviews & Evidence' },
-                      { id: 'assertions', label: '2. Failed Assertions' },
-                      { id: 'diff', label: '3. Unified Diff' },
-                      { id: 'lineage', label: '4. Contributor Lineage' },
-                      { id: 'calls', label: '5. Calls & Cost' },
-                      { id: 'artifacts', label: '6. Archive & Merge' },
-                    ] as const
-                  ).map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => onChangeTab(t.id)}
-                      className={`px-2.5 py-1 rounded ${
-                        resultsTab === t.id
-                          ? 'bg-sky-500 text-slate-950 font-bold'
-                          : 'bg-slate-900 text-slate-300'
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  disabled={
-                    !selectedResultJob.archive.available || pendingAction === 'download-archive'
-                  }
-                  onClick={() => onDownloadArchive(selectedResultJob.job_id)}
-                  className={`px-3 py-1 rounded text-xs font-mono font-semibold inline-flex items-center gap-1.5 ${
-                    selectedResultJob.archive.available
-                      ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950'
-                      : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                  }`}
-                  title={
-                    selectedResultJob.archive.available
-                      ? `Download ${selectedResultJob.archive.path_hint}`
-                      : selectedResultJob.archive.failure_reason
-                  }
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  {selectedResultJob.archive.available
-                    ? `Download ZIP (${((selectedResultJob.archive.size_bytes || 0) / 1024).toFixed(
-                        1
-                      )} KB)`
-                    : 'Archive ZIP Unavailable'}
-                </button>
+              <div className="flex flex-wrap gap-1 border-b border-slate-800 pb-2.5 text-xs font-mono">
+                {(
+                  [
+                    { id: 'reviews', label: 'Reviews' },
+                    { id: 'assertions', label: 'Failed tests' },
+                    { id: 'diff', label: 'Diff' },
+                    { id: 'lineage', label: 'Files' },
+                    { id: 'calls', label: 'Budget' },
+                    { id: 'artifacts', label: 'Artifacts & merge' },
+                  ] as const
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => onChangeTab(t.id)}
+                    className={`px-2.5 py-1 rounded ${resultsTab === t.id ? 'bg-sky-500 text-slate-950 font-bold' : 'bg-slate-900 text-slate-300'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
               </div>
 
               {resultsTab === 'reviews' && (
                 <div className="space-y-2.5 text-xs font-mono">
-                  {selectedResultJob.reviews.length === 0 ? (
-                    <div className="text-slate-400">
-                      No reviewer reports recorded for {selectedResultJob.job_id}.
-                    </div>
+                  {(result?.reviews ?? []).length === 0 ? (
+                    <div className="text-slate-400">No reviewer reports recorded.</div>
                   ) : (
-                    selectedResultJob.reviews.map((rv, i) => (
+                    (result?.reviews ?? []).map((rv, i) => (
                       <div key={i} className={`p-3 rounded border space-y-2 ${bgSubtle}`}>
                         <div className="flex items-center justify-between">
-                          <span className="font-bold text-sky-300">{rv.reviewer_slot}</span>
-                          <span
-                            className={`px-2 py-0.5 rounded ${
-                              rv.verdict === 'READY'
-                                ? 'bg-emerald-500/20 text-emerald-300'
-                                : 'bg-amber-500/20 text-amber-300'
-                            }`}
-                          >
-                            {rv.verdict}
-                          </span>
+                          <span className="font-bold text-sky-300">{fmtStr(rv.reviewer)}</span>
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">{fmtStr(rv.verdict)}</span>
                         </div>
-                        <div className="text-[11px] text-slate-300">
-                          Model: <code>{rv.model_id}</code> · Contributor-Disjoint:{' '}
-                          <strong className="text-emerald-400">
-                            {String(rv.independent_of_authors)}
-                          </strong>{' '}
-                          · Backend `evidence_ok`:{' '}
-                          <strong className="text-emerald-400">{String(rv.evidence_ok)}</strong>
-                        </div>
+                        <div className="text-[11px] text-slate-400">file: {fmtStr(rv.file)}</div>
                         {rv.findings.map((fd, fi) => (
-                          <div
-                            key={fi}
-                            className="p-2.5 rounded bg-amber-950/40 border border-amber-700/60 space-y-1"
-                          >
-                            <div className="flex items-center justify-between text-amber-300 font-bold">
-                              <span>
-                                [{fd.ref}] {fd.file}:{fd.line}
-                              </span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                                evidence_ok: {String(fd.evidence_ok)}
-                              </span>
-                            </div>
-                            <div className="text-slate-200">{fd.message}</div>
+                          <div key={fi} className="p-2.5 rounded bg-amber-950/40 border border-amber-700/60 break-words">
+                            {fd}
                           </div>
                         ))}
                       </div>
@@ -322,58 +223,48 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
 
               {resultsTab === 'assertions' && (
                 <div className="space-y-2 text-xs font-mono">
-                  {selectedResultJob.attempts
-                    .filter((a) => a.tests_summary && a.tests_summary.failures.length > 0)
-                    .map((a) => (
-                      <div
-                        key={a.attempt_id}
-                        className={`p-3 rounded border space-y-1.5 ${bgSubtle}`}
-                      >
-                        <div className="font-bold text-rose-300">
-                          {a.attempt_id} ({a.stage_key}) — {a.outcome}
+                  {result?.tests === null || result === null ? (
+                    <div className="text-slate-400">Test results are not loaded.</div>
+                  ) : result.tests.failing.length === 0 ? (
+                    <div className="text-emerald-300">No failing tests recorded.</div>
+                  ) : (
+                    result.tests.failing.map((f, i) => (
+                      <div key={i} className={`p-2 rounded border ${bgSubtle}`}>
+                        <div className="text-sky-300">{fmtStr(f.id)}</div>
+                        <div className="text-slate-400">
+                          {fmtStr(f.file)}:{fmtInt(f.line)}
                         </div>
-                        {a.tests_summary?.failures.map((f, fi) => (
-                          <div key={fi} className="p-2 rounded bg-slate-950 border border-slate-800">
-                            <div className="text-sky-300">
-                              {f.test_name} ({f.file}:{f.line})
-                            </div>
-                            <div className="text-rose-300 mt-0.5">{f.assertion}</div>
-                          </div>
-                        ))}
+                        <div className="text-rose-300 mt-0.5 break-words">{fmtStr(f.message)}</div>
                       </div>
-                    ))}
-                  {selectedResultJob.attempts.every(
-                    (a) => !a.tests_summary || a.tests_summary.failures.length === 0
-                  ) && (
-                    <div className="text-emerald-300">
-                      Zero failed assertions on delivered candidate for {selectedResultJob.job_id}.
-                    </div>
+                    ))
                   )}
                 </div>
               )}
 
               {resultsTab === 'diff' && (
-                <div className="text-xs font-mono">
-                  {selectedResultJob.diff_text ? (
-                    <pre className="p-3 rounded bg-slate-950 border border-slate-800 text-emerald-300 overflow-x-auto whitespace-pre-wrap">
-                      {selectedResultJob.diff_text}
-                    </pre>
-                  ) : (
+                <div className="text-xs font-mono space-y-2">
+                  {diffFiles.length === 0 && result?.diff_available !== true && (
                     <div className="p-3 rounded border border-rose-800/50 bg-rose-950/30 text-rose-200">
-                      Diff unavailable for {selectedResultJob.job_id} (no candidate diff recorded
-                      or archive failed).
+                      No diff is available for this job.
                     </div>
                   )}
+                  {diffFiles.map((f) => (
+                    <div key={f.path} className="space-y-1">
+                      <div className="text-sky-300">{f.path}</div>
+                      <pre className="p-3 rounded bg-slate-950 border border-slate-800 text-emerald-300 overflow-x-auto whitespace-pre-wrap">
+                        {f.unified_diff}
+                      </pre>
+                    </div>
+                  ))}
                 </div>
               )}
 
               {resultsTab === 'lineage' && (
                 <div className="space-y-2 text-xs font-mono">
-                  {selectedResultJob.contributor_chain.map((c, idx) => (
-                    <div key={idx} className={`p-2.5 rounded border ${bgSubtle}`}>
-                      <span className="font-bold text-sky-300">{c.attempt_id}</span> ·{' '}
-                      <span>{c.stage}</span> · canonical: <code>{c.canonical_model_id}</code> ·{' '}
-                      <span>{c.status}</span>
+                  {(job.files ?? []).length === 0 && <div className="text-slate-400">No files listed.</div>}
+                  {(job.files ?? []).map((f) => (
+                    <div key={f} className={`p-2 rounded border break-all ${bgSubtle}`}>
+                      {f}
                     </div>
                   ))}
                 </div>
@@ -381,44 +272,28 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
 
               {resultsTab === 'calls' && (
                 <div className="space-y-2 text-xs font-mono">
-                  <div>Free Requests Used: {selectedResultJob.free_requests_used}</div>
-                  <div>
-                    Total Reconciled Cost:{' '}
-                    {selectedResultJob.total_cost_usd !== null
-                      ? `$${selectedResultJob.total_cost_usd}`
-                      : 'Unknown'}
-                  </div>
+                  <div>Free requests used: {fmtInt(job.budget?.free_requests_used ?? job.free_requests_used ?? null)}</div>
+                  <div>Review spend: {fmtUsd(job.budget?.review_usd_spent ?? job.review_usd_spent ?? null)}</div>
+                  <div>Repair calls: {fmtInt(job.budget?.repair_calls ?? null)}</div>
                 </div>
               )}
 
               {resultsTab === 'artifacts' && (
                 <div className="space-y-3 text-xs font-mono">
                   <div className={`p-3 rounded border space-y-1.5 ${bgSubtle}`}>
-                    <div className="font-bold text-sky-300">
-                      Merge Details (`merge.json`): {selectedResultJob.merge_detail.status}
-                    </div>
-                    <div>Target Branch: {selectedResultJob.merge_detail.target_branch}</div>
-                    <div>Base SHA: {selectedResultJob.merge_detail.base_sha}</div>
-                    {selectedResultJob.merge_detail.commit_sha && (
-                      <div className="text-emerald-300">
-                        Merged Commit SHA: {selectedResultJob.merge_detail.commit_sha}
-                      </div>
-                    )}
-                    <div>Retries: {selectedResultJob.merge_detail.retries}</div>
-                    <div className="text-slate-300">{selectedResultJob.merge_detail.message}</div>
+                    <div className="font-bold text-sky-300">Merge</div>
+                    <div>merge_state: {fmtStr(job.merge?.merge_state ?? job.merge_state)}</div>
+                    <div>head: {fmtStr(job.merge?.head ?? null)}</div>
+                    <div>attempts: {fmtInt(job.merge?.attempts ?? null)}</div>
+                    {job.merge?.note && <div className="text-slate-300">{job.merge.note}</div>}
                   </div>
-
                   <div className={`p-3 rounded border space-y-1.5 ${bgSubtle}`}>
-                    <div className="font-bold text-sky-300">
-                      Archive Status (`{selectedResultJob.archive.path_hint}`):{' '}
-                      {selectedResultJob.archive.available ? 'AVAILABLE' : 'UNAVAILABLE / FAILED'}
-                    </div>
-                    {!selectedResultJob.archive.available && (
-                      <div className="text-rose-300">
-                        Reason: {selectedResultJob.archive.failure_reason}
-                      </div>
-                    )}
-                    <div>Recorded Files: {selectedResultJob.archive.artifacts.join(', ')}</div>
+                    <div className="font-bold text-sky-300">Archive</div>
+                    <div>available: {fmtBool(job.archive?.available ?? null)}</div>
+                    <div>archive_failed: {fmtBool(job.archive?.archive_failed ?? null)}</div>
+                    <div>branch: {fmtStr(result?.branch ?? null)}</div>
+                    <div>artifacts: {result && result.artifacts.length > 0 ? result.artifacts.join(', ') : 'Unknown'}</div>
+                    <div>finished: {formatTimestamp(job.finished)}</div>
                   </div>
                 </div>
               )}
