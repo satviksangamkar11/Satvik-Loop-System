@@ -1589,6 +1589,42 @@ def enqueue(job_path: Path, home: Path) -> Path:
     return dest
 
 
+COMPLETED = ("passed", "merged")      # a job in one of these states runs again only with rerun=True
+
+
+def try_enqueue(job_path: Path, home: Path, rerun: bool = False) -> dict:
+    """enqueue() with a duplicate check, for callers that need a structured answer (the UI). Under the queue lock (queue/.lock), so two
+    identical requests at once leave one pending file. A job is a duplicate only while it is ACTIVE: the same job file (sha-256) pending in
+    queue/, or its name running in the registry with a held lease (claimed or started). A finished job's old queue/taken/ file is history,
+    not active work. A job whose last state is passed or merged is queued again only with rerun=True.
+    Returns {"queued": True, "path": ...} or {"queued": False, "reason": "duplicate-pending" | "duplicate-running" | "already-completed",
+    "job": ...}. enqueue() itself is unchanged and still returns a Path."""
+    import hashlib
+    data = Path(job_path).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        name = json.loads(data.decode("utf-8")).get("name")
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        name = None
+    home = Path(home)
+    lh = _sibling_module("loop_home")
+    folder = queue_dir(home)
+    folder.mkdir(parents=True, exist_ok=True)
+    with lh._os_lock(folder / ".lock"):
+        for pending in sorted(folder.glob("*.json")):
+            try:
+                if hashlib.sha256(pending.read_bytes()).hexdigest() == digest:
+                    return {"queued": False, "reason": "duplicate-pending", "job": pending.name}
+            except OSError:
+                continue                                  # taken by a drainer while we looked: it is checked below as running
+        row = lh.Registry(home).lookup(name) if name else None
+        if row and row.get("state") == "running" and lh.Lease(home).held(row.get("job")):
+            return {"queued": False, "reason": "duplicate-running", "job": row.get("job")}
+        if row and row.get("state") in COMPLETED and not rerun:
+            return {"queued": False, "reason": "already-completed", "job": row.get("job")}
+        return {"queued": True, "path": str(enqueue(job_path, home))}
+
+
 def take_next(home: Path) -> Path | None:
     """Claim the oldest queued job by renaming it into queue/taken/. A rename that loses to another drainer is skipped, so each job is
     taken once. Returns the claimed path, or None when the queue is empty."""

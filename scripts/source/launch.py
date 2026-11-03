@@ -9,8 +9,11 @@ The shared state is WP2's loop_home (lease, claims, registry, gate) under one ho
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import secrets
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -90,6 +93,43 @@ def run_rounds(api, job_id, gen, rounds, do_round, restore, home_dir):
 
 
 KEEP_WORKTREE = {"passed", "merge-conflict"}      # passed waits for the merge queue; merge-conflict stays for the owner
+ARCHIVE_SKIP = ("openrouter",)                     # never archived: the OpenRouter key snapshots (_loop/openrouter)
+_copytree = shutil.copytree                        # a hook for tests (an archive copy that fails)
+
+
+def archive_job(home, job_id):
+    """Copies the job's evidence (wt/<job_id>/_loop, without ARCHIVE_SKIP) to results/<job_id>/: first into a temporary folder, then one
+    rename, so a reader sees all of it or none. Repeat-safe: an existing archive is kept. Returns "archived", "kept", "none" (no _loop to
+    keep) or "failed: <why>"; it never raises, so finishing a job is never blocked by it."""
+    src = Path(home) / "wt" / job_id / "_loop"
+    dest = Path(home) / "results" / job_id
+    if dest.exists():
+        return "kept"
+    if not src.is_dir():
+        return "none"
+    tmp = dest.with_name(f".tmp-{job_id}-{os.getpid()}-{secrets.token_hex(4)}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _copytree(src, tmp, ignore=shutil.ignore_patterns(*ARCHIVE_SKIP))
+        os.rename(tmp, dest)
+        return "archived"
+    except Exception as exc:                       # any failure: the caller keeps the worktree, so the evidence is never lost
+        shutil.rmtree(tmp, ignore_errors=True)
+        return f"failed: {type(exc).__name__}: {exc}"[:300]
+
+
+def record_merge(home, job_id, state, base, result=None):
+    """results/<job_id>/merge.json: the merge outcome (state, base, head, attempts, tail), separate from the execution evidence, written
+    atomically. Returns False when it cannot be written (the merge outcome is still in the registry)."""
+    folder = Path(home) / "results" / job_id
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / f".merge.json.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({"job_id": job_id, "state": state, "base": base, **(result or {})}, indent=2), encoding="utf-8")
+        os.replace(tmp, folder / "merge.json")
+        return True
+    except OSError:
+        return False
 
 
 class Launcher:
@@ -157,15 +197,21 @@ class Launcher:
             self.sleep(self.poll_s)
 
     def finish(self, job_id, gen, state, base=None, result=None):
-        """Release the sandbox slot, the claims and the lease, and record the state. The registry row is written before the lease goes.
-        The worktree is removed unless the state keeps it (KEEP_WORKTREE)."""
+        """Archive the job's evidence (archive_job), release the sandbox slot, the claims and the lease, and record the state. The registry
+        row is written before the lease goes. The worktree is removed unless the state keeps it (KEEP_WORKTREE) or the archive failed: then
+        the worktree stays so the evidence is not lost, everything else is still released, and the row says archive_failed. The state is
+        never changed by the archive."""
+        archive = archive_job(self.api.home, job_id)
+        result = dict(result or {}, archive=archive)
+        if archive.startswith("failed"):
+            result["archive_failed"] = True
         slot = self._slots.pop(job_id, None)
         if slot is not None:
             slot.__exit__(None, None, None)
         self.api.claims.release(job_id, gen)
         self.api.registry.record(self._keys.pop(job_id, job_id), job_id, gen, state, base, result)
         self.api.lease.release(job_id, gen)
-        if state not in KEEP_WORKTREE:
+        if state not in KEEP_WORKTREE and not result.get("archive_failed"):
             git(["worktree", "remove", "--force", str(self.api.home / "wt" / job_id)], self.repo, check=False)
         self.api.registry.bump("finished:" + state)
         return state
