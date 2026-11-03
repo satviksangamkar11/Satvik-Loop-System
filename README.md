@@ -400,4 +400,5 @@ Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge
 - docs/changes/fl-clamp-20261103-2236-aaea.md
 - docs/changes/fl-dedupe-20261103-2236-cc8c.md
 - docs/changes/fl-chunk-20261103-2236-adce.md
+- docs/changes/fl-wordcount-20261103-2236-977a.md
 <!-- change-index:end -->
