@@ -1,0 +1,585 @@
+We need answer with two files: scripts/source/loop_status.py and pieces/test_loop_status.py. Need follow spec exactly. Need write files only, no extra text. Need ensure code correct. Let's design.
+
+Spec details:
+- module scripts/source/loop_status.py uses stdlib.
+- collect(loop_dir) reads only files matching loop_dir/*/status.json (exactly one folder level; deeper ignored).
+- returns (rows, bad). rows list dicts keys name, state, reason, coder_calls, updated. name, state, reason, updated from status file; missing text field becomes "" and missing coder_calls becomes 0.
+- reason cut to first 80 chars.
+- rows sorted by updated newest first; equal updated values sorted by name A to Z.
+- status.json unreadable/invalid JSON/not object skipped, folder name added to bad; bad sorted A to Z.
+- if loop_dir does not exist, collect returns ([], []).
+- main(argv) optional loop folder default "_loop", prints one line per row as "name | state | coder_calls | reason", then if bad not empty one line "unreadable: " followed by bad names joined by ", ", returns 0.
+- read-only.
+
+Need implement collect and main. Need handle path traversal? Not specified but likely safe. Could use os.path.join and check exists. For reading files, use json.load. If file missing or invalid or not object, add folder name to bad. Need ensure exactly one level: glob loop_dir/*/status.json. Use os.listdir maybe. Need skip deeper. Use os.path.isfile and os.path.isdir? glob pattern ensures. But if loop_dir doesn't exist return [].
+
+Need parse fields: name, state, reason, updated. updated likely string or number? Sorting by updated, newest first. If updated is string, lexicographic sort could be weird. Spec says updated; likely timestamp string. Sorting by updated, newest first. If equal updated, sort by name A to Z. Need convert updated to string for sorting? Could keep as is. But if updated numeric, sorting by value works. If string, lexicographic. We can sort key=lambda row: (row['updated'], row['name']) but if updated is string, lexicographic. Maybe convert to str? Spec says updated from status file; no mention type. To be robust, maybe sort by updated as string? Hmm.
+
+Let's think: rows sorted by updated, newest first. If updated is a string like "2025-01-01T00:00:00Z", lexicographic works. If numeric, lexicographic fails. But spec likely expects updated as string. We can sort by updated directly. If updated is int, works. If mixed types, TypeError. Not needed.
+
+Need reason cut to first 80 characters. In Python, reason[:80]. If reason missing becomes "" so fine.
+
+Need coder_calls missing becomes 0. If present but non-int? Spec says missing becomes 0. Could coerce to int? Maybe int(value) if present else 0. But if value is string "5", int("5") works. If invalid, error. Not specified. Could do try int. But spec says missing becomes 0. We can do: coder_calls = data.get('coder_calls'); if coder_calls is None: 0 else int(coder_calls). But if present and valid int, fine. If present and string, int works. If present and invalid, ValueError. Not specified. Could just int(data.get('coder_calls') or 0). That handles None and invalid? If invalid, raises. Maybe acceptable. But spec says missing becomes 0; presence invalid not mentioned. We can use int(value) if value is not None else 0. Let's do that.
+
+Need name, state, reason, updated from status file. Missing text field becomes "". So use .get('name', ''), etc. updated maybe .get('updated'). If updated missing? Then sort key missing -> KeyError. But spec says updated from status file; likely always present. Could default to ""? But then sorting empty strings all equal, then name. But spec says updated from status file; maybe always present. To be safe, if updated missing, treat as ""? But then all rows with missing updated sort together. Not specified. Could default to "" if missing. But then "newest first" with empty strings. Hmm. Better assume present. But if missing, KeyError. We can use .get('updated', '') but then sorting by updated string. However spec says updated from status file; maybe always present. I'd use .get('updated', '') to avoid crash. But then if updated is missing, all rows have "" and sorted by name. That seems okay. But spec says "updated" comes from status file; missing not mentioned. I'd default to "" for robustness. But then if updated is numeric, converting to str? Wait if we use .get('updated', '') and sort by updated directly, if updated is int, key is int, works. If updated is string, works. If missing, key is "", works. Good. But if updated is float, works. So use .get('updated', ''). Actually if updated is None explicitly, .get('updated', '') returns None because key exists with None. Then sorting None vs string fails. Could handle: updated = data.get('updated'); if updated is None: updated = ''. Then sort. But spec likely doesn't have None. Simpler: updated = data.get('updated') or ''? If updated is 0, falsy, becomes ''. But updated 0 unlikely. Could use updated = data.get('updated'); if updated is None: updated = ''. Let's do that.
+
+Need bad sorted A to Z. Use sorted(bad).
+
+Need main prints lines. Format: "name | state | coder_calls | reason". Note reason already cut to 80. Print exactly. If bad not empty, print "unreadable: " + ", ".join(bad). Return 0.
+
+Need module docstring? Not required but okay.
+
+Need test file pieces/test_loop_status.py. It should test collect and main perhaps using tmp_path. Since module is scripts/source/loop_status.py, test imports it. Need ensure path relative. Test can import from scripts.source.loop_status. Use pytest or unittest. Spec doesn't require framework. Could write simple tests with assert. Need create status files in temp dir. Need test cases:
+- loop_dir doesn't exist -> ([], [])
+- normal files -> rows sorted, reason cut, coder_calls missing -> 0, bad empty.
+- invalid JSON -> bad includes folder.
+- not JSON object -> bad.
+- multiple folders, bad sorted.
+- updated equal then name order.
+- reason >80 chars cut.
+- main prints lines.
+
+Need be careful: collect reads loop_dir/*/status.json. In test, create subfolders each with status.json. Use os.makedirs. Need ensure no deeper folders. Use glob pattern.
+
+Potential issue: if status.json is valid JSON but not object (e.g., array), skip and add folder to bad. If invalid JSON, skip and add folder. If file unreadable (permission), skip and add folder. We can simulate by writing invalid content.
+
+Need test main output. Use capsys. main(argv) default "_loop". If loop_dir doesn't exist, prints nothing? Actually rows empty, bad empty, so no lines. Returns 0. Test that.
+
+Need test bad line: print "unreadable: folder1, folder2".
+
+Need ensure code path: scripts/source/loop_status.py. The test file at pieces/test_loop_status.py. When running, need sys.path include scripts/source? If test imports `from scripts.source.loop_status import collect, main`, need package scripts. But scripts may not have __init__.py. Could import via importlib or direct path. Simpler: in test, compute path to module file and load. Or use `sys.path.insert(0, 'scripts/source')` then `import loop_status`. But test file location pieces/, relative to repo root. We can add parent to sys.path. But if running from repo root, `scripts/source` exists. Let's do:
+
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+
+Then call collect and main.
+
+Alternatively use importlib.util.spec_from_file_location. Simpler to manipulate sys.path.
+
+Need ensure test doesn't depend on working directory. Use absolute paths.
+
+Let's craft code.
+
+First file: scripts/source/loop_status.py.
+
+```python
+"""Loop status summary tool."""
+import json
+import os
+
+
+def collect(loop_dir):
+    rows = []
+    bad = []
+    if not os.path.isdir(loop_dir):
+        return rows, bad
+    for entry in os.listdir(loop_dir):
+        full = os.path.join(loop_dir, entry)
+        if not os.path.isfile(full):
+            continue
+        if not entry.endswith('status.json'):
+            continue
+        try:
+            with open(full, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            bad.append(entry)
+            continue
+        if not isinstance(data, dict):
+            bad.append(entry)
+            continue
+        name = data.get('name')
+        state = data.get('state')
+        reason = data.get('reason')
+        updated = data.get('updated')
+        if updated is None:
+            updated = ''
+        coder_calls = data.get('coder_calls')
+        if coder_calls is None:
+            coder_calls = 0
+        else:
+            coder_calls = int(coder_calls)
+        rows.append({
+            'name': name if name is not None else '',
+            'state': state if state is not None else '',
+            'reason': reason[:80],
+            'coder_calls': coder_calls,
+            'updated': updated,
+        })
+    rows.sort(key=lambda r: (r['updated'], r['name']))
+    bad.sort()
+    return rows, bad
+
+
+def main(argv=None):
+    if argv is None:
+        argv = ['_loop']
+    loop_dir = argv[0] if len(argv) > 0 else '_loop'
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print('{} | {} | {} | {}'.format(row['name'], row['state'], row['coder_calls'], row['reason']))
+    if bad:
+        print('unreadable: ' + ', '.join(bad))
+    return 0
+```
+
+Wait: spec says main takes optional loop folder (default "_loop"). It should accept argv maybe list. Our implementation handles argv=None default. Good.
+
+But note: if loop_dir doesn't exist, collect returns ([], []). Good.
+
+Potential issue: `os.listdir` includes hidden? fine.
+
+Need ensure reason cut to first 80 characters. If reason is None, data.get('reason') returns None, then None[:80] errors. Spec says missing text field becomes "". So we should convert missing to "". Let's adjust: reason = data.get('reason') or ''; then reason[:80]. But if reason is empty string, fine. If reason is None, becomes "". Good. Similarly name and state: data.get('name') or ''. But if name is None, becomes "". Good. updated: data.get('updated') or ''? If updated is 0, becomes '' but unlikely. Could use updated = data.get('updated'); if updated is None: updated = ''. Let's do that.
+
+Also coder_calls: data.get('coder_calls') or 0? If coder_calls is 0, becomes 0, fine. If None, 0. If string "0", int("0") works. If invalid, error. Use:
+
+cc = data.get('coder_calls')
+if cc is None:
+    cc = 0
+else:
+    cc = int(cc)
+
+But if cc is 0, int(0)=0. Good.
+
+Need rows dict keys exactly name, state, reason, coder_calls, updated. Yes.
+
+Sorting: key=lambda r: (r['updated'], r['name']). If updated is string, lexicographic. If updated is int, works. If updated is None? handled to ''. Good.
+
+Bad sorted A to Z.
+
+Now test file.
+
+Need test cases. Let's design.
+
+```python
+import os
+import sys
+import json
+import shutil
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+
+
+def make_status(folder, **fields):
+    path = os.path.join(folder, 'status.json')
+    with open(path, 'w', encoding='utf-8') as fh:
+        json.dump(fields, fh)
+    return path
+
+
+def test_missing_dir():
+    assert loop_status.collect('/nonexistent/path/xyz') == ([], [])
+
+
+def test_normal():
+    tmp = tempfile.mkdtemp()
+    try:
+        f1 = os.path.join(tmp, 'a')
+        f2 = os.path.join(tmp, 'b')
+        make_status(f1, name='A', state='running', reason='ok', updated='2025-01-01', coder_calls=3)
+        make_status(f2, name='B', state='done', reason='done', updated='2024-01-01', coder_calls=0)
+        rows, bad = loop_status.collect(tmp)
+        assert bad == []
+        assert len(rows) == 2
+        assert rows[0]['name'] == 'B'  # newer updated first
+        assert rows[0]['coder_calls'] == 0
+        assert rows[0]['reason'] == 'done'
+        assert rows[1]['name'] == 'A'
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Need import tempfile. Also test equal updated then name order.
+
+Test invalid JSON:
+
+```python
+def test_invalid_json():
+    tmp = tempfile.mkdtemp()
+    try:
+        make_status(os.path.join(tmp, 'bad'), name='X')  # invalid JSON
+        make_status(os.path.join(tmp, 'good'), name='Y', updated='2025-01-01')
+        rows, bad = loop_status.collect(tmp)
+        assert bad == ['bad']
+        assert len(rows) == 1
+        assert rows[0]['name'] == 'Y'
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Test not object:
+
+```python
+def test_not_object():
+    tmp = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmp, 'arr')
+        with open(path, 'w') as fh:
+            fh.write('[1,2,3]')
+        rows, bad = loop_status.collect(tmp)
+        assert bad == ['arr']
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Test reason cut:
+
+```python
+def test_reason_cut():
+    tmp = tempfile.mkdtemp()
+    try:
+        make_status(os.path.join(tmp, 'long'), name='L', reason='x'*100, updated='2025-01-01')
+        rows, bad = loop_status.collect(tmp)
+        assert len(rows) == 1
+        assert rows[0]['reason'] == 'x'*80
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Test missing fields:
+
+```python
+def test_missing_fields():
+    tmp = tempfile.mkdtemp()
+    try:
+        make_status(os.path.join(tmp, 'm'), name='M', state='S', updated='2025-01-01')  # no reason, no coder_calls
+        rows, bad = loop_status.collect(tmp)
+        assert len(rows) == 1
+        assert rows[0]['reason'] == ''
+        assert rows[0]['coder_calls'] == 0
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Test bad sorted:
+
+```python
+def test_bad_sorted():
+    tmp = tempfile.mkdtemp()
+    try:
+        for n in ['z', 'a', 'm']:
+            make_status(os.path.join(tmp, n), name='n')  # invalid JSON
+        rows, bad = loop_status.collect(tmp)
+        assert bad == ['a', 'm', 'z']
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Test main output:
+
+```python
+def test_main_output(capsys):
+    tmp = tempfile.mkdtemp()
+    try:
+        make_status(os.path.join(tmp, 'a'), name='A', state='run', reason='r', updated='2025-01-01', coder_calls=2)
+        make_status(os.path.join(tmp, 'b'), name='B', state='done', reason='d', updated='2024-01-01', coder_calls=0)
+        rc = loop_status.main([tmp])
+        captured = capsys.readouterr()
+        lines = captured.out.strip().splitlines()
+        assert rc == 0
+        assert lines[0].startswith('A | run | 2 | r')
+        assert lines[1].startswith('B | done | 0 | d')
+        assert lines[2] == 'unreadable: '  # no bad
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Wait if no bad, line "unreadable: " with nothing after colon? Spec: one line "unreadable: " followed by bad names joined by ", ". If bad empty, should not print? Spec says "only if bad is not empty, one line...". So no line. Good.
+
+Test main with bad:
+
+```python
+def test_main_bad(capsys):
+    tmp = tempfile.mkdtemp()
+    try:
+        make_status(os.path.join(tmp, 'bad'), name='X')  # invalid JSON
+        rc = loop_status.main([tmp])
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert captured.out.startswith('unreadable: bad')
+    finally:
+        shutil.rmtree(tmp)
+```
+
+Need ensure test imports capsys from pytest. If not using pytest, could use io.StringIO. But spec doesn't specify framework. Could use unittest.TestCase with self.capsys? pytest provides capsys. Usually these tasks expect pytest. We can use pytest. Let's include `import pytest` and use capsys fixture. Or use unittest and capture stdout manually. Simpler to use pytest. But if environment doesn't have pytest? Usually yes. Could also use unittest.TestCase and override getStdout? Not straightforward. Let's use pytest.
+
+Need ensure test file doesn't fail due to missing pytest. Could use unittest.TestCase and manually capture stdout by replacing sys.stdout temporarily. That avoids dependency. But capsys is common. The task likely expects pytest. I'll use pytest.
+
+Need ensure test file path: pieces/test_loop_status.py. It inserts path to scripts/source. Good.
+
+Potential issue: In test, `make_status` writes fields; for invalid JSON, we write `{"name": "X"}` which is valid JSON object. To make invalid JSON, write `{invalid json`. Good.
+
+For not object, write `[1,2,3]`. Good.
+
+Need ensure collect only reads loop_dir/*/status.json. In test, each subfolder has status.json. Good.
+
+Need ensure no deeper folders. Good.
+
+Need ensure `os.listdir` includes subdirectories. Good.
+
+One nuance: If loop_dir exists but contains a file named status.json directly (not in subfolder), our code checks entry.endswith('status.json') and isfile, so it would read it. Spec says reads only files matching loop_dir/*/status.json (exactly one folder level). A top-level status.json would not match pattern, but our code would still read it because entry ends with status.json and isfile. Should we exclude top-level? Spec says only files matching loop_dir/*/status.json. A top-level status.json is not in a subfolder. We should skip if the full path is not under a subfolder? Actually pattern loop_dir/*/status.json means any file whose path has exactly one component between loop_dir and status.json. A top-level status.json has zero components. We can check that the parent of the file is a directory entry and the entry itself is a directory. In our loop, entry is a directory name; full = loop_dir/entry. If entry is a directory, then file is in subfolder. But what if entry is a file named status.json? Then entry is not a directory, but endswith matches. We should require os.path.isdir(full) to ensure it's a subfolder. Let's adjust: if not os.path.isdir(full): continue. That ensures exactly one level. Good. Because if entry is a file, full is not a directory. If entry is a directory, full is directory. This matches pattern. Let's update code.
+
+Also if entry is a directory but not containing status.json, no file. Fine.
+
+Need ensure if loop_dir is a file? os.path.isdir false, return []. Good.
+
+Update code:
+
+```python
+for entry in os.listdir(loop_dir):
+    full = os.path.join(loop_dir, entry)
+    if not os.path.isdir(full):
+        continue
+    if not entry.endswith('status.json'):
+        continue
+    ...
+```
+
+This is better.
+
+Now test for top-level status.json should be ignored. Could add test but not necessary. But good.
+
+Need ensure reason cut: `reason[:80]`. If reason is None, we convert to ''. Good.
+
+Let's refine code:
+
+```python
+def collect(loop_dir):
+    rows = []
+    bad = []
+    if not os.path.isdir(loop_dir):
+        return rows, bad
+    for entry in os.listdir(loop_dir):
+        full = os.path.join(loop_dir, entry)
+        if not os.path.isdir(full):
+            continue
+        if not entry.endswith('status.json'):
+            continue
+        try:
+            with open(full, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            bad.append(entry)
+            continue
+        if not isinstance(data, dict):
+            bad.append(entry)
+            continue
+        name = data.get('name')
+        state = data.get('state')
+        reason = data.get('reason') or ''
+        updated = data.get('updated')
+        if updated is None:
+            updated = ''
+        coder_calls = data.get('coder_calls')
+        if coder_calls is None:
+            coder_calls = 0
+        else:
+            coder_calls = int(coder_calls)
+        rows.append({
+            'name': name if name is not None else '',
+            'state': state if state is not None else '',
+            'reason': reason[:80],
+            'coder_calls': coder_calls,
+            'updated': updated,
+        })
+    rows.sort(key=lambda r: (r['updated'], r['name']))
+    bad.sort()
+    return rows, bad
+```
+
+Wait: `reason = data.get('reason') or ''` will turn None into ''. If reason is empty string, stays ''. Good. But if reason is a non-empty string, fine. If reason is a string with whitespace, kept. Good.
+
+`name = data.get('name')`; if None, '' later. Good.
+
+`updated`: if None, ''. Good.
+
+`coder_calls`: if None, 0; else int. Good.
+
+Now main:
+
+```python
+def main(argv=None):
+    if argv is None:
+        argv = ['_loop']
+    loop_dir = argv[0] if len(argv) > 0 else '_loop'
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print('{} | {} | {} | {}'.format(row['name'], row['state'], row['coder_calls'], row['reason']))
+    if bad:
+        print('unreadable: ' + ', '.join(bad))
+    return 0
+```
+
+Spec: main takes optional loop folder (default "_loop"). Our signature accepts argv list. Good.
+
+Now test file. Need ensure imports. Use `import os, sys, json, tempfile, shutil, pytest`. Insert path. Then tests.
+
+Potential issue: `sys.path.insert(0, ...)` may conflict if scripts/source has other modules. Fine.
+
+Need ensure test functions are collected by pytest. Use `def test_...`. Good.
+
+Let's write final answer with two FILE blocks. No extra text. Ensure exact format.
+
+Need double-check spec: "Reply in exactly this format (an example, one file): FILE: <path> then the complete file in a fenced block, nothing else." We have two files. We should output both. Each block starts with `FILE: <path>` and fenced code. No other text. Good.
+
+Let's ensure test file includes all necessary imports and no syntax errors.
+
+Test file:
+
+```python
+import os
+import sys
+import json
+import tempfile
+import shutil
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+
+
+def make_status(folder, **fields):
+    path = os.path.join(folder, 'status.json')
+    with open(path, 'w', encoding='utf-8') as fh:
+        json.dump(fields, fh)
+    return path
+
+
+def test_missing_dir():
+    assert loop_status.collect('/nonexistent/path/xyz') == ([], [])
+
+
+def test_normal_order(tmp_path):
+    f1 = tmp_path / 'a'
+    f2 = tmp_path / 'b'
+    make_status(str(f1), name='A', state='running', reason='ok', updated='2025-01-01', coder_calls=3)
+    make_status(str(f2), name='B', state='done', reason='done', updated='2024-01-01', coder_calls=0)
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert bad == []
+    assert len(rows) == 2
+    assert rows[0]['name'] == 'B'
+    assert rows[0]['coder_calls'] == 0
+    assert rows[0]['reason'] == 'done'
+    assert rows[1]['name'] == 'A'
+```
+
+Using tmp_path fixture is pytest built-in. Good. But we also need shutil.rmtree? tmp_path auto cleanup. We can remove shutil import. But if using tmp_path, no manual cleanup. However we still need shutil? Not. Let's simplify: use tmp_path fixture and no try/finally. But if test fails, tmp_path still cleaned. Good. Remove shutil. But we might want to keep manual cleanup for older pytest? tmp_path is standard. Use it.
+
+Need ensure `make_status` works with tmp_path. Good.
+
+Test invalid JSON:
+
+```python
+def test_invalid_json(tmp_path):
+    bad_folder = tmp_path / 'bad'
+    good_folder = tmp_path / 'good'
+    bad_folder.mkdir()
+    good_folder.mkdir()
+    with open(bad_folder / 'status.json', 'w') as fh:
+        fh.write('not json')
+    make_status(str(good_folder), name='Y', updated='2025-01-01')
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert bad == ['bad']
+    assert len(rows) == 1
+    assert rows[0]['name'] == 'Y'
+```
+
+Test not object:
+
+```python
+def test_not_object(tmp_path):
+    arr_folder = tmp_path / 'arr'
+    arr_folder.mkdir()
+    with open(arr_folder / 'status.json', 'w') as fh:
+        fh.write('[1, 2, 3]')
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert bad == ['arr']
+```
+
+Test reason cut:
+
+```python
+def test_reason_cut(tmp_path):
+    folder = tmp_path / 'long'
+    folder.mkdir()
+    make_status(str(folder), name='L', reason='x' * 100, updated='2025-01-01')
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert len(rows) == 1
+    assert rows[0]['reason'] == 'x' * 80
+```
+
+Test missing fields:
+
+```python
+def test_missing_fields(tmp_path):
+    folder = tmp_path / 'm'
+    folder.mkdir()
+    make_status(str(folder), name='M', state='S', updated='2025-01-01')
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert len(rows) == 1
+    assert rows[0]['reason'] == ''
+    assert rows[0]['coder_calls'] == 0
+```
+
+Test bad sorted:
+
+```python
+def test_bad_sorted(tmp_path):
+    for name in ['z', 'a', 'm']:
+        folder = tmp_path / name
+        folder.mkdir()
+        with open(folder / 'status.json', 'w') as fh:
+            fh.write('broken')
+    rows, bad = loop_status.collect(str(tmp_path))
+    assert bad == ['a', 'm', 'z']
+```
+
+Test main output:
+
+```python
+def test_main_output(capsys, tmp_path):
+    a = tmp_path / 'a'
+    b = tmp_path / 'b'
+    a.mkdir()
+    b.mkdir()
+    make_status(str(a), name='A', state='run', reason='r', updated='2025-01-01', coder_calls=2)
+    make_status(str(b), name='B', state='done', reason='d', updated='2024-01-01', coder_calls=0)
+    rc = loop_status.main([str(tmp_path)])
+    captured = capsys.readouterr()
+    lines = captured.out.strip().splitlines()
+    assert rc == 0
+    assert lines[0] == 'A | run | 2 | r'
+    assert lines[1] == 'B | done | 0 | d'
+    assert lines[2] == ''  # no bad line printed
+```
+
+Wait if no bad, lines length 2. lines[2] doesn't exist. Better assert len(lines) == 2. Let's adjust.
+
+Test main with bad:
+
+```python
+def test_main_bad(capsys, tmp_path):
+    bad = tmp_path / 'bad'
+    bad.mkdir()
+    with open(bad / 'status.json', 'w') as fh:
+        fh.write('broken')
+    rc = loop_status.main([str(tmp_path)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.startswith('unreadable: bad')
+```
+
+Need ensure `make_status` not used in these. Good.
+
+Potential issue: In test_main_output, `make_status` writes valid JSON. Good.
+
+Need ensure `import pytest` before inserting path? Order doesn't matter. But `import pytest` after sys.path insert is fine. Actually pytest may need to find test file. It's fine.
+
+Could also use `unittest.TestCase` to avoid pytest dependency. But pytest is standard. I'll keep pytest.
+
+Need ensure test file doesn't have unused imports. Remove shutil. Good.
+
+Now final answer. Two FILE blocks. No extra text. Let's produce.

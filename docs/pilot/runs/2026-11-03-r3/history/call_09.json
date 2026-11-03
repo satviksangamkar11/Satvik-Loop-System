@@ -1,0 +1,13 @@
+{
+  "model": "xingchen-agi/xing4.0-29b-a4b:free",
+  "mode": "repair",
+  "status": 429,
+  "failed": true,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "finish_reason": null,
+  "seconds": 2.521,
+  "reply_file": null,
+  "reasoning_file": null
+}

@@ -1,0 +1,605 @@
+The task is to create two files: scripts/source/loop_status.py and pieces/test_loop_status.py. The spec describes a module that collects status.json files from a loop directory, processes them, and prints a summary.
+
+We need to write the module according to the spec, and a test file. The test file should test the module's behavior.
+
+Let's first design the module.
+
+We need a function `collect(loop_dir)` that:
+
+- If loop_dir does not exist, return ([], []).
+- Iterate over subdirectories of loop_dir (exactly one level). For each subdirectory, look for a file `status.json` inside it.
+- If the file exists, try to read it, parse JSON, check it's a dict. If any error (file not readable, invalid JSON, not a dict), skip and add the folder name to `bad`.
+- If valid, extract fields: name, state, reason, coder_calls, updated. Missing text fields become "" (except coder_calls becomes 0). Reason is cut to first 80 chars.
+- Create a dict with keys: name, state, reason, coder_calls, updated.
+- After processing all subdirs, sort rows by updated descending (newest first), then by name ascending for ties.
+- Sort bad list alphabetically.
+- Return (rows, bad).
+
+Then `main(argv)`:
+
+- Parse argv: optional loop folder, default "_loop".
+- Call collect(loop_dir).
+- For each row, print "name | state | coder_calls | reason".
+- If bad not empty, print "unreadable: " followed by bad names joined by ", ".
+- Return 0.
+
+We must use only standard library.
+
+Now, the test file. It should test the module. Since it's a new file, we need to write tests. Probably using unittest or pytest? The spec says "pieces/test_loop_status.py", so likely using unittest (standard library). We'll write tests that cover:
+
+- collect with non-existent dir returns ([], []).
+- collect with valid status files.
+- collect with missing fields.
+- collect with invalid JSON, unreadable file, non-dict JSON.
+- sorting order.
+- reason truncation.
+- main function output.
+
+We need to create temporary directories for testing. Use tempfile and shutil.
+
+Let's write the module first.
+
+I'll write scripts/source/loop_status.py.
+
+Note: The module should be importable. We'll include a `if __name__ == "__main__":` block.
+
+Now, the test file: pieces/test_loop_status.py.
+
+We'll write a test class that uses tempfile.TemporaryDirectory.
+
+We need to test:
+
+1. test_collect_nonexistent_dir
+2. test_collect_empty_dir
+3. test_collect_valid_status
+4. test_collect_missing_fields
+5. test_collect_invalid_json
+6. test_collect_not_dict
+7. test_collect_unreadable_file (maybe permission denied, but can simulate by using a directory as file? Or just skip? We can test by creating a status.json that is not readable, but that might be OS-dependent. Alternatively, we can mock open. But spec says only standard library, so we can use unittest.mock? That's standard. But maybe we can test by using a file that is actually a directory? That would cause an error. Or we can just test that if the file cannot be read (e.g., IsADirectoryError), it's added to bad. We can create a directory named status.json inside a subdirectory. That would cause an error when trying to open as file. So we can test that.
+8. test_sorting_updated_and_name
+9. test_reason_truncation
+10. test_main_output (capture stdout)
+
+We'll write the tests.
+
+Now, let's write the code.
+
+First, the module:
+
+```python
+import json
+import os
+import sys
+
+def collect(loop_dir):
+    if not os.path.isdir(loop_dir):
+        return [], []
+    
+    rows = []
+    bad = []
+    
+    for entry in os.listdir(loop_dir):
+        sub_dir = os.path.join(loop_dir, entry)
+        if not os.path.isdir(sub_dir):
+            continue
+        status_file = os.path.join(sub_dir, "status.json")
+        if not os.path.isfile(status_file):
+            continue
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Not a JSON object")
+        except Exception:
+            bad.append(entry)
+            continue
+        
+        name = data.get("name", "")
+        state = data.get("state", "")
+        reason = data.get("reason", "")
+        coder_calls = data.get("coder_calls", 0)
+        updated = data.get("updated", "")
+        
+        # Ensure text fields are strings
+        if not isinstance(name, str):
+            name = str(name) if name else ""
+        if not isinstance(state, str):
+            state = str(state) if state else ""
+        if not isinstance(reason, str):
+            reason = str(reason) if reason else ""
+        if not isinstance(updated, str):
+            updated = str(updated) if updated else ""
+        if not isinstance(coder_calls, int):
+            try:
+                coder_calls = int(coder_calls)
+            except (ValueError, TypeError):
+                coder_calls = 0
+        
+        # Truncate reason to 80 chars
+        reason = reason[:80]
+        
+        rows.append({
+            "name": name,
+            "state": state,
+            "reason": reason,
+            "coder_calls": coder_calls,
+            "updated": updated
+        })
+    
+    # Sort rows: by updated descending, then name ascending
+    rows.sort(key=lambda r: (-r["updated"], r["name"]))
+    # Actually, we can't use negative for strings. We need to sort by updated descending, but updated is a string. We can sort by updated normally and reverse, but then name sorting would be reversed too. So we need a custom sort: first by updated descending, then by name ascending. We can use a tuple key: (-updated, name) doesn't work for strings. Instead, we can sort by updated in reverse order, but then for equal updated, we need name ascending. We can do two sorts: first sort by name ascending, then sort by updated descending with stable sort. Or use a key that inverts the string? Not possible. We can sort with a custom comparator, but in Python we can use key=lambda r: (r["updated"], r["name"]) and then reverse? That would reverse both. Better: sort by name ascending first, then sort by updated descending with stable sort. Since Python's sort is stable, we can do:
+    # rows.sort(key=lambda r: r["name"])
+    # rows.sort(key=lambda r: r["updated"], reverse=True)
+    # That works because the second sort preserves the order of equal updated items from the first sort (which is name ascending).
+    # Let's do that.
+    rows.sort(key=lambda r: r["name"])
+    rows.sort(key=lambda r: r["updated"], reverse=True)
+    
+    bad.sort()
+    return rows, bad
+
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+```
+
+Wait: The spec says: "rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z." So we need to sort by updated descending, then name ascending. The two-sort approach works: first sort by name ascending, then stable sort by updated descending. That yields the desired order.
+
+Also, note: "a missing text field becomes '' and a missing coder_calls becomes 0." We handle that with .get and defaults. Also, we need to handle cases where the field is present but not the right type? The spec says "a missing text field becomes ''", but what if it's not a string? Probably we should convert to string or treat as missing? The spec doesn't explicitly say, but we can assume that if it's not a string, we might want to convert it to string or treat as missing? The spec says "missing text field becomes ''", so if it's present but not text, maybe it's an error? But the spec doesn't say to skip. To be safe, we can convert to string if it's not None, but if it's None, treat as empty. Actually, the spec: "name, state, reason and updated come from the status file; a missing text field becomes '' and a missing coder_calls becomes 0." So if the field is present but is not text (e.g., number), it's not missing. But then it's not text. The spec doesn't say what to do. Probably we should just use it as is, but then when printing, it might cause issues. However, the spec says "text field", implying it should be text. In practice, we can just ensure it's a string by converting if necessary, but if it's None, treat as empty. Let's do: if the value is None, use ""; otherwise, convert to string. But for coder_calls, if it's present but not a number, we try to convert to int, else 0.
+
+Actually, the spec says "a missing text field becomes ''", so we only need to handle missing fields. If the field is present but is not a string, it's not missing, so we should keep it as is? But then the row dict might have non-string values, which could break the sorting or printing. The spec says "rows is a list of dicts with exactly the keys name, state, reason, coder_calls, updated." It doesn't enforce types. But for printing, we need to format them. In main, we print "name | state | coder_calls | reason". If coder_calls is not an int, it might still print. But to be safe, we can coerce to string for text fields and int for coder_calls. The spec says "a missing coder_calls becomes 0", so if it's present but not a number, maybe it's an error? But we can just try to convert to int, and if it fails, use 0. That seems reasonable.
+
+Let's refine the field extraction:
+
+```python
+name = data.get("name", "")
+if name is None:
+    name = ""
+else:
+    name = str(name)
+
+state = data.get("state", "")
+if state is None:
+    state = ""
+else:
+    state = str(state)
+
+reason = data.get("reason", "")
+if reason is None:
+    reason = ""
+else:
+    reason = str(reason)
+
+updated = data.get("updated", "")
+if updated is None:
+    updated = ""
+else:
+    updated = str(updated)
+
+coder_calls = data.get("coder_calls", 0)
+if coder_calls is None:
+    coder_calls = 0
+else:
+    try:
+        coder_calls = int(coder_calls)
+    except (ValueError, TypeError):
+        coder_calls = 0
+```
+
+But wait: The spec says "a missing text field becomes ''". If the field is present and is an empty string, it's already empty. If it's present and is None, that's effectively missing? In JSON, null is a valid value. We should treat null as missing? Probably yes. So we can check if the value is None, treat as empty string. Otherwise, convert to string.
+
+Now, for the test file.
+
+We'll write a test class `TestLoopStatus` that inherits from `unittest.TestCase`.
+
+We'll use `tempfile.TemporaryDirectory` to create temporary loop directories.
+
+We need to test:
+
+- collect with non-existent dir.
+- collect with empty dir (no subdirs).
+- collect with valid status.json files.
+- collect with missing fields (e.g., no name, no state, etc.)
+- collect with invalid JSON.
+- collect with non-dict JSON (e.g., list).
+- collect with unreadable file (e.g., status.json is a directory).
+- sorting: create files with different updated values and names, check order.
+- reason truncation: create a reason longer than 80 chars, check it's truncated.
+- main function: capture stdout, check output format.
+
+We'll also need to test that bad list is sorted.
+
+Let's write the tests.
+
+We'll import the module. Since the module is in scripts/source/, we need to adjust sys.path or use relative import. In the test file, we can do:
+
+```python
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+```
+
+But the test file is in pieces/, so the relative path from pieces/ to scripts/source/ is ../scripts/source. We can use that.
+
+Alternatively, we can assume the test is run from the project root, and we can just import if the path is set. But to be safe, we'll add the path.
+
+Now, let's write the test file.
+
+We'll create helper methods to create status files.
+
+```python
+import json
+import os
+import sys
+import tempfile
+import unittest
+from io import StringIO
+
+# Adjust path to import the module
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+
+class TestLoopStatus(unittest.TestCase):
+    
+    def test_collect_nonexistent_dir(self):
+        rows, bad = loop_status.collect("/nonexistent/path/for/sure")
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+    
+    def test_collect_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(rows, [])
+            self.assertEqual(bad, [])
+    
+    def test_collect_no_subdirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a file directly in tmpdir, should be ignored
+            with open(os.path.join(tmpdir, "file.txt"), "w") as f:
+                f.write("test")
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(rows, [])
+            self.assertEqual(bad, [])
+    
+    def test_collect_valid_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            status = {"name": "job1", "state": "done", "reason": "ok", "coder_calls": 5, "updated": "2023-01-01"}
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump(status, f)
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["name"], "job1")
+            self.assertEqual(rows[0]["state"], "done")
+            self.assertEqual(rows[0]["reason"], "ok")
+            self.assertEqual(rows[0]["coder_calls"], 5)
+            self.assertEqual(rows[0]["updated"], "2023-01-01")
+            self.assertEqual(bad, [])
+    
+    def test_collect_missing_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            status = {}  # all missing
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump(status, f)
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["name"], "")
+            self.assertEqual(rows[0]["state"], "")
+            self.assertEqual(rows[0]["reason"], "")
+            self.assertEqual(rows[0]["coder_calls"], 0)
+            self.assertEqual(rows[0]["updated"], "")
+    
+    def test_collect_invalid_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                f.write("not json")
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(rows, [])
+            self.assertEqual(bad, ["job1"])
+    
+    def test_collect_not_dict(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump([1,2,3], f)  # list, not dict
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(rows, [])
+            self.assertEqual(bad, ["job1"])
+    
+    def test_collect_unreadable_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            # Create a directory named status.json, which cannot be opened as a file
+            os.makedirs(os.path.join(sub1, "status.json"))
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(rows, [])
+            self.assertEqual(bad, ["job1"])
+    
+    def test_collect_multiple_jobs_sorting(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # job1: updated 2023-01-02, name "job1"
+            # job2: updated 2023-01-01, name "job2"
+            # job3: updated 2023-01-02, name "job3"
+            # Expected order: job1 and job3 (both 2023-01-02) sorted by name: job1, job3; then job2 (2023-01-01)
+            for name, updated in [("job1", "2023-01-02"), ("job2", "2023-01-01"), ("job3", "2023-01-02")]:
+                sub = os.path.join(tmpdir, name)
+                os.makedirs(sub)
+                status = {"name": name, "state": "done", "reason": "ok", "coder_calls": 0, "updated": updated}
+                with open(os.path.join(sub, "status.json"), "w") as f:
+                    json.dump(status, f)
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]["name"], "job1")
+            self.assertEqual(rows[1]["name"], "job3")
+            self.assertEqual(rows[2]["name"], "job2")
+    
+    def test_reason_truncation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            long_reason = "a" * 100
+            status = {"name": "job1", "state": "done", "reason": long_reason, "coder_calls": 0, "updated": "2023-01-01"}
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump(status, f)
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(rows[0]["reason"]), 80)
+            self.assertEqual(rows[0]["reason"], "a" * 80)
+    
+    def test_bad_sorted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create multiple bad jobs with names that would not be sorted naturally
+            for name in ["zebra", "apple", "mango"]:
+                sub = os.path.join(tmpdir, name)
+                os.makedirs(sub)
+                # Create invalid JSON
+                with open(os.path.join(sub, "status.json"), "w") as f:
+                    f.write("invalid")
+            
+            rows, bad = loop_status.collect(tmpdir)
+            self.assertEqual(bad, ["apple", "mango", "zebra"])
+    
+    def test_main_output(self):
+        # Test main function with a temporary loop dir
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "job1")
+            os.makedirs(sub1)
+            status = {"name": "job1", "state": "done", "reason": "ok", "coder_calls": 5, "updated": "2023-01-01"}
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump(status, f)
+            
+            # Capture stdout
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                ret = loop_status.main(["loop_status", tmpdir])
+                output = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            
+            self.assertEqual(ret, 0)
+            self.assertIn("job1 | done | 5 | ok", output)
+    
+    def test_main_output_with_bad(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub1 = os.path.join(tmpdir, "good")
+            os.makedirs(sub1)
+            status = {"name": "good", "state": "done", "reason": "ok", "coder_calls": 1, "updated": "2023-01-01"}
+            with open(os.path.join(sub1, "status.json"), "w") as f:
+                json.dump(status, f)
+            
+            sub2 = os.path.join(tmpdir, "bad_job")
+            os.makedirs(sub2)
+            with open(os.path.join(sub2, "status.json"), "w") as f:
+                f.write("invalid")
+            
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                ret = loop_status.main(["loop_status", tmpdir])
+                output = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            
+            self.assertEqual(ret, 0)
+            self.assertIn("good | done | 1 | ok", output)
+            self.assertIn("unreadable: bad_job", output)
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+Wait: In the test for sorting, I used two sorts in the module: first by name, then by updated descending. That should work. But let's double-check: if we sort by name first, then by updated descending, the final order is: all rows sorted by updated descending, and within same updated, they maintain the name ascending order from the first sort. That's correct.
+
+But in the test, I have job1 and job3 with same updated, and job2 with older. The expected order is job1, job3, job2. That matches.
+
+Now, one more thing: The spec says "rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z." So if updated is a string, we need to sort it as string? The spec doesn't specify the format of updated. It could be a date string or timestamp. Sorting as string works for ISO dates. But if updated is a numeric timestamp, string sorting might not work correctly. However, the spec says "updated come from the status file", so it's whatever is in the file. We should sort by the string representation? The spec says "sorted by updated", so we compare the values as they are. If they are strings, string comparison is fine. If they are numbers, we might need to compare numerically. But the spec doesn't specify the type. In the module, we convert updated to string if it's not None. So it will always be a string. That might be a problem if the original was a number: converting to string and then sorting might give wrong order (e.g., "10" < "2"). But the spec says "a missing text field becomes ''", implying updated is a text field. So it should be a string. We'll assume it's a string.
+
+But to be safe, we could try to preserve the original type? The spec says "updated come from the status file; a missing text field becomes ''". So if it's present, it's text. So we can keep it as string. If it's a number, it's not text, but the spec says it's a text field. So we can assume it's a string. We'll convert to string if it's not None, to ensure it's a string.
+
+Now, for the test file, we need to make sure the import works. The test file is in pieces/, the module is in scripts/source/. We'll use sys.path.insert to add the directory. But when running the test, the working directory might be the project root. We can also use relative import if we make it a package, but it's not required. The spec says "pieces/test_loop_status.py", so we can assume it's run from the project root, and we can import using `from scripts.source.loop_status import ...` if we set up the path correctly. But to be safe, we'll use the sys.path approach.
+
+Alternatively, we can write the test file to be run with `python -m unittest pieces.test_loop_status` from the project root, and then we can use a relative import like `from ..scripts.source.loop_status import ...`? That would require pieces to be a package (with __init__.py). But the spec doesn't mention that. So better to use sys.path.
+
+Let's adjust the test file to add the correct path relative to the test file's location.
+
+```python
+import sys
+import os
+# Get the directory of this test file
+test_dir = os.path.dirname(__file__)
+# The module is in ../scripts/source relative to this test file
+module_dir = os.path.join(test_dir, '..', 'scripts', 'source')
+sys.path.insert(0, module_dir)
+import loop_status
+```
+
+That should work.
+
+Now, we need to output the files in the required format.
+
+The user said: "Reply in exactly this format (an example, one file):
+FILE: pieces/calc.py
+```python
+total = sum(prices)
+```"
+
+So we need to output two FILE blocks.
+
+Let's write the final answer.
+
+But before that, let's review the spec again to ensure we didn't miss anything.
+
+- KNOWN: The module is scripts/source/loop_status.py and uses only the Python standard library. (Yes)
+- KNOWN: collect(loop_dir) reads only files matching loop_dir/*/status.json (exactly one folder level; deeper files are ignored). (We only check immediate subdirectories, and only if they contain status.json. We don't recurse.)
+- KNOWN: collect returns (rows, bad). rows is a list of dicts with exactly the keys name, state, reason, coder_calls, updated. (Yes)
+- KNOWN: name, state, reason and updated come from the status file; a missing text field becomes "" and a missing coder_calls becomes 0. (Yes)
+- KNOWN: reason is cut to its first 80 characters. (Yes)
+- KNOWN: rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z. (Yes)
+- KNOWN: a status.json that cannot be read, is not valid JSON, or is not a JSON object is skipped, and its folder name is added to bad; bad is sorted A to Z. (Yes)
+- KNOWN: if loop_dir does not exist, collect returns ([], []). (Yes)
+- KNOWN: main(argv) takes an optional loop folder (default "_loop"), prints one line per row as "name | state | coder_calls | reason", then, only if bad is not empty, one line "unreadable: " followed by the bad names joined by ", ", and returns 0. (Yes)
+- KNOWN: the module is read-only: it never creates, changes or deletes any file or folder. (Yes)
+
+One more thing: In the main function, we print "name | state | coder_calls | reason". Note the spaces around the pipes. We used f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}". That matches.
+
+Also, the spec says "prints one line per row as "name | state | coder_calls | reason"". So we should print exactly that.
+
+Now, for the test file, we need to cover all these. Our tests seem to cover:
+
+- Nonexistent dir
+- Empty dir
+- No subdirs
+- Valid status
+- Missing fields
+- Invalid JSON
+- Non-dict JSON
+- Unreadable file (directory as file)
+- Sorting (updated descending, name ascending)
+- Reason truncation
+- Bad sorted
+- Main output (with and without bad)
+
+We also need to test that deeper files are ignored. For example, if there's a subdirectory inside a subdirectory with a status.json, it should be ignored. Let's add a test for that.
+
+Add test:
+
+```python
+def test_collect_ignores_deep_files(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sub1 = os.path.join(tmpdir, "job1")
+        os.makedirs(sub1)
+        # Create a deeper directory with status.json
+        deep = os.path.join(sub1, "deep")
+        os.makedirs(deep)
+        status = {"name": "deep", "state": "done", "reason": "ok", "coder_calls": 0, "updated": "2023-01-01"}
+        with open(os.path.join(deep, "status.json"), "w") as f:
+            json.dump(status, f)
+        # Also create a valid status in job1
+        status2 = {"name": "job1", "state": "done", "reason": "ok", "coder_calls": 0, "updated": "2023-01-01"}
+        with open(os.path.join(sub1, "status.json"), "w") as f:
+            json.dump(status2, f)
+        
+        rows, bad = loop_status.collect(tmpdir)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "job1")
+```
+
+Also, we should test that if a subdirectory doesn't have status.json, it's ignored. That's covered by test_collect_no_subdirs? Actually, we didn't test a subdirectory without status.json. We can add that.
+
+```python
+def test_collect_subdir_without_status(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sub1 = os.path.join(tmpdir, "job1")
+        os.makedirs(sub1)
+        # No status.json in job1
+        rows, bad = loop_status.collect(tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+```
+
+Also, test that non-directory entries in loop_dir are ignored. We already have a file directly in tmpdir, which is ignored.
+
+Now, for the main function, we should also test the default loop folder "_loop". But that would require creating a _loop directory in the current working directory, which might not be clean. We can mock or just skip. The spec says default is "_loop", but we can test by passing a custom path. We already test with a custom path. We can also test that if no argument is given, it uses "_loop". We can temporarily change the current working directory to a temp dir and create a _loop folder there. But that's more complex. We can test by calling main with an empty argv? Actually, main takes argv, and we can call main([]) to test default. But then it will look for "_loop" in the current working directory. We can change cwd to a temp dir. Let's add a test for default.
+
+```python
+def test_main_default_loop_dir(self):
+    # Test that main uses "_loop" when no argument is given
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a _loop directory inside tmpdir
+        loop_dir = os.path.join(tmpdir, "_loop")
+        os.makedirs(loop_dir)
+        sub1 = os.path.join(loop_dir, "job1")
+        os.makedirs(sub1)
+        status = {"name": "job1", "state": "done", "reason": "ok", "coder_calls": 5, "updated": "2023-01-01"}
+        with open(os.path.join(sub1, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        # Change cwd to tmpdir
+        old_cwd = os.getcwd()
+        os.chdir(tmpdir)
+        try:
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                ret = loop_status.main(["loop_status"])  # no argument
+                output = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(ret, 0)
+            self.assertIn("job1 | done | 5 | ok", output)
+        finally:
+            os.chdir(old_cwd)
+```
+
+That should work.
+
+Now, we need to ensure the test file is complete.
+
+Let's write the final module and test file.
+
+One more thing: In the module, we used `os.listdir(loop_dir)` which returns all entries. We then check if each is a directory. That's fine.
+
+But what if there are broken symlinks? The spec doesn't mention. We can ignore.
+
+Also, we need to handle the case where `status.json` exists but is not a file (e.g., a directory). We already test that.
+
+Now, let's write the final code.
+
+I'll write the module first, then the test file.
+
+For the module, I'll include a shebang? Not necessary, but can be included. The spec doesn't require it. I'll just write the code.
+
+Now, the test file: we need to import the module. We'll use the sys.path approach.
+
+Let's write the test file with all the tests we discussed.
+
+We'll also add a test for the case where a status.json is a directory, which we already have.
+
+Now, let's produce the final answer.

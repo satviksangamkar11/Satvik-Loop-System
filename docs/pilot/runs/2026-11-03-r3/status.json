@@ -1,0 +1,193 @@
+{
+  "name": "pilot-loop-status",
+  "schema_version": 1,
+  "state": "escalate",
+  "profile": "production",
+  "tests_passed": false,
+  "review_verdict": null,
+  "reason": "Xing repair is unavailable",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "red: 2 failing"
+    },
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "repair",
+      "note": "1 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "red: 3 failing"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "write",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_01.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "write",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_02.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "write",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_03.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "red: 14 failing"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_04.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_05.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_06.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_07.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 429,
+      "message": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok\", \"remedy_hint\": \"Retry shortly, add your own provider key to use your own limits (https://openrouter.ai/workspaces/default/byok), or route to another provider with provider routing: https://openrouter.ai/docs/features/provider-routing.\"}",
+      "note": "failed, HTTP 429",
+      "history": "history/failed_call_08.json"
+    },
+    {
+      "model": "xingchen-agi/xing4.0-29b-a4b:free",
+      "mode": "failed",
+      "call": "repair",
+      "status": 200,
+      "message": "xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok {\"error_type\": \"rate_limit_exceeded\"}",
+      "note": "failed, HTTP 200",
+      "history": "history/failed_call_09.json"
+    }
+  ],
+  "coder_calls": 3,
+  "reviewer_calls": {},
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/test_loop_status_acceptance.py": "a7b76ccd88b2986d1c9346fb8ca9b53aa6df2153589ed2c8ff8f11b78556f957",
+      "tests/controls/loop_status_empty.py": "5a280748e31dc51ae3f1332940db5bb8a530d7143f5bc0307dbd4cf2e91bab1b"
+    },
+    "calibration": "passed",
+    "review_hashes": [],
+    "budget": {
+      "free_requests_used": 12,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": [
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 2,
+        "wait_s": 15.26,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 3,
+        "wait_s": 30.733,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 4,
+        "wait_s": 60.654,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 2,
+        "wait_s": 15.082,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 3,
+        "wait_s": 30.451,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 4,
+        "wait_s": 60.502,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 5,
+        "wait_s": 120.171,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      },
+      {
+        "model": "xingchen-agi/xing4.0-29b-a4b:free",
+        "attempt": 6,
+        "wait_s": 180.295,
+        "error": "Provider returned error {\"is_byok\": false, \"limit_source\": \"upstream_provider_shared_pool\", \"provider_name\": \"Phala\", \"raw\": \"xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/works"
+      }
+    ]
+  },
+  "updated": "2026-11-03T12:43:31Z",
+  "contract_check": "D:\\aai work\\wt-pilot-r3\\_loop\\pilot-loop-status\\CONTRACT_CHECK.md"
+}

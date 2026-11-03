@@ -1,0 +1,17 @@
+{
+  "pieces/test_loop_status.py": {
+    "chain": [
+      "xingchen-agi/xing4.0-29b-a4b:free"
+    ],
+    "last": "xingchen-agi/xing4.0-29b-a4b:free",
+    "origin": "xingchen-agi/xing4.0-29b-a4b:free"
+  },
+  "schema_version": 1,
+  "scripts/source/loop_status.py": {
+    "chain": [
+      "xingchen-agi/xing4.0-29b-a4b:free"
+    ],
+    "last": "xingchen-agi/xing4.0-29b-a4b:free",
+    "origin": "xingchen-agi/xing4.0-29b-a4b:free"
+  }
+}

@@ -1,0 +1,28 @@
+
+
+The problem is that `os.path.isfile(status_file)` returns `False` when `status.json` is a directory, causing the code to skip it entirely instead of trying to open it and catching the error. The fix is to remove the `isfile` check and let the `try/except` handle all read failures.
+
+FILE: scripts/source/loop_status.py
+<<<<<<< SEARCH
+        status_file = os.path.join(sub_dir, "status.json")
+        if not os.path.isfile(status_file):
+            continue
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Not a JSON object")
+        except Exception:
+            bad.append(entry)
+            continue
+=======
+        status_file = os.path.join(sub_dir, "status.json")
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Not a JSON object")
+        except Exception:
+            bad.append(entry)
+            continue
+>>>>>>> REPLACE

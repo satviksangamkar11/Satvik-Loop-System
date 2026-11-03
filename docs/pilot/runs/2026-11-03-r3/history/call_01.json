@@ -1,0 +1,13 @@
+{
+  "model": "dots-studio/dots-3-note-preview:free",
+  "mode": "write",
+  "status": 200,
+  "failed": false,
+  "prompt_tokens": 421,
+  "completion_tokens": 10133,
+  "reasoning_tokens": 7731,
+  "finish_reason": "stop",
+  "seconds": 106.524,
+  "reply_file": "history/reply_01.txt",
+  "reasoning_file": "history/reasoning_01.txt"
+}

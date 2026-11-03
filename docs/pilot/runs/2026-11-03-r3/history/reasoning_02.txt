@@ -1,0 +1,49 @@
+Let me analyze the failing tests:
+
+1. `test_collect_unreadable_file` - creates a directory named `status.json` inside `job1`, then expects `bad == ["job1"]`. The current code uses `os.path.isfile(status_file)` which returns `False` for a directory, so it skips the folder entirely. The fix is to not skip when `status.json` is a directory - instead try to open it and catch the exception.
+
+2. `test_main_output` in acceptance tests - expects 3 lines of output but gets 0. This suggests the acceptance test is looking for specific output format. Let me look more carefully... The acceptance test expects:
+   - `out[0] == "b | provider-unavailable | 1 | " + "r" * 80`
+   - `out[1] == "a | passed | 2 | READY from: x"`
+   - `out[-1] == "unreadable: c"`
+   
+   And `len(out) == 3`. So it expects 2 rows + 1 bad line = 3 lines. But the current code produces 0 lines. This might be related to the same issue - if `status.json` is a directory, it's skipped rather than added to bad.
+
+Wait, let me re-read the acceptance test. It calls `make_data(tmp_path)` which I don't see the definition of. But the test expects 3 lines of output. The issue might be that the acceptance test creates a `status.json` as a directory for job "c", and the current code skips it instead of adding to bad.
+
+Actually, looking at the unit test `test_collect_unreadable_file`, it creates `os.makedirs(os.path.join(sub1, "status.json"))` - a directory named status.json. The current code checks `os.path.isfile(status_file)` which is False for a directory, so it continues (skips). The fix should remove the `os.path.isfile` check and just try to open it, letting the exception handler catch it.
+
+Let me fix the `collect` function:
+
+```python
+def collect(loop_dir):
+    if not os.path.isdir(loop_dir):
+        return [], []
+    
+    rows = []
+    bad = []
+    
+    for entry in os.listdir(loop_dir):
+        sub_dir = os.path.join(loop_dir, entry)
+        if not os.path.isdir(sub_dir):
+            continue
+        status_file = os.path.join(sub_dir, "status.json")
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Not a JSON object")
+        except Exception:
+            bad.append(entry)
+            continue
+        ...
+```
+
+By removing the `os.path.isfile` check, when `status.json` is a directory, `open()` will raise an `IsADirectoryError` which is caught by the `except Exception` block, adding the entry to `bad`.
+
+Let me verify this fixes both tests:
+
+1. `test_collect_unreadable_file`: `status.json` is a directory → `open()` raises `IsADirectoryError` → caught → `bad.append("job1")` ✓
+2. `test_main_output` acceptance test: job "c" likely has `status.json` as a directory → now properly added to `bad` → "unreadable: c" appears in output ✓
+
+This is the only change needed.

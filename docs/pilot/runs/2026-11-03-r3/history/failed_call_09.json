@@ -1,0 +1,6 @@
+{
+  "model": "xingchen-agi/xing4.0-29b-a4b:free",
+  "call": "repair",
+  "status": 200,
+  "message": "xingchen-agi/xing4.0-29b-a4b:free is temporarily rate-limited upstream. Please retry shortly, or add your own provider key to use your own limits: https://openrouter.ai/workspaces/default/byok {\"error_type\": \"rate_limit_exceeded\"}"
+}

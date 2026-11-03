@@ -1,0 +1,30 @@
+.........F..........F.F.                                                 [100%]
+=================================== FAILURES ===================================
+______________ TestLoopStatus.test_collect_subdir_without_status _______________
+pieces/test_loop_status.py:41: in test_collect_subdir_without_status
+    self.assertEqual(bad, [])
+E   AssertionError: Lists differ: ['job1'] != []
+E   
+E   First list contains 1 additional elements.
+E   First extra element 0:
+E   'job1'
+E   
+E   - ['job1']
+E   + []
+__________________________ test_deeper_files_ignored ___________________________
+tests/acceptance/test_loop_status_acceptance.py:75: in test_deeper_files_ignored
+    assert bad == []
+E   AssertionError: assert ['x'] == []
+E     
+E     Left contains one more item: 'x'
+E     Use -v to get more diff
+_______________________________ test_main_output _______________________________
+tests/acceptance/test_loop_status_acceptance.py:87: in test_main_output
+    assert len(out) == 3
+E   assert 0 == 3
+E    +  where 0 = len([])
+=========================== short test summary info ============================
+FAILED pieces/test_loop_status.py::TestLoopStatus::test_collect_subdir_without_status
+FAILED tests/acceptance/test_loop_status_acceptance.py::test_deeper_files_ignored
+FAILED tests/acceptance/test_loop_status_acceptance.py::test_main_output - as...
+3 failed, 21 passed in 0.50s

@@ -1,0 +1,22 @@
+..........F...........F.                                                 [100%]
+=================================== FAILURES ===================================
+_________________ TestLoopStatus.test_collect_unreadable_file __________________
+pieces/test_loop_status.py:117: in test_collect_unreadable_file
+    self.assertEqual(bad, ["job1"])
+E   AssertionError: Lists differ: [] != ['job1']
+E   
+E   Second list contains 1 additional elements.
+E   First extra element 0:
+E   'job1'
+E   
+E   - []
+E   + ['job1']
+_______________________________ test_main_output _______________________________
+tests/acceptance/test_loop_status_acceptance.py:87: in test_main_output
+    assert len(out) == 3
+E   assert 0 == 3
+E    +  where 0 = len([])
+=========================== short test summary info ============================
+FAILED pieces/test_loop_status.py::TestLoopStatus::test_collect_unreadable_file
+FAILED tests/acceptance/test_loop_status_acceptance.py::test_main_output - as...
+2 failed, 22 passed in 0.51s
