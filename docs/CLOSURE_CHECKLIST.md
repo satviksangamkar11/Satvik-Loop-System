@@ -22,7 +22,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
    or the test only if the test is wrong, and re-queue with `try_enqueue(..., rerun=True)`.
 2. [ ] **The P2 API subagent finishes** on worktree branch `p2-api`, which already has 5+ commits. Done when it reports: every contract route
    is implemented, `pieces/test_api_contract.py` passes, and the full suite shows only the root-only failure.
-3. [ ] **Merge `p2-api` onto the working branch,** and merge `origin/main` too, which brings in the loop helpers. Then point the API at
+3. [x] **Done 2026-11-04 (`8dd7228`):** full Docker suite 1275 passed, 4 skipped, only the root-only failure; the API uses the real helpers (`1166ec5`). **Merge `p2-api` onto the working branch,** and merge `origin/main` too, which brings in the loop helpers. Then point the API at
    `scripts/source/api_budget.py`, `api_idempotency.py` and `api_shape.py`, and remove any local stubs. Done when the full Docker suite
    passes: `python -m pytest pieces -p no:cacheprovider -q` gives only the root-only failure.
 4. [ ] **Contract sync.** `docs/API_CONTRACT.md` and `monitor/fixtures/` must include:
@@ -69,6 +69,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I15 | `PUT /system/limits job_review_usd` is stored, but the engine's production gate still requires exactly 0.05, so a different value would not apply (found in the API report) | The API refuses any job_review_usd other than the engine's accepted value with `not-applied-by-engine`, until the engine reads it; the UI shows that reason | A test of the refusal; the UI shows the reason |
 | I16 | Claude Code models report contracts as `verified` from the fixture, not from a measured probe: a false verification, the exact class of the UI audit's critical finding | Report `unverified` (with `text_validated` true) until a real `POST /models/verify` result is recorded for that model and contract | A test: a fresh Claude Code entry shows `unverified` |
 | I17 | The API assumes a single uvicorn worker (a process-wide lock plus the idempotency store) | Document it, and pin `--workers 1` in the run command and in `monitor/requirements.txt` notes | In `API_CONTRACT.md` section 0 and the run command |
+| I18 | Two `test_stage_config` tests (`test_with_default_stages_every_openrouter_request_body_is_byte_for_byte_todays[test/production]`) take exactly 60.01 s each: they wait out the real 60 s pace window instead of using a fake clock | Give the test client a fake clock/sleep, or a fresh ledger per request, so no real minute wait happens | Both run in under 2 s |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
