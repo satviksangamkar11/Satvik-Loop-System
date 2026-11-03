@@ -708,7 +708,7 @@ def test_xing_uses_its_sampling_settings_and_the_others_do_not(tmp_path):
     built.call("writer_b", "system", "user", kind="writer")
     built.call("writer_a", "system", "user", kind="writer")
     xing, dots = fake.posts()[0]["body"], fake.posts()[1]["body"]
-    assert (xing["temperature"], xing["top_p"], xing["repetition_penalty"]) == (0.8, 0.95, 1.05)
+    assert (xing["temperature"], xing["top_p"], xing["repetition_penalty"]) == (0.2, 0.95, 1.05)
     assert dots["temperature"] == 0.1 and "top_p" not in dots and "repetition_penalty" not in dots
 
 

@@ -48,7 +48,7 @@ EFFORT_MODES = ("write", "repair", "review", "review-reask")   # the call modes 
 EFFORT_VALUES = (None, "off", "low", "medium", "high")
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
 KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
-FILE_BLOCK = re.compile(r"^FILE:[ \t]*\S+", re.M)
+FILE_BLOCK = re.compile(r"^(?:#{1,6}[ \t]*)?(?:\*\*FILE:\*\*|FILE:)[ \t]*(\S+)", re.M)   # a file header: FILE: p, ### FILE: p or **FILE:** p (p is group 1)
 VERDICT_LINE = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 SECRET_SHAPES = re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|(?i:authorization)[\"']?\s*[:=]\s*[^\r\n,}\"']+")
 FAILURE_CHARS = 2000                # the first characters of a failed call's message that are kept (after redaction)
@@ -189,6 +189,9 @@ def load_roster_file(path=None):
         cap = profile.get("probe_max_tokens")
         if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
             raise RosterRefused(f"profile {name}: probe_max_tokens must be a positive whole number")
+        repair_cap = profile.get("repair_max_tokens")
+        if not isinstance(repair_cap, int) or isinstance(repair_cap, bool) or repair_cap <= 0:
+            raise RosterRefused(f"profile {name}: repair_max_tokens must be a positive whole number")
         effort = profile.get("effort_by_mode")
         if not isinstance(effort, dict) or set(effort) != set(EFFORT_MODES) or any(v not in EFFORT_VALUES for v in effort.values()):
             raise RosterRefused(f"profile {name}: effort_by_mode must hold exactly {', '.join(EFFORT_MODES)}, each null, off, low, medium or high")
@@ -200,6 +203,11 @@ def load_roster_file(path=None):
 def probe_max_tokens(profile=None):
     """The probe's output cap for a profile (default: the active one), from config/roster.json."""
     return load_roster_file()[profile or active_profile()]["probe_max_tokens"]
+
+
+def repair_max_tokens(profile=None):
+    """The output cap of a writer's repair call for a profile (default: the active one), from config/roster.json. A repair never retries at a bigger size."""
+    return load_roster_file()[profile or active_profile()]["repair_max_tokens"]
 
 
 def effort_for_mode(mode, profile=None):
@@ -336,6 +344,17 @@ def reply_facts(data, secrets=()):
     return facts
 
 
+def reply_texts(data):
+    """The raw texts of a reply for the production run's history: its message content (None when there is none) and its reasoning text (reasoning,
+    else reasoning_content; None when there is none). Only the production run writes them, scrubbed, to the job's history/ folder."""
+    choices = data.get("choices") if isinstance(data, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    content = message.get("content")
+    reasoning = next((message[k] for k in ("reasoning", "reasoning_content") if isinstance(message.get(k), str) and message[k].strip()), None)
+    return {"reply_text": content if isinstance(content, str) else None, "reasoning_text": reasoning}
+
+
 def classify_429(message):
     """Which limit a 429 names. Only a message that names the day is the daily limit; anything unclear is treated as a provider error."""
     text = message.lower()
@@ -354,7 +373,7 @@ def retry_after(headers):
 
 
 def check_reply(kind, requested, data):
-    """The reply text, or the reason it counts as nothing. kind: text | writer (needs a FILE: block) | reviewer (needs a final Verdict line)."""
+    """The reply text, or the reason it counts as nothing. kind: text | writer or repair (needs a FILE: block) | reviewer (needs a final Verdict line)."""
     if data.get("model") != requested:
         raise _Mismatch(f"reply came from {data.get('model')!r}, not {requested!r}")
     choices = data.get("choices")
@@ -372,7 +391,7 @@ def check_reply(kind, requested, data):
         raise ReplyRejected(f"finish_reason {finish!r} is not stop")
     if not text.strip():
         raise ReplyRejected("empty reply")
-    if kind == "writer" and not FILE_BLOCK.search(text):
+    if kind in ("writer", "repair") and not FILE_BLOCK.search(text):
         raise ReplyRejected("writer reply has no FILE: block")
     if kind == "reviewer":
         lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -639,10 +658,10 @@ class OpenRouter:
         return summary
 
     def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, effort=None):
-        """One checked answer from a roster model: (text, info). kind: text, writer or reviewer (see check_reply). The model's settings
-        come from its roster role; the retry values apply to writer calls only. effort: a reasoning effort for a free call (None keeps the
+        """One checked answer from a roster model: (text, info). kind: text, writer, repair or reviewer (see check_reply). The model's settings
+        come from its roster role; the retry values apply to writer calls only. A repair call uses the roster's repair_max_tokens and never retries at a bigger size. effort: a reasoning effort for a free call (None keeps the
         role's setting, 'off' sends none); a cut-off reply with no text is retried with reasoning off at the same size (R1)."""
-        if kind not in ("text", "writer", "reviewer"):
+        if kind not in ("text", "writer", "reviewer", "repair"):
             raise ValueError(f"unknown reply kind {kind!r}")
         model = resolve(name)
         if private and model not in self.approved_private:
@@ -655,7 +674,7 @@ class OpenRouter:
         settings = roster_state()["SETTINGS"][model]
         retry = settings if kind == "writer" else {}           # retry values belong to writer calls only
         started = self.clock()
-        tokens = max_tokens if max_tokens is not None else settings["max_tokens"]
+        tokens = max_tokens if max_tokens is not None else (repair_max_tokens() if kind == "repair" else settings["max_tokens"])
         timeout = timeout_s if timeout_s is not None else settings["timeout_s"]
         attempts, retries, truncations, window = 0, 0, 0, 0     # window: upstream 429 retries a reviewer call has used (REVIEWER_429_WAITS_S)
         while True:
@@ -680,6 +699,8 @@ class OpenRouter:
             http_status = status                                  # the raw HTTP status; parse_response may replace it with a body error code
             status, data, message = parse_response(status, raw)
             self._keep_request(model, http_status, self.clock() - sent, data)
+            if kind in ("writer", "repair"):
+                self.requests[-1].update(reply_texts(data))   # the raw texts, kept before check_reply so a rejected reply is still on record
             spent = self._settle(slot, model, reserved, data)
             if status == 200:
                 if data is None:
@@ -701,7 +722,7 @@ class OpenRouter:
                     continue
                 except _Truncated as exc:
                     self._note(model, 200, str(exc), data)
-                    if truncations == TRUNCATION_RETRIES or slot == "paid":
+                    if truncations == TRUNCATION_RETRIES or slot == "paid" or kind == "repair":
                         raise self._err(ReplyRejected, f"{model}: reply cut off at max_tokens={tokens}")
                     truncations += 1
                     tokens = retry.get("retry_max_tokens") or min(tokens * 2, settings["max_tokens_cap"])
@@ -724,7 +745,7 @@ class OpenRouter:
                 if limit == "minute":
                     self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute", attempts + 1)
                     retries += 1
-                elif kind in ("reviewer", "writer"):    # upstream 429: its own window (R1: writers get it too); these do not count toward the breaker
+                elif kind in ("reviewer", "writer", "repair"):    # upstream 429: its own window (R1: writers get it too); these do not count toward the breaker
                     self._reviewer_window_wait(model, started, window, retry_after(headers), message, attempts + 1)
                     window += 1
                 else:

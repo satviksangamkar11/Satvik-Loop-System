@@ -51,16 +51,30 @@ REVIEW_SYSTEM = ("REVIEW TASK. Review the files against the spec and the checks.
                  "No code. No praise. If the code is right, give no finding line.\n"
                  "End your reply with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`. A FIX FIRST must have a finding line "
                  "that names file:line of a file in this package and the SPEC n or CHECK n it breaks; without both it is not counted.")
-REPAIR_INPUT_CHARS = 3000           # the failing tests fed back to a repair: at most this many characters
+REPAIR_INPUT_CHARS = 6000           # the digest of the failing tests fed back to a repair: at most this many characters
+STREAM_CHARS = 800                  # the captured stdout or stderr of one failing test in the digest: its last characters
 FAILING_HEAD = "FAILING TESTS (from the JUnit file of the last run, failing tests only):\n"
 FINDINGS_HEAD = "REVIEW FINDINGS (file:line | requirement it breaks | what breaks; the only problems to fix):\n"
-CUT_MARK = "\n[cut at 3000 characters]"
+EDIT_OPEN = "<<<<<<< SEARCH"
+EDIT_BLOCK = re.compile(r"^<<<<<<< SEARCH[ \t]*\n(.*?)^=======[ \t]*\n(.*?)^>>>>>>> REPLACE[ \t]*$", re.S | re.M)
+EDIT_SYSTEM = ("You repair the files of one job with SEARCH/REPLACE edits. Reply with edit blocks only. For each file you change, write "
+               "`FILE: <path>` and then one or more blocks in exactly this form:\n"
+               "<<<<<<< SEARCH\n<lines copied exactly from the file>\n=======\n<the replacement lines>\n>>>>>>> REPLACE\n"
+               "Each SEARCH text must occur exactly once in its file. Change nothing else. Never write a reviewer verdict line.")
+EDIT_EXAMPLE = ("FILE: pieces/calc.py\n"
+                "<<<<<<< SEARCH\n"
+                "    return sum(prices[:-1])\n"
+                "=======\n"
+                "    return sum(prices)\n"
+                ">>>>>>> REPLACE")
+WRITER_EXAMPLE = "FILE: pieces/calc.py\n```python\ntotal = sum(prices)\n```"     # 4 lines: the whole-file reply format
 REASK = ("Your FIX FIRST had no valid file:line and SPEC n or CHECK n, so it is not counted. Reply again with that evidence, or with READY.")
 
 
-def failing_summary(junit, limit=REPAIR_INPUT_CHARS):
-    """The repair input: the failing tests of one JUnit run only, each with its assertion line and the short traceback (the failing source line,
-    the E lines and the location). Failures with the same short traceback are merged into one entry. Capped at `limit` characters."""
+def failing_summary(junit, limit=REPAIR_INPUT_CHARS, root=None):
+    """The repair input: the failing tests of one JUnit run only. Each has its assertion line, its captured stdout and stderr (the last
+    STREAM_CHARS characters of each) and, when `root` holds its test file, the source of its test function. Failures with the same digest are
+    merged into one entry. Capped at `limit` characters."""
     if not junit:
         return "(no JUnit record of the last run)"
     try:
@@ -76,15 +90,109 @@ def failing_summary(junit, limit=REPAIR_INPUT_CHARS):
         lines = [line.rstrip() for line in ((bad.text or "") + "\n" + (bad.get("message") or "")).splitlines() if line.strip()]
         source = [line.strip() for line in lines if line.lstrip().startswith((">", "E "))][:3] or [(bad.get("message") or "").strip()]
         where = [line.strip() for line in lines if re.match(r"\s*\S+\.py:\d+", line)][-1:]
-        groups.setdefault(tuple(source + where), []).append(f"{file}::{tid}" if file else tid)
+        key = (tuple(source), tuple(where), _stream(case, "system-out"), _stream(case, "system-err"), _test_source(root, file, tid))
+        groups.setdefault(key, []).append(f"{file}::{tid}" if file else tid)
     entries = []
-    for short, ids in groups.items():
+    for (source, where, out_text, err_text, body), ids in groups.items():
         same = f" (identical failure, {len(ids)} tests)" if len(ids) > 1 else ""
-        entries.append(", ".join(ids) + same + "\n" + "\n".join(short))
+        parts = [", ".join(ids) + same, *source, *where]
+        if out_text:
+            parts += ["stdout:", out_text]
+        if err_text:
+            parts += ["stderr:", err_text]
+        if body:
+            parts += ["test function:", body]
+        entries.append("\n".join(parts))
     text = "\n\n".join(entries) or "(no failing test in the last run)"
     if len(text) > limit:
-        text = text[:limit - len(CUT_MARK)] + CUT_MARK
+        cut = f"\n[cut at {limit} characters]"
+        text = text[:limit - len(cut)] + cut
     return text
+
+
+def _stream(case, tag):
+    """The last STREAM_CHARS characters of a testcase's captured stdout or stderr ('' when it has none)."""
+    node = case.find(tag)
+    return ((node.text or "").strip() if node is not None else "")[-STREAM_CHARS:]
+
+
+def _test_source(root, rel, tid):
+    """The source of the test function a failing test id names, read from `root`; '' when there is no root, no such file or no such function."""
+    path = readable(root, rel) if root is not None and rel else None
+    if path is None:
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return ""
+    name = gates._base(tid.split("::")[-1])
+    lines = text.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            return "\n".join(lines[start - 1:node.end_lineno])
+    return ""
+
+
+def _lines(text):
+    """The lines of a text, without the empty piece after a final newline."""
+    parts = text.split("\n")
+    return parts[:-1] if parts[-1] == "" else parts
+
+
+def _apply_one(content, search, replace):
+    """(new text, None) for one SEARCH/REPLACE block, or (None, reason). An exact single match applies; else one match after each line's
+    whitespace is normalized (runs collapsed, ends trimmed). Zero matches, or more than one, is refused."""
+    if not search.strip():
+        return None, "empty SEARCH text"
+    hits = content.count(search)
+    if hits == 1:
+        return content.replace(search, replace, 1), None
+    if hits > 1:
+        return None, f"SEARCH text occurs {hits} times (ambiguous)"
+    want = [" ".join(line.split()) for line in _lines(search)]
+    have = content.split("\n")
+    norm = [" ".join(line.split()) for line in have]
+    spots = [i for i in range(len(have) - len(want) + 1) if norm[i:i + len(want)] == want]
+    if not spots:
+        return None, "SEARCH text not found"
+    if len(spots) > 1:
+        return None, f"SEARCH text matches {len(spots)} places after whitespace normalization (ambiguous)"
+    i = spots[0]
+    return "\n".join(have[:i] + _lines(replace) + have[i + len(want):]), None
+
+
+def apply_edits(text, contents):
+    """(changed, refusals) for the SEARCH/REPLACE blocks of a repair reply. `contents` maps each job file to its text on disk; `changed` maps each
+    file the blocks change to its new text. Each block sits under a FILE: header. A block that is refused, malformed or unplaced, or names a file
+    that is not in `contents`, refuses the whole reply: changed is {} and refusals names each refused block."""
+    heads = list(oc.FILE_BLOCK.finditer(text))
+    changed, refusals, placed = {}, [], 0
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        blocks = [(m.group(1), m.group(2)) for m in EDIT_BLOCK.finditer(text[head.end():end])]
+        placed += len(blocks)
+        rel = head.group(1)
+        if not blocks:
+            continue
+        if rel not in contents:
+            refusals.append(f"{rel}: not a job file")
+            continue
+        current, bad = changed.get(rel, contents[rel]), False
+        for search, replace in blocks:
+            current, why = _apply_one(current, search, replace)
+            if why is not None:
+                refusals.append(f"{rel}: {why}")
+                bad = True
+                break
+        if not bad:
+            changed[rel] = current
+    if text.count(EDIT_OPEN) != placed:
+        refusals.append("a SEARCH/REPLACE block is malformed or has no FILE: header")
+    if not placed and not refusals:
+        refusals.append("no SEARCH/REPLACE block")
+    return ({} if refusals else changed), refusals
 
 
 class AcceptanceTampered(Exception):
@@ -447,11 +555,13 @@ class Production:
     def _call(self, model, mode, files):
         if model == p1b.ANTHROPIC:
             return self._repair_step()
-        if mode in ("write", "repair"):
-            text = self._ask(model, WRITER_SYSTEM, self._writer_user(mode), kind="writer", mode=mode)
+        if mode == "write":
+            text = self._ask(model, WRITER_SYSTEM, self._writer_user("write"), kind="writer", mode="write")
             reply = self._usable(model, mode, text)
             self._step(model, mode, f"{len(reply)} file(s) returned")
             return reply
+        if mode == "repair":
+            return self._repair_writer(model)
         user = self._review_package(reask=(mode == "review-reask"))
         text = self._ask(model, REVIEW_SYSTEM + "\n\n" + self.review_text, user, kind="reviewer", mode=mode)
         self._check_locked()
@@ -462,6 +572,41 @@ class Production:
         if p1b.verdict_of(text) == "FIX FIRST" and not p1b.evidence_ok(text, self.package):
             self._failure(model, mode, 200, "FIX FIRST without valid evidence (file:line and SPEC n or CHECK n)")
         return text
+
+    def _repair_writer(self, model):
+        """A writer's repair: SEARCH/REPLACE edits first. A reply whose edits are refused is asked again once, with the refusal and the example.
+        A second refusal, or a reply that holds no edits, goes to the whole-file request. Each refused reply is a failed call (reject), so its raw
+        text stays in the job's history."""
+        note = None
+        for form in ("edit", "edit-reask"):
+            text = self._ask(model, EDIT_SYSTEM, self._writer_user("repair", form=form, note=note), kind="repair", mode="repair")
+            if EDIT_OPEN not in text:
+                return self._accepted(model, self._usable(model, "repair", text))
+            reply, note = self._apply_edits(text)
+            if note is None:
+                return self._accepted(model, reply)
+            self.reject(model, "repair", f"edits refused: {note}")
+        text = self._ask(model, WRITER_SYSTEM, self._writer_user("repair"), kind="repair", mode="repair")
+        if EDIT_OPEN in text:
+            self.reject(model, "repair", "whole-file repair reply holds SEARCH/REPLACE blocks")
+            raise p1b.BadReply("whole-file repair reply holds SEARCH/REPLACE blocks")
+        return self._accepted(model, self._usable(model, "repair", text))
+
+    def _accepted(self, model, reply):
+        self._step(model, "repair", f"{len(reply)} file(s) returned")
+        return reply
+
+    def _apply_edits(self, text):
+        """(reply, None) when every SEARCH/REPLACE block applies to the job files as they are on disk and the result passes the checks a whole-file
+        reply passes; else (None, why). Nothing is applied when any block is refused."""
+        contents = {rel: (self.root / rel).read_text(encoding="utf-8") for rel in self.files if (self.root / rel).is_file()}
+        changed, refusals = apply_edits(text, contents)
+        if refusals:
+            return None, "; ".join(refusals)
+        try:
+            return self._checked(changed, []), None
+        except p1b.BadReply as exc:
+            return None, str(exc)
 
     def _ask(self, model, system, user, kind, mode):
         try:
@@ -485,14 +630,30 @@ class Production:
         self._record_attempts(model, mode)
 
     def _write_call(self, request, mode):
-        """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds."""
+        """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds.
+        A writer or repair reply's text and its reasoning text are kept too, scrubbed, in history/reply_NN.txt and history/reasoning_NN.txt, and the
+        record links them as reply_file and reasoning_file (null when there is none)."""
         self.calls_written += 1
         if self.history is not None:
+            n = self.calls_written
             usage = request.get("usage") or {}
             record = {"model": request.get("model"), "mode": mode, "status": request.get("status"), "failed": bool(request.get("failed")),
                       "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
-                      "reasoning_tokens": request.get("reasoning_tokens"), "finish_reason": request.get("finish_reason"), "seconds": request.get("seconds")}
-            (self.history / f"call_{self.calls_written:02d}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+                      "reasoning_tokens": request.get("reasoning_tokens"), "finish_reason": request.get("finish_reason"), "seconds": request.get("seconds"),
+                      "reply_file": None, "reasoning_file": None}
+            reply = request.get("reply_text")
+            if isinstance(reply, str):
+                (self.history / f"reply_{n:02d}.txt").write_text(self._clean(reply), encoding="utf-8")
+                record["reply_file"] = f"history/reply_{n:02d}.txt"
+            reasoning = request.get("reasoning_text")
+            if isinstance(reasoning, str) and reasoning.strip():
+                (self.history / f"reasoning_{n:02d}.txt").write_text(self._clean(reasoning), encoding="utf-8")
+                record["reasoning_file"] = f"history/reasoning_{n:02d}.txt"
+            (self.history / f"call_{n:02d}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    def _clean(self, text):
+        """A history text with every scrub key removed, then anything shaped like a key."""
+        return oc.redact(_scrubbed(text, self.scrub_keys))
 
     def _record_attempts(self, model, mode):
         """Every failed attempt the adapter kept since the last call here, retries included: each one is a failed call."""
@@ -537,7 +698,7 @@ class Production:
                 (self.history / f"repair_step_{number:02d}_raw.json").write_text(_scrubbed(raw, self.scrub_keys), encoding="utf-8")
 
         ask = self.repair_ask or (lambda text, raw_sink=None: opus_repair.ask(text, raw_sink=raw_sink))
-        started, reply = time.monotonic(), None
+        started, reply, text = time.monotonic(), None, None
         try:
             text = ask(prompt, raw_sink=keep_raw)
             reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
@@ -550,12 +711,17 @@ class Production:
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
         finally:
-            self._write_call({"model": p1b.ANTHROPIC, "status": None, "failed": reply is None, "seconds": round(time.monotonic() - started, 3)}, "repair")
+            self._write_call({"model": p1b.ANTHROPIC, "status": None, "failed": reply is None, "seconds": round(time.monotonic() - started, 3),
+                              "reply_text": text}, "repair")
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply
 
     def _parse(self, text):
         ok, refused = self.parse_files(text)
+        return self._checked(ok, refused)
+
+    def _checked(self, ok, refused):
+        """The files of a reply, or BadReply: a refused block for a job file, or a job file that fails the path or content checks."""
         refused_job = sorted({r[0] if isinstance(r, (list, tuple)) else r for r in refused} & set(self.files))
         if refused_job:
             raise p1b.BadReply(f"refused block for job file(s): {refused_job}")
@@ -566,10 +732,11 @@ class Production:
                     raise p1b.BadReply(f"{rel}: {problem}")
         return ok
 
-    def _writer_user(self, mode="write"):
+    def _writer_user(self, mode="write", form="whole", note=None):
         """The writer's request. A fresh write shows every job file. A repair shows only the files it needs: the files the FIX FIRST findings
         name, or, after a red test run, the failing test files and the code (the failing-test digest goes with them). Every job file is shown
-        when no failing test file can be named."""
+        when no failing test file can be named. form: whole (complete files), edit (SEARCH/REPLACE blocks), or edit-reask (edit, after a refusal
+        named by `note`, ending with the example). When reasoning is off for the mode, a whole-file request ends with the 4-line example."""
         shown = self._repair_files() if mode == "repair" else list(self.files)
         parts = [f"SPEC:\n{self.spec}", "EXPECTED FILES:"]
         for rel in shown:
@@ -579,10 +746,16 @@ class Production:
             parts.append(FINDINGS_HEAD + "\n".join(self.fix_findings))
             parts.append("Fix exactly the findings above. Change nothing else.")
         elif self.last_junit is not None:
-            parts.append(FAILING_HEAD + failing_summary(self.last_junit))
+            parts.append(FAILING_HEAD + failing_summary(self.last_junit, root=self.root))
             parts.append("Fix exactly the problems shown above. Change nothing else.")
         if shown != list(self.files):
             parts.append("The job files not shown above are unchanged by this repair.")
+        if form == "edit-reask":
+            parts.append(f"Your edits were refused ({note}). Copy each SEARCH text exactly from the file as shown. Format example:\n{EDIT_EXAMPLE}")
+        elif form == "edit":
+            parts.append("Reply with SEARCH/REPLACE blocks for the files you change, as the system prompt says.")
+        elif oc.effort_for_mode(mode) == "off":
+            parts.append("Reply in exactly this format (an example, one file):\n" + WRITER_EXAMPLE)
         return "\n\n".join(parts)
 
     def _repair_files(self):

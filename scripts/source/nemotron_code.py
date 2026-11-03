@@ -23,7 +23,8 @@ SYSTEM = ("You write small, plain Python 3.14 modules for the GranthStudio pipel
           "Rules of the pipeline: Kimi outputs contain no timings, dialogue or claims; Stage 2 selects existing catalog image ids only; Stage 1 effort is HIGH and Stage 2 LOW; tests use synthetic data and tmp files only. "
           "The spec lists every schema or API it relies on; do not assume anything it does not state. Reply with files only, each as:\nFILE: relative/path.py\n```python\n<complete file>\n```\n"
           "No other prose.")
-BLOCK = re.compile(r"^FILE:\s*(\S+)\s*\n```[a-zA-Z]*\n(.*?)\n```", re.S | re.M)
+HEADER = re.compile(r"^(?:#{1,6}[ \t]*)?(?:\*\*FILE:\*\*|FILE:)[ \t]*(\S+)", re.M)     # the same header as openrouter_call.FILE_BLOCK: FILE: p, ### FILE: p, **FILE:** p
+FENCE_OPEN = re.compile(r"^```[A-Za-z0-9_+.-]*[ \t]*$")
 
 
 def check_path(rel: str) -> str | None:
@@ -40,17 +41,37 @@ def check_path(rel: str) -> str | None:
     return None
 
 
+def file_bodies(reply: str) -> list:
+    """[(path, text)] for each FILE: section of a reply, in order. A section runs to the next header. Its text is the lines after the header, blank
+    lines trimmed at both ends, and one surrounding ``` fence (with or without a language tag) removed; without a fence the section is the file."""
+    text = reply or ""
+    heads = list(HEADER.finditer(text))
+    out = []
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        lines = text[head.end():end].split("\n")[1:]           # the rest of the header line is not file text
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and FENCE_OPEN.match(lines[0].rstrip()):
+            close = next((j for j in range(1, len(lines)) if lines[j].strip() == "```"), len(lines))
+            lines = lines[1:close]
+        out.append((head.group(1), "\n".join(lines).rstrip("\n") + "\n"))
+    return out
+
+
 def parse_files(reply: str) -> tuple[dict, list]:
     """({relative path: text} accepted, [(path, reason)] refused)."""
     ok, refused = {}, []
-    for rel, body in BLOCK.findall(reply or ""):
+    for rel, body in file_bodies(reply):
         why = check_path(rel) or ("Blender/animation code (D-017)" if FORBIDDEN_TEXT.search(body) else None)
         if why:
             refused.append((rel, why))
         elif rel in ok:
             refused.append((rel, "duplicate"))
         else:
-            ok[rel] = body.rstrip("\n") + "\n"
+            ok[rel] = body
     return ok, refused
 
 

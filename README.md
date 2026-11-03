@@ -292,15 +292,21 @@ Every reply is checked before it counts, and no failure falls back to another mo
   backup role, any other ID.
 - **Limits.** Writers: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
   sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
-  Xing sends temperature 0.8, top_p 0.95, repetition_penalty 1.05.
+  Xing sends temperature 0.2, top_p 0.95, repetition_penalty 1.05.
 - **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
   Every attempt is reserved before it is sent, failed attempts included. 15 a minute. `begin_job()` saves each key's full `GET /api/v1/key`
   JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
   and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
   per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
 - **Paid reviewer (GLM).** The paid key only, reviewer role only (`reviewer_a`). Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint and prices are in `docs/p1a_glm_endpoint.json`. A reply from any other provider is unavailable and its spend still counts. The job's paid ceiling is `review_usd` 0.05. Each call reserves its worst case before it is sent (`ceil(chars/3) x 0.15e-6 + max_tokens x 0.50e-6`); a call that would pass the ceiling is refused with nothing sent, and the reservation is settled to the reported cost. A missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
-- **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a `FILE:` block; a reviewer needs a
-  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off reply is retried once at the retry limit (writer and repair: 72000).
+- **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a file header (`FILE: path`, `### FILE: path` or `**FILE:** path`); a reviewer needs a
+  final `## Verdict: READY` or `## Verdict: FIX FIRST` line. A cut-off write is retried once at the retry limit (72000). A repair call uses the
+  profile's `repair_max_tokens` (10000) and never retries at a bigger size.
+- **Repair edits.** A writer repair asks for SEARCH/REPLACE blocks under `FILE: path`. A block applies on one exact match of its SEARCH text, or on one
+  match after whitespace normalization; zero or several matches refuse the reply. A refused reply is asked again once, with the refusal and a
+  6-line example; a second refusal falls back to the whole-file request. Fresh writes stay whole-file (`p1b_production.apply_edits`).
+- **Raw replies.** Each writer and repair reply is kept scrubbed in `history/reply_NN.txt`, its reasoning in `history/reasoning_NN.txt`, both linked
+  from `history/call_NN.json` as `reply_file` and `reasoning_file`.
 - **Retries and breaker.** Three retries after the first attempt (2 s, 8 s, 30 s, plus jitter; `Retry-After` is honoured up to 120 s).
   Two provider errors in a row drop the model for the job. 401 and 402 block the account and are never retried. 403 is a refusal of that
   model only: the model is dropped for the job, and the other roles keep working (`ModelDenied`).
@@ -356,7 +362,7 @@ Every change below has a failing-first test (`pieces/test_p6_token_settings.py` 
 - **Review order.** North reviews first. GLM is called only after North says READY. A valid North FIX FIRST ends the job review-open and GLM is never called. If North fails, the backup free writer takes its place, then GLM (`p1b_routing.panel_for`).
 - **GLM request.** `reasoning: {effort: "high", exclude: true}`, `temperature: 0.2`, `max_tokens: 16000`, no `reasoning.max_tokens`. A cut-off GLM reply is not retried with more tokens. Free requests keep their settings (`reasoning.max_tokens: 8000`, temperature 0.1; Xing keeps its sampling).
 - **Reviewer prompt.** At most 5 findings, each one line `- file:line [SPEC n|CHECK n]: <under 25 words>`, no code, no praise, one example, the verdict line last (`p1b_production.REVIEW_SYSTEM`).
-- **Repair input.** Only the failing tests of the last JUnit run: id, assertion line and a short traceback. Identical failures are merged. Capped at 3,000 characters (`p1b_production.failing_summary`). The raw pytest output is no longer sent to a writer.
+- **Repair input.** Only the failing tests of the last JUnit run: id, assertion line, captured stdout and stderr, and the source of the test function. Identical failures are merged. Capped at 6,000 characters (`p1b_production.failing_summary`). The raw pytest output is no longer sent to a writer.
 - **Opus call.** `--system-prompt` (a repair-only prompt), `--no-session-persistence`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000`, timeout 900 s. A repair runs only when at least 900 s (15 minutes) of the unit deadline are left (`p1b_routing.REPAIR_TIMEOUT_S`).
 - **Switch.** `OPUS_ENABLED` stays `False`; the owner decides the production switch. The "Reply OK" check ran on Haiku 5.5 at high effort (`--model haiku --effort high`), not on Opus, once with and once without `--system-prompt` (`input_tokens` 2 in both). `pieces/conftest.py` keeps the switch off during tests, so no test starts the real CLI.
 - **Planner budget.** The `plan_job.py` prompt asks for `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`.
