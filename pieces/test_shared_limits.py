@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -206,6 +207,35 @@ def test_a_model_with_no_slot_is_refused(shared_home):
     with pytest.raises(ValueError):
         with sl.model_slot("mystery/model:free", 1, 0.1):
             pass
+
+
+# ---------------------------------------------------------------- the day's free cap: the live allowance, else the fallback
+def test_the_free_cap_is_the_fallback_until_a_live_allowance_is_recorded(shared_home):
+    assert sl.usage()["free_cap"] == sl.FREE_DAILY_CAP == 1000
+    assert sl.usage()["free_cap_source"] == "fallback"
+
+
+def test_a_live_allowance_sets_the_cap_and_anything_unusable_falls_back(shared_home):
+    assert sl.record_free_cap(7) == {"cap": 7, "source": "live"}
+    assert sl.usage()["free_cap"] == 7 and sl.usage()["free_cap_source"] == "live"
+    for unusable in (None, 0, -3, "7", True, 2.5):
+        assert sl.record_free_cap(unusable) == {"cap": sl.FREE_DAILY_CAP, "source": "fallback"}, unusable
+
+
+def test_reserve_free_refuses_at_the_live_cap_and_names_its_source(shared_home):
+    sl.record_free_cap(2)
+    sl.reserve_free("job-a", 1)
+    sl.reserve_free("job-a", 1)
+    with pytest.raises(sl.DailyCapReached, match=r"cap 2 \(live\)"):
+        sl.reserve_free("job-a", 1)
+    assert sl.usage()["free_today"] == 2
+
+
+def test_a_live_cap_stands_across_days_while_the_count_resets(shared_home):
+    sl.record_free_cap(5)
+    sl.reserve_free("job-a", 1)
+    st = sl._state(shared_home, time.time() + 2 * 86400)
+    assert st["free_used"] == 0 and sl.free_cap_of(st) == (5, "live")
 
 
 # ---------------------------------------------------------------- pace: real 60 seconds

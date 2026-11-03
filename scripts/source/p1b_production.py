@@ -675,8 +675,9 @@ class Production:
 
     def _failure(self, model, mode, status, message, facts=None):
         """One failed call, kept whole: its model, its raw HTTP status (None when there is none) and the first 2,000 characters of its message with
-        keys redacted. facts (openrouter_call.reply_facts) joins the history file: finish_reason, usage and, for a reply with no message text,
-        its message keys and reasoning lengths. It is a file in the job's history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
+        keys redacted. facts joins the history file: openrouter_call.reply_facts for a model call (finish_reason, usage and, for a reply with no
+        message text, its message keys and reasoning lengths), or the process exit_code of the repair step's CLI call. It is a file in the job's
+        history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
         self.failed_calls += 1
         text = oc.redact(_scrubbed(str(message), self.scrub_keys))[:oc.FAILURE_CHARS]
         step = {"model": model, "mode": "failed", "call": mode, "status": status, "message": text,
@@ -706,11 +707,11 @@ class Production:
             text = ask(prompt, raw_sink=keep_raw)
             reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         except opus_repair.RepairFailed as exc:
-            self._failure(p1b.ANTHROPIC, "repair", None, exc)
+            self._failure(p1b.ANTHROPIC, "repair", None, exc, facts={"exit_code": exc.exit_code})
             self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
             raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
         except opus_repair.RepairBadReply as exc:
-            self._failure(p1b.ANTHROPIC, "repair", None, exc)
+            self._failure(p1b.ANTHROPIC, "repair", None, exc, facts={"exit_code": exc.exit_code})
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
         finally:

@@ -31,11 +31,20 @@ def switched_on():
     return OPUS_ENABLED
 
 
-class RepairFailed(Exception):
+class _CallError(Exception):
+    """A call that did not give a usable answer. exit_code is the claude process's exit code when the process ran to an end (0 for a clean
+    exit with an error flag or a bad reply), and None when no process did: switched off, a refused command, a timeout."""
+
+    def __init__(self, message, exit_code=None):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+class RepairFailed(_CallError):
     """The call produced no answer: switched off, a non-zero exit, an error flag, a usage limit or a timeout. Never retried."""
 
 
-class RepairBadReply(Exception):
+class RepairBadReply(_CallError):
     """The call answered, but the answer cannot be used: not JSON, no result text, or no FILE blocks."""
 
 
@@ -77,7 +86,8 @@ def run_claude(prompt, cwd, claude_cmd, timeout_s, env, system_prompt=REPAIR_SYS
 def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None):
     """The reply text of one isolated call, checked: it must be the JSON envelope of a successful call whose result text carries FILE blocks.
     `raw_sink` receives the raw output before it is parsed (the production run saves it to the job's history). `runner` replaces run_claude
-    in tests. Raises RepairFailed or RepairBadReply; nothing else is tried."""
+    in tests. Raises RepairFailed or RepairBadReply, each with exit_code set to the process's exit code (None when no process ended); nothing
+    else is tried."""
     if not (OPUS_ENABLED if enabled is None else enabled):
         raise RepairFailed("Opus repair is switched off: no call was made")
     claude_cmd = list(CLAUDE_CMD) if CLAUDE_CMD else [shutil.which("claude") or "claude"]
@@ -89,20 +99,20 @@ def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None
     if raw_sink is not None:
         raw_sink(out)
     if code != 0:
-        raise RepairFailed(f"exit code {code}: {err[-300:]}")
+        raise RepairFailed(f"exit code {code}: {err[-300:]}", exit_code=code)
     try:
         envelope = json.loads(out)
     except ValueError as exc:
-        raise RepairBadReply("the output is not JSON") from exc
+        raise RepairBadReply("the output is not JSON", exit_code=code) from exc
     if not isinstance(envelope, dict):
-        raise RepairBadReply("the output is not a JSON object")
+        raise RepairBadReply("the output is not a JSON object", exit_code=code)
     text = envelope.get("result")
     if envelope.get("is_error"):
-        raise RepairFailed(f"the call reported an error: {str(text)[:300]}")
+        raise RepairFailed(f"the call reported an error: {str(text)[:300]}", exit_code=code)
     if not isinstance(text, str):
-        raise RepairBadReply("the output has no result text")
+        raise RepairBadReply("the output has no result text", exit_code=code)
     if USAGE_LIMIT.search(text) and not oc.FILE_BLOCK.search(text):
-        raise RepairFailed("usage limit reached")
+        raise RepairFailed("usage limit reached", exit_code=code)
     if not oc.FILE_BLOCK.search(text):
-        raise RepairBadReply("the reply has no FILE blocks")
+        raise RepairBadReply("the reply has no FILE blocks", exit_code=code)
     return text

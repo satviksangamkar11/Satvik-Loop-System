@@ -1506,11 +1506,10 @@ def restore_files(wt: Path, files: list[str]) -> None:
 
 
 def ledger_budget() -> dict:
-    """The launcher's start figures from package E's account ledger (shared_limits.usage): free requests left today (the daily cap less
-    the ones used) and review spend."""
-    sl = _sibling_module("shared_limits")
-    usage = sl.usage()
-    return {"free_requests": sl.FREE_DAILY_CAP - usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
+    """The launcher's start figures from package E's account ledger (shared_limits.usage): free requests left today (the day's free cap, live
+    or fallback, less the ones used) and review spend."""
+    usage = _sibling_module("shared_limits").usage()
+    return {"free_requests": usage["free_cap"] - usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
 
 
 def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, **run_kwargs) -> dict:

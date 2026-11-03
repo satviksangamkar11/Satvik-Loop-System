@@ -817,6 +817,81 @@ def test_begin_job_saves_the_paid_key_state_without_touching_the_free_ledger(tmp
     assert not (tmp_path / "ledger" / "openrouter_free_ledger.json").exists()
 
 
+# ---- 13b. the day's free cap: the live allowance from GET /api/v1/key, the fallback when it is not read
+
+def key_with_allowance(limit):
+    return (200, {}, json.dumps({"data": {"is_free_tier": True, "limit": None,
+                                          "free_model_daily_requests": {"used": 0, "limit": limit, "remaining": limit}}}).encode())
+
+
+def test_the_live_daily_allowance_is_the_days_free_cap(tmp_path):
+    fake = Fake()
+    fake.on("/key", key_with_allowance(3))
+    fake.on("/chat/completions", ok("a"), ok("b"), ok("c"))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = built.begin_job()
+    assert summary["free"]["cap"] == 3 and summary["free"]["cap_source"] == "live"
+    for _ in range(3):
+        built.call("writer_a", "system", "user")
+    with pytest.raises(oc.QuotaExhausted, match=r"cap 3 \(live\)"):
+        built.call("writer_a", "system", "user")
+    assert len(fake.posts()) == 3
+    assert oc._shared_limits().usage()["free_cap"] == 3
+
+
+def test_the_key_limit_at_the_top_level_is_not_the_daily_allowance(tmp_path):
+    fake = Fake()
+    fake.on("/key", (200, {}, json.dumps({"data": {"is_free_tier": False, "limit": 2}}).encode()))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = built.begin_job()
+    assert summary["free"]["cap"] == 1000 and summary["free"]["cap_source"] == "fallback"
+    assert oc._shared_limits().usage()["free_cap_source"] == "fallback"
+
+
+def test_a_failed_free_key_read_records_the_fallback_and_the_job_goes_on(tmp_path):
+    fake = Fake()
+    fake.on("/key", fail(503, "busy"))
+    fake.on("/chat/completions", ok("a"))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = built.begin_job()
+    assert summary["free"]["saved"] is False and summary["free"]["quota"] == "unavailable"
+    assert summary["free"]["cap"] == 1000 and summary["free"]["cap_source"] == "fallback"
+    assert not list((tmp_path / "ledger" / "key_snapshots").glob("key_snapshot_free_*.json"))
+    built.call("writer_a", "system", "user")
+    assert len(fake.posts()) == 1
+
+
+def test_a_later_read_replaces_the_cap_and_a_failed_read_goes_back_to_the_fallback(tmp_path):
+    fake = Fake()
+    fake.on("/key", key_with_allowance(3), fail(503, "busy"))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    built.begin_job()
+    assert oc._shared_limits().usage()["free_cap"] == 3
+    built.begin_job()
+    assert oc._shared_limits().usage()["free_cap"] == 1000
+    assert oc._shared_limits().usage()["free_cap_source"] == "fallback"
+
+
+def test_the_reviewer_retry_check_counts_against_the_live_cap(tmp_path):
+    fake = Fake()
+    fake.on("/key", key_with_allowance(1))
+    fake.on("/chat/completions", upstream_429(), ok(REVIEW_OK))
+    built, clock = client(tmp_path, fake, keys={"free": FREE_KEY})
+    built.begin_job()
+    with pytest.raises(oc.QuotaExhausted):
+        built.call("reviewer_b", "system", "user", kind="reviewer")
+    assert len(fake.posts()) == 1 and clock.slept == []
+
+
+def test_the_probe_evidence_holds_the_daily_allowance(tmp_path):
+    fake = Fake()
+    fake.on("/key", key_with_allowance(3), key_with_allowance(3))
+    fake.on("/chat/completions", ok("OK"), ok("OK"), ok("OK"))
+    built, _ = client(tmp_path, fake, keys={"free": FREE_KEY})
+    summary = oc.probe(built)
+    assert summary["key_before"]["free"]["free_model_daily_requests"]["limit"] == 3
+
+
 # ---- 14. P1a.7: 403 is a model refusal, not an account block
 
 def test_403_is_a_model_refusal_not_an_account_block_and_the_other_roles_still_work(tmp_path):

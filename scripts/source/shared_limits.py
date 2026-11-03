@@ -1,7 +1,8 @@
 """Shared account limits (package E): one ledger for every loop on this machine, in SATVIK_HOME/ledger/limits.json, under the loop home lock.
 
 It holds three things:
-- free requests sent today; the day turns over at 05:30 IST (00:00 UTC, OpenRouter's reset);
+- free requests sent today, against the day's free cap: the account's live daily allowance as the last begin_job read it (record_free_cap),
+  else FREE_DAILY_CAP; the day turns over at 05:30 IST (00:00 UTC, OpenRouter's reset);
 - every request sent in the last 60 seconds, free and paid, the account-wide pace;
 - the review spend for today in micro-USD, with reservations held until settle_review.
 
@@ -19,7 +20,7 @@ from pathlib import Path
 import loop_home as lh
 
 IST = timezone(timedelta(hours=5, minutes=30))
-FREE_DAILY_CAP = 1000            # per account once $10 is bought (openrouter_call.FREE_DAILY_CAP)
+FREE_DAILY_CAP = 1000            # the fallback free cap per day, used while no live allowance is recorded (free_cap_of reads it at each call)
 PER_MINUTE = 15                  # the whole account, free and paid; OpenRouter allows 20
 WINDOW_S = 60.0
 REVIEW_CAP_MICRO = 500_000       # $0.50 of review spend per day
@@ -58,14 +59,21 @@ def _path(root) -> Path:
     return Path(root) / "ledger" / "limits.json"
 
 
+def _whole_or_none(value):
+    """A positive whole number, else None (a bool is not one)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def _state(root, now) -> dict:
-    """The ledger as it stands at `now`: a new day clears the day counts, and the 60 s window keeps only the recent sends."""
+    """The ledger as it stands at `now`: a new day clears the day counts, and the 60 s window keeps only the recent sends. The free cap is the
+    last live read (record_free_cap), kept across days until the next read; None means no live read applies (the fallback)."""
     raw = lh._load(_path(root), {})
     day = day_key(now)
     fresh = raw.get("day") != day
     return {
         "day": day,
         "free_used": 0 if fresh else int(raw.get("free_used", 0)),
+        "free_cap": _whole_or_none(raw.get("free_cap")),
         "review_reserved": 0 if fresh else int(raw.get("review_reserved", 0)),
         "review_spent": 0 if fresh else int(raw.get("review_spent", 0)),
         "minute": [float(t) for t in raw.get("minute", []) if now - float(t) < WINDOW_S],
@@ -77,16 +85,38 @@ def _save_state(root, state):
     lh._save(_path(root), state)
 
 
+def free_cap_of(st) -> tuple:
+    """The day's free cap and its source: the live allowance recorded on the ledger ("live"), else FREE_DAILY_CAP ("fallback"). The fallback
+    is read here, at each call, so a changed FREE_DAILY_CAP takes effect at once."""
+    if st["free_cap"] is None:
+        return FREE_DAILY_CAP, "fallback"
+    return st["free_cap"], "live"
+
+
+def record_free_cap(live, home_dir=None) -> dict:
+    """Records the day's free cap on the ledger. `live` is the account's daily allowance from GET /api/v1/key (a positive whole number), or None
+    when that read failed or the field is missing: the fallback FREE_DAILY_CAP then applies. Returns {"cap", "source"} for what now applies.
+    Not fenced: the cap is the account's allowance, not a job's count (as model_slot is not fenced)."""
+    root = lh.home() if home_dir is None else Path(home_dir)
+    with lh._locked(root):
+        st = _state(root, time.time())
+        st["free_cap"] = _whole_or_none(live)
+        _save_state(root, st)
+        cap, source = free_cap_of(st)
+    return {"cap": cap, "source": source}
+
+
 def reserve_free(job_id, gen, note=None, home_dir=None):
-    """One free request for `job_id`: refused when today's count is at FREE_DAILY_CAP or PER_MINUTE requests were sent in the last 60 s.
-    A request that is then sent and fails still counts. `note` (optional) is kept in the ledger's "notes" list with the job id."""
+    """One free request for `job_id`: refused when today's count is at the day's free cap (free_cap_of) or PER_MINUTE requests were sent in the
+    last 60 s. A request that is then sent and fails still counts. `note` (optional) is kept in the ledger's "notes" list with the job id."""
     root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         lh._fence(root, job_id, gen)
         now = time.time()
         st = _state(root, now)
-        if st["free_used"] >= FREE_DAILY_CAP:
-            raise DailyCapReached(f"{st['free_used']} free requests today, cap {FREE_DAILY_CAP}; the count resets at 05:30 IST")
+        cap, source = free_cap_of(st)
+        if st["free_used"] >= cap:
+            raise DailyCapReached(f"{st['free_used']} free requests today, cap {cap} ({source}); the count resets at 05:30 IST")
         if len(st["minute"]) >= PER_MINUTE:
             raise MinuteFull(f"{PER_MINUTE} requests were sent in the last {WINDOW_S:.0f} s")
         st["free_used"] += 1
@@ -160,9 +190,12 @@ def model_slot(model, gen, timeout_s, home_dir=None):
 
 
 def usage(home_dir=None) -> dict:
-    """What the ledger holds now (read-only): free requests today, sends in the last 60 s, review spend and holds in USD."""
+    """What the ledger holds now (read-only): free requests today and the day's free cap with its source, sends in the last 60 s, review spend
+    and holds in USD."""
     root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         st = _state(root, time.time())
-    return {"day": st["day"], "free_today": st["free_used"], "sent_last_60s": len(st["minute"]),
-            "review_spent_usd": st["review_spent"] / 1e6, "review_reserved_usd": st["review_reserved"] / 1e6}
+    cap, source = free_cap_of(st)
+    return {"day": st["day"], "free_today": st["free_used"], "free_cap": cap, "free_cap_source": source,
+            "sent_last_60s": len(st["minute"]), "review_spent_usd": st["review_spent"] / 1e6,
+            "review_reserved_usd": st["review_reserved"] / 1e6}
