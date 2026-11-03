@@ -10,6 +10,7 @@ Injected `models` interface:
   write(reply) -> puts a validated reply's files on disk (walk calls it after take() accepts the reply, before tests).
   tests(files) -> Result (green, failing test ids, failing files, systemic).
   restore() -> puts the job's original files back before a fresh write.
+  restore_green() -> puts the job files of the last green run back (a FIX FIRST repair that turned the tests red is undone).
   stage_fix(findings) -> the stripped FIX FIRST findings ("file:line | requirement | one sentence") the next repair call carries to the writer.
   reject(model, mode, reason) -> a writer reply the job cannot use (a file outside the job, or a fresh write missing job files) is recorded
       as a failed call before BadReply is raised (Production records it with HTTP status 200 and the reason as its message).
@@ -247,6 +248,13 @@ def panel_for(origin, unavailable=(), specs=None):
     return panel
 
 
+def _paid_reviewers():
+    """The models of the reviewer roles marked paid, however they are called (OpenRouter or Claude Code): panel_for never replaces such a slot,
+    so a failure there has no substitute either."""
+    specs = oc.ROLE_SPECS
+    return {specs[role]["model"] for role in oc.REVIEWER_ROLES if specs[role]["paid"] and specs[role]["model"] not in oc.SENTINELS}
+
+
 def _origin(lineage, files):
     rows = []
     for path in files:
@@ -349,7 +357,7 @@ def _review(files, models, lineage, down):
             if kind == "UNSUPPORTED":
                 return Outcome("review-fix", f"{slot}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
             errors[slot] = error
-            if slot in oc.PAID:                         # the paid reviewer must answer READY: there is no substitute for it
+            if slot in _paid_reviewers():               # the paid reviewer must answer READY: there is no substitute for it
                 return Outcome("provider-unavailable", f"paid review did not return READY ({_why(errors, slot)})")
             try:
                 backup = backup_writer(origin, used)
@@ -509,27 +517,31 @@ def _ladder(job, models, lineage, clock):
         outcome = _review(files, models, lineage, down)
         while outcome.status == "review-fix" and outcome.findings:
             if rounds == FIX_ROUNDS:
-                return Outcome("review-fix", f"{FIX_ROUNDS} FIX FIRST repair rounds used up; {outcome.reason}")
+                return Outcome("review-fix", f"{FIX_ROUNDS} FIX FIRST repair rounds used up; {outcome.reason}", (), outcome.findings)
             if repairs == REPAIR_CALLS:
-                return Outcome("review-fix", f"repair calls used up ({REPAIR_CALLS}); {outcome.reason}")
+                return Outcome("review-fix", f"repair calls used up ({REPAIR_CALLS}); {outcome.reason}", (), outcome.findings)
             if remaining() < REPAIR_TIMEOUT_S:
-                return Outcome("review-fix", f"the deadline does not fit a repair call ({remaining():.0f} s left); {outcome.reason}")
+                return Outcome("review-fix", f"the deadline does not fit a repair call ({remaining():.0f} s left); {outcome.reason}", (), outcome.findings)
             mine = [note for note in outcome.findings if lineage.get(_path_of(note)) is not None]     # findings on job files only
             if not mine:
-                return Outcome("review-fix", f"no finding names a job file; {outcome.reason}")
+                return Outcome("review-fix", f"no finding names a job file; {outcome.reason}", (), outcome.findings)
             rounds += 1
             repairs += 1
             writer = lineage.get(_path_of(mine[0]))["last"]          # the current writer: the one that last wrote the finding's file
             models.stage_fix(mine)
+            green_rows = {path: dict(lineage.get(path)) for path in files if lineage.get(path) is not None}
             try:
                 result = attempt(writer, "repair", keep_origin=True)
             except ModelFailed as exc:
-                return Outcome("review-fix", f"repair by {writer} unavailable ({exc}); {outcome.reason}")
+                return Outcome("review-fix", f"repair by {writer} unavailable ({exc}); {outcome.reason}", (), outcome.findings)
             except BadReply as exc:
-                return Outcome("review-fix", f"repair by {writer} gave a bad reply ({exc}); {outcome.reason}")
-            if not result.green:
-                return Outcome("escalate", f"FIX FIRST repair round {rounds} left the tests red: " + ", ".join(sorted(result.failing)),
-                               tuple(sorted(result.failing)))
+                return Outcome("review-fix", f"repair by {writer} gave a bad reply ({exc}); {outcome.reason}", (), outcome.findings)
+            if not result.green:                 # the code that passed every test is never thrown away: put it back, the findings stay open
+                models.restore_green()
+                for path, row in green_rows.items():
+                    lineage.set(path, row["last"], row["origin"], row["chain"])
+                return Outcome("review-fix", f"FIX FIRST repair round {rounds} by {writer} left the tests red ("
+                               + ", ".join(sorted(result.failing)) + f"); the last green code is kept; {outcome.reason}", (), outcome.findings)
             outcome = _review(files, models, lineage, down)          # tests are green: the panel is recomputed from lineage and reviews again
         return outcome
     except BudgetStop as exc:

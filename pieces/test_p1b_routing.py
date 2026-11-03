@@ -65,6 +65,9 @@ class FakeModels:
     def restore(self):
         self.log.append(("restore", None))
 
+    def restore_green(self):
+        self.log.append(("restore-green", None))
+
     def write(self, reply):
         self.written = getattr(self, "written", []) + [dict(reply)]
 
@@ -427,11 +430,34 @@ def test_a_third_fix_first_after_two_repair_rounds_ends_review_open_without_anot
     assert models.calls(GLM) == []
 
 
-def test_a_repair_that_leaves_the_tests_red_escalates_and_is_not_reviewed_again():
-    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE], (DOTS, "repair"): [full("x = 2\n")]},
-                          [green(), red()])
-    assert outcome.status == "escalate" and "FIX FIRST repair round 1" in outcome.reason
-    assert models.calls(NORTH, "review") == [("review", NORTH)]
+def test_a_fix_first_repair_that_turns_the_tests_red_keeps_the_green_code_and_ends_review_open():
+    lineage = p1b.Lineage()
+    models = FakeModels({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE], (DOTS, "repair"): [full("x = 2\n")]},
+                        [green(), red(("pieces/test_calc.py::test_main_output",))])
+    outcome = p1b.walk(JOB, models, lineage, Clock())
+    assert outcome.status == "review-fix", outcome                       # never escalate: the green candidate passed every test
+    assert "FIX FIRST repair round 1" in outcome.reason and "left the tests red" in outcome.reason
+    assert "test_main_output" in outcome.reason and "the last green code is kept" in outcome.reason
+    assert outcome.failing == ()                                         # the kept code fails no test
+    assert outcome.findings == ("pieces/calc.py:12 | SPEC 3: The total must include tax. | breaks (sum must include tax)",)
+    assert models.log[-1] == ("restore-green", None)                     # put back right after the red run, before anything else
+    assert models.calls(NORTH, "review") == [("review", NORTH)] and models.calls(GLM) == []   # the red code is never reviewed
+    assert lineage.get("pieces/calc.py") == {"last": DOTS, "origin": DOTS, "chain": [DOTS]}   # the lineage of the green code, not the repair's
+
+
+def test_a_red_fix_first_repair_after_a_green_one_keeps_the_newer_green_code():
+    outcome, models = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE, FIX_WITH_EVIDENCE],
+                           (DOTS, "repair"): [full("x = 2\n"), full("x = 3\n")]}, [green(), green(), red()])
+    assert outcome.status == "review-fix" and "FIX FIRST repair round 2" in outcome.reason
+    assert models.log.count(("restore-green", None)) == 1 and len(models.calls(DOTS, "repair")) == 2
+
+
+def test_every_review_fix_exit_of_the_repair_loop_carries_the_findings():
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE] * 3,
+                      (DOTS, "repair"): [full("x = 2\n"), full("x = 3\n")]}, [green(), green(), green()])
+    assert outcome.status == "review-fix" and outcome.findings
+    outcome, _ = run({(DOTS, "write"): [full()], (NORTH, "review"): [FIX_WITH_EVIDENCE], (DOTS, "repair"): [p1b.ModelFailed("down")]}, [green()])
+    assert outcome.status == "review-fix" and "unavailable" in outcome.reason and outcome.findings
 
 
 def test_an_unsupported_fix_first_is_re_asked_once_and_stays_open_and_glm_is_never_asked():

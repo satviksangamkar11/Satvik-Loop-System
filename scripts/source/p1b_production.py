@@ -3,6 +3,10 @@ openrouter_call by role (writer_a, writer_b, reviewer_a for GLM, reviewer_b for 
 off by default), made at most twice per job and checked like any writer reply. The sandbox runs the job's tests and the locked acceptance tests, and those
 decide. This module writes and restores the job files and records the evidence. It names no legacy model family (a static test checks it).
 
+Any role may be a Claude Code model instead (2026-11-03, the roster's "via"): a writer or reviewer on Claude Code is one isolated call
+(claude_code.ask_role) with the same reply check, the same history records (each call_NN.json says how it was called) and nothing reserved
+on the OpenRouter ledger; a repair role on OpenRouter is called through the adapter like a writer's repair.
+
 Pre-pilot review (2026-11-02): a fresh writer never receives a previous attempt's pytest output (the output goes to the job history instead);
 every result that is not PASS puts the originals back and keeps the authorized candidate for inspection; the job is marked `running` before its
 first write, so a killed worker is restored by the next launch (fix_loop._prepare_job_folder).
@@ -20,6 +24,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import claude_code as cc
 import openrouter_call as oc
 import opus_repair
 import p0_gates as gates
@@ -508,7 +513,7 @@ class Production:
     """The models object walk() drives: calls through openrouter_call, writes and restores the job files, runs the sandbox."""
 
     def __init__(self, job, root, client, sandbox, *, protected, acceptance_lock, originals, parse_files, check_path, content_problem,
-                 history=None, scrub_keys=(), repair_ask=None, job_dir=None):
+                 history=None, scrub_keys=(), repair_ask=None, job_dir=None, claude_ask=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
         self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
         self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
@@ -516,6 +521,7 @@ class Production:
         self.parse_files, self.check_path, self.content_problem = parse_files, check_path, content_problem
         self.history, self.scrub_keys = history, tuple(scrub_keys)
         self.repair_ask, self.repair_calls = repair_ask, 0     # repair_ask(prompt, raw_sink) -> reply text; the default is opus_repair.ask
+        self.claude_ask = claude_ask    # claude_ask(role, system, user, kind, raw_sink) -> checked reply text; the default is claude_code.ask_role
         self.test_targets = sorted(set(job["tests"]) | set(job["acceptance_tests"]) | set(job.get("regression") or []))
         self.spec = (self.root / job["spec"]).read_text(encoding="utf-8")
         self.review_text = ""           # the production review prompt is built in: a job's review_prompt is never read (the legacy docs/REVIEW_PROMPT.md is never used)
@@ -525,6 +531,7 @@ class Production:
         self.test_runs = 0
         self.tested_hash = None         # hash of the job files at the last green run
         self.green_junit = None         # the JUnit XML of the last green run: the RESULTS section of the review package
+        self.green_files = None         # the job files' texts at the last green run ({rel: text or None}): restore_green() puts them back
         self.reviewed_hashes = []       # hash of the job files at each review call (the whole job, kept as evidence)
         self.candidate_reviews = []     # hash of the job files at each review call of the candidate written last: the integrity check reads these
         self.fix_findings = None        # the stripped FIX FIRST findings the next repair call carries (stage_fix), None otherwise
@@ -608,9 +615,12 @@ class Production:
         except p1b.BadReply as exc:
             return None, str(exc)
 
-    def _ask(self, model, system, user, kind, mode):
+    def _ask(self, model, system, user, kind, mode, role=None):
+        role = role or role_by_model()[model]
+        if oc.roster_state()["VIA"][role] == "claude_code":
+            return self._ask_claude(model, role, system, user, kind, mode)
         try:
-            text, _info = self.client.call(role_by_model()[model], system, user, kind=kind, effort=oc.effort_for_mode(mode))
+            text, _info = self.client.call(role, system, user, kind=kind, effort=oc.effort_for_mode(mode))
         except oc.OpenRouterError as exc:
             self._record_history(model, mode)
             if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
@@ -619,6 +629,26 @@ class Production:
                 raise p1b.QuotaStop(str(exc)) from exc
             raise p1b.ModelFailed(str(exc)) from exc         # refused, dropped, quota, budget, account: this model is down for this job
         self._record_history(model, mode)
+        return text
+
+    def _ask_claude(self, model, role, system, user, kind, mode):
+        """A role on Claude Code: one isolated call (claude_code.ask_role) with the role's model and effort from the roster, checked as an
+        OpenRouter reply is (a FILE block for a writer or repair, a final Verdict line for a reviewer). It is one history/call_NN.json with via
+        claude_code and no HTTP status, and nothing is reserved on the OpenRouter ledger. A failed or unusable call is a failed call and the
+        model is down for this job, as an OpenRouter failure is."""
+        raw = []
+        ask = self.claude_ask or cc.ask_role
+        started, text = time.monotonic(), None
+        try:
+            text = ask(role, system, user, kind, raw_sink=raw.append)
+        except (cc.ClaudeFailed, cc.ClaudeBadReply) as exc:
+            self._failure(model, mode, None, exc, facts={"exit_code": exc.exit_code})
+            raise p1b.ModelFailed(str(exc)) from exc
+        finally:
+            facts = cc.envelope_facts(raw[-1] if raw else None)
+            self._write_call({"model": model, "via": "claude_code", "status": None, "failed": text is None,
+                              "seconds": round(time.monotonic() - started, 3), "usage": facts["usage"],
+                              "reply_text": facts["reply_text"] if facts["reply_text"] is not None else text}, mode)
         return text
 
     def _record_history(self, model, mode):
@@ -631,20 +661,23 @@ class Production:
 
     def _write_call(self, request, mode):
         """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds.
-        A writer or repair reply's text and its reasoning text are kept too, scrubbed, in history/reply_NN.txt and history/reasoning_NN.txt, and the
-        record links them as reply_file and reasoning_file (null when there is none)."""
+        The reply's text and its reasoning text are kept too, scrubbed: a writer or repair reply in history/reply_NN.txt, a reviewer reply (review
+        or review-reask, kept even when it has no verdict line) in history/review_NN.txt, and the reasoning in history/reasoning_NN.txt. The record
+        links them as reply_file and reasoning_file (null when there is none). `via` says how the call was made: openrouter or claude_code."""
         self.calls_written += 1
         if self.history is not None:
             n = self.calls_written
             usage = request.get("usage") or {}
-            record = {"model": request.get("model"), "mode": mode, "status": request.get("status"), "failed": bool(request.get("failed")),
+            record = {"model": request.get("model"), "via": request.get("via") or "openrouter", "mode": mode, "status": request.get("status"),
+                      "failed": bool(request.get("failed")),
                       "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
                       "reasoning_tokens": request.get("reasoning_tokens"), "finish_reason": request.get("finish_reason"), "seconds": request.get("seconds"),
                       "reply_file": None, "reasoning_file": None}
             reply = request.get("reply_text")
             if isinstance(reply, str):
-                (self.history / f"reply_{n:02d}.txt").write_text(self._clean(reply), encoding="utf-8")
-                record["reply_file"] = f"history/reply_{n:02d}.txt"
+                name = f"{'review' if mode in ('review', 'review-reask') else 'reply'}_{n:02d}.txt"
+                (self.history / name).write_text(self._clean(reply), encoding="utf-8")
+                record["reply_file"] = f"history/{name}"
             reasoning = request.get("reasoning_text")
             if isinstance(reasoning, str) and reasoning.strip():
                 (self.history / f"reasoning_{n:02d}.txt").write_text(self._clean(reasoning), encoding="utf-8")
@@ -672,8 +705,9 @@ class Production:
 
     def _failure(self, model, mode, status, message, facts=None):
         """One failed call, kept whole: its model, its raw HTTP status (None when there is none) and the first 2,000 characters of its message with
-        keys redacted. facts (openrouter_call.reply_facts) joins the history file: finish_reason, usage and, for a reply with no message text,
-        its message keys and reasoning lengths. It is a file in the job's history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
+        keys redacted. facts joins the history file: openrouter_call.reply_facts for a model call (finish_reason, usage and, for a reply with no
+        message text, its message keys and reasoning lengths), or the process exit_code of the repair step's CLI call. It is a file in the job's
+        history/ folder and a "failed" step in status.json; `call` names the mode it failed in."""
         self.failed_calls += 1
         text = oc.redact(_scrubbed(str(message), self.scrub_keys))[:oc.FAILURE_CHARS]
         step = {"model": model, "mode": "failed", "call": mode, "status": status, "message": text,
@@ -688,9 +722,13 @@ class Production:
 
     def _repair_step(self):
         """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
-        reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model."""
+        reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model.
+        A repair role on OpenRouter (the roster's "via") is one checked repair call through the adapter instead, recorded like a writer's."""
         self.repair_calls += 1
         number = self.repair_calls
+        spec = oc.roster_state()["ROLE_SPECS"]["repair"]
+        if self.repair_ask is None and oc.via_of(spec) == "openrouter" and spec["model"] not in oc.SENTINELS:
+            return self._repair_openrouter(spec["model"])
         prompt = WRITER_SYSTEM + "\n\n" + self._writer_user("repair")
 
         def keep_raw(raw):
@@ -703,16 +741,28 @@ class Production:
             text = ask(prompt, raw_sink=keep_raw)
             reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         except opus_repair.RepairFailed as exc:
-            self._failure(p1b.ANTHROPIC, "repair", None, exc)
+            self._failure(p1b.ANTHROPIC, "repair", None, exc, facts={"exit_code": exc.exit_code})
             self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
             raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
         except opus_repair.RepairBadReply as exc:
-            self._failure(p1b.ANTHROPIC, "repair", None, exc)
+            self._failure(p1b.ANTHROPIC, "repair", None, exc, facts={"exit_code": exc.exit_code})
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
         finally:
-            self._write_call({"model": p1b.ANTHROPIC, "status": None, "failed": reply is None, "seconds": round(time.monotonic() - started, 3),
-                              "reply_text": text}, "repair")
+            self._write_call({"model": p1b.ANTHROPIC, "via": "claude_code", "status": None, "failed": reply is None,
+                              "seconds": round(time.monotonic() - started, 3), "reply_text": text}, "repair")
+        self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
+        return reply
+
+    def _repair_openrouter(self, model):
+        """The repair step on an OpenRouter model: the writer's whole-file repair request, one checked repair call through the adapter (its
+        records are the adapter's requests), parsed like a writer's reply. An unavailable call carries the fixed escalation reason."""
+        try:
+            text = self._ask(model, WRITER_SYSTEM, self._writer_user("repair"), kind="repair", mode="repair", role="repair")
+        except p1b.ModelFailed as exc:
+            self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
+            raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
+        reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply
 
@@ -799,6 +849,18 @@ class Production:
         restore_files(self.root, self.originals)
         self.last_junit = None          # the next writer starts from the originals and the spec only: no test result of the attempt just undone
 
+    def restore_green(self):
+        """Puts the job files of the last green run back (a FIX FIRST repair that turned the tests red is undone): the candidate is again the
+        code that passed every test and was reviewed, so the reviews of that code and its JUnit file belong to it again."""
+        if self.green_files is None:
+            raise AssertionError("restore_green before any green run")
+        restore_files(self.root, self.green_files)
+        self.last_junit = self.green_junit
+        if gates.combined_hash(self.root, self.files) != self.tested_hash:
+            raise AssertionError("the restored files are not the files of the last green run")
+        self.candidate_reviews = [h for h in self.reviewed_hashes if h == self.tested_hash]
+        self._step("checkout", "restore-green", "the last green code is back on disk")
+
     def tests(self, files):
         result = self.sandbox.run(self.root, self.test_targets, readonly=self.protected, timeout_s=600)
         self._check_locked()
@@ -814,6 +876,7 @@ class Production:
         if green:
             self.tested_hash = gates.combined_hash(self.root, self.files)
             self.green_junit = result.junit
+            self.green_files = {rel: (self.root / rel).read_text(encoding="utf-8") if (self.root / rel).is_file() else None for rel in self.files}
         self._step("sandbox", "tests", "green" if green else f"red: {len(failing)} failing")
         systemic = result.timed_out or result.junit is None or (not green and not failing)
         return p1b.Result(green, frozenset(failing), frozenset(t.split("::")[0] for t in failing), systemic)
@@ -905,7 +968,7 @@ def _spec_line(spec_text, test_id, message):
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-        content_problem, scrub_keys=(), repair_ask=None):
+        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""
@@ -921,7 +984,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys,
-                       repair_ask=repair_ask, job_dir=status_dir_job)
+                       repair_ask=repair_ask, job_dir=status_dir_job, claude_ask=claude_ask)
     lineage = p1b.Lineage()
     try:
         client.set_job_deadline(job["deadline_min"] * 60)     # the unit deadline: no retry (openrouter_call) starts after it
@@ -968,8 +1031,9 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
         state, verdict, tests_passed = "passed", "READY", True
     elif outcome.status == "review-fix":
         state, verdict, tests_passed = "review-open", "FIX FIRST", True
-        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the job ends review-open)\n\n{outcome.reason}\n", scrub_keys),
-                                                     encoding="utf-8")
+        found = "".join(f"- {note}\n" for note in outcome.findings)
+        (status_dir_job / "REVIEW_FIX.md").write_text(_scrubbed(f"# REVIEW FIX (the job ends review-open)\n\n{outcome.reason}\n"
+                                                                + (f"\n## Findings\n\n{found}" if found else ""), scrub_keys), encoding="utf-8")
     elif outcome.status == "integrity-mismatch":
         state, verdict, tests_passed = "integrity-mismatch", "unavailable", True
     elif outcome.status in ("escalate", "blocked", "provider-unavailable", "budget-exceeded", "deadline", "acceptance-tampered", "exception"):
@@ -993,6 +1057,8 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     status = {"name": name, "schema_version": 1, "state": state, "profile": "production", "tests_passed": tests_passed, "review_verdict": verdict,
               "reason": outcome.reason, "failing_tests": sorted(outcome.failing), "steps": steps, "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "evidence": evidence,
               "updated": _now()}
+    if state == "review-open" and outcome.findings:
+        status["findings"] = list(outcome.findings)            # the stripped FIX FIRST findings still open on the kept (green) candidate
     if models is not None and models.contract_file:
         status["contract_check"] = models.contract_file        # the contract evidence, whatever the end state
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved

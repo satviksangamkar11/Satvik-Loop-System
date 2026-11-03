@@ -2,28 +2,28 @@
 never the Anthropic API key, never an OpenRouter key, from an empty folder, with no tools and an empty MCP config. Its reply must carry FILE
 blocks. Nothing here is retried with another model.
 
-OPUS_ENABLED is False (patch 6, 2026-11-02): the owner decides the production switch. While it is off, ask() raises RepairFailed before
-anything starts, and the job escalates with UNAVAILABLE. The test suite keeps it off (pieces/conftest.py).
-Tests use a fake claude (pieces/fake_claude.py) or an injected runner, never the real CLI."""
-import json
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
+The model and effort are the roster's repair role (config/roster.json, "via": "claude_code"); nothing here names a model (2026-11-03). The call
+itself is claude_code.run, the one isolated runner every Claude Code role uses. A repair role that is a sentinel (off, fake) makes no call; a
+repair role on OpenRouter is called by p1b_production through the adapter, not here.
 
+OPUS_ENABLED is False (patch 6, 2026-11-02): the owner decides the production switch. While it is off, a call to the model it gates
+(claude_code.SWITCHED) raises RepairFailed before anything starts, and the job escalates with UNAVAILABLE. The test suite keeps it off
+(pieces/conftest.py). Tests use a fake claude (pieces/fake_claude.py) or an injected runner, never the real CLI."""
 import openrouter_call as oc
+import claude_code as cc
 
-MODEL, EFFORT = "opus", "medium"
 TIMEOUT_S = 900                     # patch 6 (2026-11-02): 15 minutes; the repair runs only when 15 minutes of the unit deadline are left
-MAX_OUTPUT_TOKENS = 32000           # CLAUDE_CODE_MAX_OUTPUT_TOKENS for the call
+MAX_OUTPUT_TOKENS = cc.MAX_OUTPUT_TOKENS    # CLAUDE_CODE_MAX_OUTPUT_TOKENS for the call (32000)
 REPAIR_SYSTEM = ("You repair the files of one job. Reply with FILE blocks only: one for each file you were given, complete, and nothing else. "
                  "Never write a reviewer verdict line.")
 OPUS_ENABLED = False                # owner decides the production switch (patch 6: the Reply OK check ran on Haiku, not Opus)
-CLAUDE_CMD = None                   # None: the `claude` on PATH; the tests point it at the fake claude
+CLAUDE_CMD = None                   # None: claude_code.CLAUDE_CMD, else the `claude` on PATH; the tests point it at the fake claude
 UNAVAILABLE = "Opus repair unavailable"
-USAGE_LIMIT = re.compile(r"usage limit|limit reached|rate limit", re.IGNORECASE)
+USAGE_LIMIT = cc.USAGE_LIMIT
+RepairFailed = cc.ClaudeFailed      # the call produced no answer: switched off, a non-zero exit, an error flag, a usage limit or a timeout
+RepairBadReply = cc.ClaudeBadReply  # the call answered, but the answer cannot be used: not JSON, no result text, or no FILE blocks
+isolated_env = cc.isolated_env
+real_call_refused = cc.real_call_refused
 
 
 def switched_on():
@@ -31,78 +31,48 @@ def switched_on():
     return OPUS_ENABLED
 
 
-class RepairFailed(Exception):
-    """The call produced no answer: switched off, a non-zero exit, an error flag, a usage limit or a timeout. Never retried."""
+def repair_model(role="repair"):
+    """(model, effort) of the roster's repair role (active profile). RepairFailed when that role is not a Claude Code model: a sentinel
+    (off, fake) or an OpenRouter role makes no call here."""
+    try:
+        spec = oc.roster_state()["ROLE_SPECS"][role]
+    except oc.RosterRefused as exc:
+        raise RepairFailed(f"the roster is refused: {exc}") from exc
+    if spec["model"] in oc.SENTINELS:
+        raise RepairFailed(f"the {oc.active_profile()} profile has no {role} step ({role}={spec['model']}): no call was made")
+    if oc.via_of(spec) != "claude_code":
+        raise RepairFailed(f"the {oc.active_profile()} profile's {role} role is the {oc.via_of(spec)} model {spec['model']!r}: no Claude call was made")
+    return spec["model"], spec["effort"]
 
 
-class RepairBadReply(Exception):
-    """The call answered, but the answer cannot be used: not JSON, no result text, or no FILE blocks."""
+def run_claude(prompt, cwd, claude_cmd, timeout_s, env, system_prompt=REPAIR_SYSTEM, model=None, effort=None):
+    """The real call (only when switched on): claude_code.run with the repair role's model and effort (read from the roster when not given),
+    the repair-only system prompt (None leaves it out: the probe) and the output cap. Returns (exit code, stdout, stderr). Raises
+    subprocess.TimeoutExpired past timeout_s."""
+    if model is None:
+        model, effort = repair_model()
+    return cc.run(prompt, cwd, claude_cmd, timeout_s, env, model=model, effort=effort, system_prompt=system_prompt,
+                  max_output_tokens=MAX_OUTPUT_TOKENS)
 
 
-def isolated_env(environ=None):
-    """The environment of the call: everything except the Anthropic API keys and every OpenRouter variable."""
-    env = dict(os.environ if environ is None else environ)
-    for key in list(env):
-        upper = key.upper()
-        if upper in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN") or upper.startswith("OPENROUTER"):
-            del env[key]
-    return env
-
-
-def real_call_refused(claude_cmd):
-    """Test guard (2026-11-02): under pytest, or with SATVIK_NO_OPUS=1, no real Claude command may start. The fake claude is the one exception."""
-    under_test = "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("SATVIK_NO_OPUS") == "1"
-    return under_test and not any("fake_claude" in str(part) for part in claude_cmd)
-
-
-def run_claude(prompt, cwd, claude_cmd, timeout_s, env, system_prompt=REPAIR_SYSTEM):
-    """The real call (only when switched on): plain `claude -p` with JSON output, no tools, an empty MCP config, no session saved, the repair-only
-    system prompt (None leaves it out: the probe), the output cap in the environment, run from `cwd`, the prompt on stdin. Returns (exit code,
-    stdout, stderr). Raises subprocess.TimeoutExpired past timeout_s."""
-    if real_call_refused(claude_cmd):
-        raise RepairFailed("a real Claude command is refused under pytest or SATVIK_NO_OPUS=1: no process was started")
-    with tempfile.TemporaryDirectory(prefix="opus_mcp_") as config_dir:
-        config = Path(config_dir) / "mcp.json"
-        config.write_text('{"mcpServers": {}}', encoding="utf-8")
-        cmd = list(claude_cmd) + ["-p", "--model", MODEL, "--effort", EFFORT, "--output-format", "json", "--tools", "",
-                                  "--mcp-config", str(config), "--strict-mcp-config", "--no-session-persistence"]
-        if system_prompt is not None:
-            cmd += ["--system-prompt", system_prompt]
-        env = dict(env, CLAUDE_CODE_MAX_OUTPUT_TOKENS=str(MAX_OUTPUT_TOKENS))
-        proc = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout_s, env=env)
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
-
-
-def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None):
+def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None, role="repair"):
     """The reply text of one isolated call, checked: it must be the JSON envelope of a successful call whose result text carries FILE blocks.
-    `raw_sink` receives the raw output before it is parsed (the production run saves it to the job's history). `runner` replaces run_claude
-    in tests. Raises RepairFailed or RepairBadReply; nothing else is tried."""
-    if not (OPUS_ENABLED if enabled is None else enabled):
+    The model and effort are the roster's `role`. `raw_sink` receives the raw output before it is parsed (the production run saves it to the
+    job's history). `runner` replaces run_claude in tests (its first five arguments). Raises RepairFailed or RepairBadReply, each with exit_code set
+    to the process's exit code (None when no process ended); nothing else is tried."""
+    model, effort = repair_model(role)
+    if cc.switched_off(model, OPUS_ENABLED if enabled is None else enabled):
         raise RepairFailed("Opus repair is switched off: no call was made")
-    claude_cmd = list(CLAUDE_CMD) if CLAUDE_CMD else [shutil.which("claude") or "claude"]
-    with tempfile.TemporaryDirectory(prefix="opus_cwd_") as empty:
-        try:
-            code, out, err = (runner or run_claude)(prompt, empty, claude_cmd, timeout_s, isolated_env())
-        except subprocess.TimeoutExpired as exc:
-            raise RepairFailed(f"the call did not finish in {timeout_s} s") from exc
+
+    def default(prompt, cwd, claude_cmd, timeout_s, env):
+        return run_claude(prompt, cwd, claude_cmd, timeout_s, env, model=model, effort=effort)
+
+    code, out, err = cc.in_empty_folder(prompt, runner or default, cc.command(CLAUDE_CMD), timeout_s)
     if raw_sink is not None:
         raw_sink(out)
-    if code != 0:
-        raise RepairFailed(f"exit code {code}: {err[-300:]}")
-    try:
-        envelope = json.loads(out)
-    except ValueError as exc:
-        raise RepairBadReply("the output is not JSON") from exc
-    if not isinstance(envelope, dict):
-        raise RepairBadReply("the output is not a JSON object")
-    text = envelope.get("result")
-    if envelope.get("is_error"):
-        raise RepairFailed(f"the call reported an error: {str(text)[:300]}")
-    if not isinstance(text, str):
-        raise RepairBadReply("the output has no result text")
+    text = cc.result_text(code, out, err)
     if USAGE_LIMIT.search(text) and not oc.FILE_BLOCK.search(text):
-        raise RepairFailed("usage limit reached")
+        raise RepairFailed("usage limit reached", exit_code=code)
     if not oc.FILE_BLOCK.search(text):
-        raise RepairBadReply("the reply has no FILE blocks")
+        raise RepairBadReply("the reply has no FILE blocks", exit_code=code)
     return text

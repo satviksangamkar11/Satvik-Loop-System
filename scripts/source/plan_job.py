@@ -2,7 +2,11 @@
 the API key, from an empty folder, with no tools and an empty MCP config, output as JSON. plan/INTENT.json is written before the call and the raw
 answer goes straight to plan/raw_response.json. A restart reuses a saved answer and never calls again; an intent with no saved answer is
 planner-uncertain, and nothing retries it. The answer is checked against the production rules before anything is written; the job file is
-then read-only and its hash is recorded. Nothing here names a legacy model family (a static test checks it)."""
+then read-only and its hash is recorded. Nothing here names a legacy model family (a static test checks it).
+
+The planner's model is the roster's planner role (2026-11-03), nothing here names one: "via": "claude_code" runs claude_code.run with the
+role's model and effort; an OpenRouter planner is one checked text call through the adapter, kept in the same envelope shape. The planner is
+not gated by the owner's repair switch (opus_repair.OPUS_ENABLED), as before."""
 import hashlib
 import json
 import os
@@ -15,15 +19,15 @@ from pathlib import Path
 
 import jsonschema
 
+import claude_code as cc
 import fix_loop as fl
 import p0_gates as gates
 import openrouter_call as oc
-import opus_repair as opus
 import p1b_routing as p1b
 
 PLAN_TIMEOUT_S = 1800
 MAX_FILES = 30
-MODEL, EFFORT = "opus", "medium"
+PLAN_SYSTEM = "You are the planner for one production job. Reply with ONE JSON object and nothing else."   # an OpenRouter planner's system prompt
 TAG = re.compile(r"^(?:[-*]\s+)?(KNOWN|ASSUMED):\s+\S")
 NL = chr(10)
 INSTRUCTIONS = (
@@ -44,33 +48,44 @@ def file_sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def claude_runner(prompt, cwd, claude_cmd, timeout_s):
-    """The real call: plain `claude -p`, JSON out, no tools, an empty MCP config, run from the empty folder `cwd`. Returns (exit code, output).
-    An empty output is replaced by an error envelope that keeps the exit code and the first error text, so a restart knows the call failed."""
-    with tempfile.TemporaryDirectory(prefix="plan_mcp_") as config_dir:
-        config = Path(config_dir) / "mcp.json"
-        config.write_text('{"mcpServers": {}}', encoding="utf-8")
-        cmd = list(claude_cmd or ["claude"]) + ["-p", "--model", MODEL, "--effort", EFFORT, "--output-format", "json",
-                                                  "--tools", "", "--mcp-config", str(config), "--strict-mcp-config"]
-        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}      # the subscription is used, never an API key
-        proc = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout_s, env=env)
-        if proc.stdout.strip():
-            return proc.returncode, proc.stdout
-        return proc.returncode, json.dumps({"is_error": True, "exit_code": proc.returncode, "stderr": (proc.stderr or "")[-2000:]})
+def claude_runner(prompt, cwd, claude_cmd, timeout_s, model=None, effort=None):
+    """The real call: claude_code.run (plain `claude -p`, JSON out, no tools, an empty MCP config, no session saved, the isolated
+    environment) with the planner role's model and effort (read from the roster when not given), run from the empty folder `cwd`. Returns
+    (exit code, output). An empty output is replaced by an error envelope that keeps the exit code and the first error text, so a restart
+    knows the call failed."""
+    if model is None:
+        spec = cc.role_spec("planner")
+        model, effort = spec["model"], spec["effort"]
+    code, out, err = cc.run(prompt, cwd, list(claude_cmd or ["claude"]), timeout_s, cc.isolated_env(), model=model, effort=effort,
+                            system_prompt=None, max_output_tokens=None)
+    if out.strip():
+        return code, out
+    return code, json.dumps({"is_error": True, "exit_code": code, "stderr": (err or "")[-2000:]})
 
 
-def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None, timeout_s=PLAN_TIMEOUT_S):
+def openrouter_runner(client):
+    """A runner for a planner role on OpenRouter: one checked text call through the adapter, returned in the claude envelope shape (result,
+    is_error), so the saved answer is read the same way. An adapter error is an error envelope."""
+    def run(prompt, cwd, claude_cmd, timeout_s):
+        try:
+            text, info = client.call("planner", PLAN_SYSTEM, prompt, kind="text", timeout_s=timeout_s)
+        except oc.OpenRouterError as exc:
+            return 1, json.dumps({"type": "result", "is_error": True, "via": "openrouter", "result": str(exc)})
+        return 0, json.dumps({"type": "result", "is_error": False, "via": "openrouter", "model": info.get("model"), "result": text})
+    return run
+
+
+def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None, timeout_s=PLAN_TIMEOUT_S, client=None):
     """Plans one job. Returns {state, reason, job_sha256, assumed}. States: planned, planner-uncertain, planner-refused, planner-invalid,
-    planner-failed. The only call is made after INTENT.json is written; a restart never makes a second call."""
-    try:                                                                  # the active roster names the planner: fake under test (no call), opus under production
-        planner_model = oc.roster_state()["ROLE_SPECS"]["planner"]["model"]
+    planner-failed. The only call is made after INTENT.json is written; a restart never makes a second call. `client` is the OpenRouter
+    client for a planner role on OpenRouter (default: one with the keys from secrets/ or the environment)."""
+    try:                                                                  # the active roster names the planner: fake under test (no call)
+        spec = oc.roster_state()["ROLE_SPECS"]["planner"]
     except oc.RosterRefused as exc:
         return _outcome("planner-refused", str(exc))
-    if planner_model == "fake":
-        return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner=fake)")
-    if planner_model != MODEL:
-        return _outcome("planner-refused", f"the roster planner is {planner_model!r}, but this planner is {MODEL!r}")
+    model, via, effort = spec["model"], oc.via_of(spec), spec.get("effort")
+    if model in oc.SENTINELS:
+        return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner={model})")
     root, plan_dir = Path(root), Path(plan_dir)
     intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
     if intent_path.is_file():
@@ -79,16 +94,21 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
     if len(files) > MAX_FILES:
         return _outcome("planner-refused", f"at most {MAX_FILES} files may be sent to the planner; got {len(files)}")
-    if runner is None and opus.real_call_refused(list(claude_cmd or ["claude"])):      # the existing guard: no real call under pytest or SATVIK_NO_OPUS=1
+    if runner is None and via == "claude_code" and cc.real_call_refused(list(claude_cmd or ["claude"])):   # the guard: no real call under pytest or SATVIK_NO_OPUS=1
         return _outcome("planner-refused", "a real Claude command is refused under pytest or SATVIK_NO_OPUS=1: no call was made")
+    if runner is None and via == "claude_code":
+        def runner(prompt, cwd, claude_cmd, timeout_s):
+            return claude_runner(prompt, cwd, claude_cmd, timeout_s, model=model, effort=effort)
+    elif runner is None:
+        runner = openrouter_runner(client or oc.OpenRouter(oc.load_keys(), root / "_loop" / "openrouter"))
     prompt = _prompt(root, request, files)
     plan_dir.mkdir(parents=True, exist_ok=True)
-    intent_path.write_text(json.dumps({"job": job_name, "model": MODEL, "effort": EFFORT, "files": list(files),
+    intent_path.write_text(json.dumps({"job": job_name, "via": via, "model": model, "effort": effort, "files": list(files),
                                        "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "timeout_s": timeout_s,
                                        "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
     try:
         with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
-            _code, raw = (runner or claude_runner)(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+            _code, raw = runner(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
     except subprocess.TimeoutExpired:
         return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
     raw_path.write_text(raw, encoding="utf-8")

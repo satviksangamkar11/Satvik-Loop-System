@@ -23,6 +23,7 @@ PROTECTED = [
     "scripts/source/sandbox_runner.py",
     "scripts/source/p0_gates.py",
     "scripts/source/opus_repair.py",
+    "scripts/source/claude_code.py",
     "scripts/source/plan_job.py",
     "scripts/source/loop_home.py",
     "scripts/source/launch.py",

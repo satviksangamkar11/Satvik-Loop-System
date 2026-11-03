@@ -1,0 +1,34 @@
+{
+ "name": "tl-slug",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/two-loop/TL_SLUG_SPEC.md",
+ "files": ["scripts/source/tl_slug.py", "pieces/test_tl_slug.py"],
+ "tests": ["pieces/test_tl_slug.py"],
+ "acceptance_tests": ["tests/acceptance/tl_slug_acceptance.py"],
+ "negative_controls": [
+  {"name": "identity",
+   "replace": {"scripts/source/tl_slug.py": "tests/controls/tl_slug_identity.py"},
+   "must_fail": ["tests/acceptance/tl_slug_acceptance.py::test_basic_words",
+                 "tests/acceptance/tl_slug_acceptance.py::test_runs_collapse_to_one_dash",
+                 "tests/acceptance/tl_slug_acceptance.py::test_leading_and_trailing_dashes_removed",
+                 "tests/acceptance/tl_slug_acceptance.py::test_non_ascii_is_a_separator"]},
+  {"name": "no-collapse",
+   "replace": {"scripts/source/tl_slug.py": "tests/controls/tl_slug_no_collapse.py"},
+   "must_fail": ["tests/acceptance/tl_slug_acceptance.py::test_basic_words",
+                 "tests/acceptance/tl_slug_acceptance.py::test_runs_collapse_to_one_dash"]}
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/tl_slug_acceptance.py::test_basic_words",
+  "tests/acceptance/tl_slug_acceptance.py::test_runs_collapse_to_one_dash",
+  "tests/acceptance/tl_slug_acceptance.py::test_leading_and_trailing_dashes_removed",
+  "tests/acceptance/tl_slug_acceptance.py::test_digits_are_kept",
+  "tests/acceptance/tl_slug_acceptance.py::test_no_letters_or_digits_gives_empty",
+  "tests/acceptance/tl_slug_acceptance.py::test_non_ascii_is_a_separator",
+  "tests/acceptance/tl_slug_acceptance.py::test_slug_is_stable_when_applied_twice"
+ ],
+ "fixers": ["writer_a", "writer_b"],
+ "reviewers": "by_lineage",
+ "budget": {"free_requests": 40, "review_usd": 0, "paid_usd": 0},
+ "deadline_min": 60
+}

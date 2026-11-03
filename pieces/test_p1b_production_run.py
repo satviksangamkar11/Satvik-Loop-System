@@ -448,6 +448,44 @@ def test_a_failed_opus_repair_is_a_failed_call_with_no_status(tmp_path):
     assert "did not finish" in record["message"] and "SECRETOPUS1234" not in record["message"]
 
 
+def _repair_only_production(tmp_path):
+    """A production unit at its repair step with no scripted repair reply: the real opus_repair.ask runs, so a test sets its switch or runner."""
+    root = wp_h_root(tmp_path)
+    job = load(root, p1b_job())
+    history = root / "_loop" / "calc" / "history"
+    history.mkdir(parents=True)
+    models = pm.Production(job, root, FakeClient([]), FakeSandbox({}), protected=[], acceptance_lock=None, originals={},
+                           parse_files=lambda text: ({}, []), check_path=lambda rel: None, content_problem=lambda rel, content: None,
+                           history=history, job_dir=root / "_loop" / "calc")
+    return models, history
+
+
+def test_a_repair_whose_claude_process_exits_non_zero_records_that_exit_code(tmp_path, monkeypatch):
+    models, history = _repair_only_production(tmp_path)
+    monkeypatch.setattr(opus, "OPUS_ENABLED", True)
+    monkeypatch.setattr(opus, "run_claude", lambda prompt, cwd, claude_cmd, timeout_s, env, **kwargs: (2, "", "usage limit"))
+    with pytest.raises(p1b.ModelFailed):
+        models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
+    record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
+    assert record["exit_code"] == 2 and record["status"] is None and "exit code 2" in record["message"]
+
+
+def test_a_repair_that_never_started_or_timed_out_records_a_null_exit_code(tmp_path, monkeypatch):
+    models, history = _repair_only_production(tmp_path)
+    with pytest.raises(p1b.ModelFailed):                 # switched off (pieces/conftest.py): no process at all
+        models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
+    assert json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))["exit_code"] is None
+    monkeypatch.setattr(opus, "OPUS_ENABLED", True)
+
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=900)
+    monkeypatch.setattr(opus, "run_claude", timed_out)
+    with pytest.raises(p1b.ModelFailed):
+        models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
+    record = json.loads((history / "failed_call_02.json").read_text(encoding="utf-8"))
+    assert record["exit_code"] is None and "did not finish" in record["message"]
+
+
 def test_a_key_and_a_bearer_token_in_a_failed_reviewer_message_never_reach_status_json(tmp_path):
     root = wp_h_root(tmp_path)
     job = load(root, p1b_job())
@@ -550,7 +588,7 @@ def test_every_model_call_writes_call_NN_failed_or_not(tmp_path):
     wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
     history = root / "_loop" / "calc" / "history"
     first = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
-    assert first == {"model": DOTS, "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
+    assert first == {"model": DOTS, "via": "openrouter", "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
                      "reasoning_tokens": None, "finish_reason": None, "seconds": 0.0, "reply_file": None, "reasoning_file": None}
     second = json.loads((history / "call_02.json").read_text(encoding="utf-8"))
     assert second["model"] == XING and second["mode"] == "write" and second["status"] == 200 and second["failed"] is False

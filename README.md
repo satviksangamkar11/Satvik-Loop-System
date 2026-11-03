@@ -293,10 +293,11 @@ Every reply is checked before it counts, and no failure falls back to another mo
 - **Limits.** Writers: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
   sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
   Xing sends temperature 0.2, top_p 0.95, repetition_penalty 1.05.
-- **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
+- **Free quota.** One account-wide ledger (`ledger/limits.json` in the loop home, `shared_limits.py`) under the loop home lock.
   Every attempt is reserved before it is sent, failed attempts included. 15 a minute. `begin_job()` saves each key's full `GET /api/v1/key`
-  JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
-  and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
+  JSON under `_loop/openrouter/key_snapshots/` and sets the day's free cap from the free key's `free_model_daily_requests.limit`, the account's
+  live daily allowance. When that read fails or the field is missing, the cap is the fallback 1000 (`shared_limits.FREE_DAILY_CAP`). The
+  summary's `cap_source` says which applied. A live cap stands until the next read. A 429 that names the day is `QuotaExhausted`; a
   per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
 - **Paid reviewer (GLM).** The paid key only, reviewer role only (`reviewer_a`). Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint and prices are in `docs/p1a_glm_endpoint.json`. A reply from any other provider is unavailable and its spend still counts. The job's paid ceiling is `review_usd` 0.05. Each call reserves its worst case before it is sent (`ceil(chars/3) x 0.15e-6 + max_tokens x 0.50e-6`); a call that would pass the ceiling is refused with nothing sent, and the reservation is settled to the reported cost. A missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
 - **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a file header (`FILE: path`, `### FILE: path` or `**FILE:** path`); a reviewer needs a
@@ -366,6 +367,27 @@ Every change below has a failing-first test (`pieces/test_p6_token_settings.py` 
 - **Opus call.** `--system-prompt` (a repair-only prompt), `--no-session-persistence`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000`, timeout 900 s. A repair runs only when at least 900 s (15 minutes) of the unit deadline are left (`p1b_routing.REPAIR_TIMEOUT_S`).
 - **Switch.** `OPUS_ENABLED` stays `False`; the owner decides the production switch. The "Reply OK" check ran on Haiku 5.5 at high effort (`--model haiku --effort high`), not on Opus, once with and once without `--system-prompt` (`input_tokens` 2 in both). `pieces/conftest.py` keeps the switch off during tests, so no test starts the real CLI.
 - **Planner budget.** The `plan_job.py` prompt asks for `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`.
+
+## Any model on any role (2026-11-03)
+
+`config/roster.json` is the one place a role's model is chosen. A role says how it is called with `"via"`: `"openrouter"` (the default when
+the key is absent) or `"claude_code"`, which also needs `"effort"`. Example: `"repair": {"via": "claude_code", "model": "sonnet", "effort": "high",
+"provider": null, "paid": true, "pricing": null, "settings": {...}}`.
+
+- **Claude Code names.** `model` is one of opus, sonnet, haiku, fable; `effort` is one of low, medium, high, xhigh, max
+  (`scripts/source/claude_code.py` holds this vocabulary; no role's model is written in code).
+- **Test profile.** A Claude Code role is allowed only as haiku at effort high; anything else is refused while the roster loads
+  (`RosterRefused`). No paid role and `review_usd` 0, as before.
+- **Production.** Any OpenRouter model or any Claude Code model and effort. `opus_repair.OPUS_ENABLED` (off) still gates opus for the
+  writers, reviewers and the repair step; the planner is not gated, as before.
+- **One runner.** `claude_code.run`: `claude -p`, JSON output, no tools, an empty MCP config with `--strict-mcp-config`, no session saved, an
+  empty temporary folder, the `ANTHROPIC_*` and `OPENROUTER*` variables removed, the prompt on stdin. The repair step and the planner use it too.
+  Under pytest or with `SATVIK_NO_OPUS=1` no real claude process starts.
+- **Same checks and records.** A Claude Code writer or reviewer passes `openrouter_call.check_reply` (FILE blocks; a final verdict line) and is
+  one `history/call_NN.json` with `"via": "claude_code"`. It is never on the OpenRouter ledger. The panel still never includes the author's model.
+- **Repair or planner on OpenRouter.** A repair role on OpenRouter is one adapter repair call; a planner on OpenRouter is one checked text call
+  kept in the claude envelope shape. A paid OpenRouter role still takes reviewer calls only.
+- **Limit.** A new OpenRouter model also needs a gate in `shared_limits.SLOTS` (an unknown model has no slot and is refused before a request).
 
 ## Change index (close-1 step 7)
 

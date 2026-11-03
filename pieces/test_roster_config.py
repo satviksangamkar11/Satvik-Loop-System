@@ -30,10 +30,11 @@ MODEL_ID_EXCEPTIONS = {
     "scripts/source/nemotron_code.py": "remove in follow-up: the nemotron-3-ultra ID is still a literal",
     "scripts/source/review_run.py": "remove in follow-up: the two nemotron IDs are still literals",
     "scripts/source/fix_loop.py": "remove in follow-up: the legacy loop (outside the job schema) still has literal IDs; openai/v1 is a URL path",
-    "scripts/source/opus_repair.py": "remove in follow-up: MODEL is the literal \"opus\" and should read the roster's repair role",
     "scripts/source/shared_limits.py": "remove in follow-up: the gate table names the Opus slot as the literal \"opus\" (a gate name, not a model ID)",
-    "scripts/source/plan_job.py": "remove in follow-up: the planner is the literal \"opus\" and should read the roster's planner role",
 }
+# 2026-11-03: opus_repair.py and plan_job.py read the repair and planner roles from the roster now. claude_code.py holds the names the claude
+# CLI takes (its --model vocabulary) and the test profile's one allowance: those bare names may appear there, and nowhere else in scripts/source.
+CLAUDE_CODE_VOCABULARY = "scripts/source/claude_code.py"
 # Model IDs written out in any family's own form: a vendor path, or a family name with a version or a tier.
 FAMILY_ID = re.compile(
     r"\b(?:nvidia|openai|openrouter|anthropic|z-ai|google|cohere|dots-studio|xingchen-agi|deepseek-ai|minimax|moonshotai|qwen|meta-llama)/[\w.:\-]+"
@@ -87,6 +88,9 @@ def test_the_roster_file_is_valid_for_both_profiles():
 def test_no_model_id_string_appears_in_scripts_source_outside_the_roster():
     ids = {spec["model"] for profile in PROFILES for spec in roles_of(profile).values()} - SENTINELS
     needles = [m if re.search(r"[/\-:.]", m) else f'"{m}"' for m in sorted(ids)]   # a bare word such as opus only as a quoted string
+    import claude_code
+    vocabulary = {f'"{m}"' for m in claude_code.MODELS}
+    needles = sorted(set(needles) | vocabulary)                  # a Claude Code name not on today's roster is still not written in the code
     offenders = []
     for path in sorted(SRC.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts:
@@ -95,7 +99,8 @@ def test_no_model_id_string_appears_in_scripts_source_outside_the_roster():
         rel = path.relative_to(REPO).as_posix()
         if rel in MODEL_ID_EXCEPTIONS:
             continue
-        offenders += [f"{rel}: {needle}" for needle in needles if needle in text]
+        allowed = vocabulary if rel == CLAUDE_CODE_VOCABULARY else set()
+        offenders += [f"{rel}: {needle}" for needle in needles if needle in text and needle not in allowed]
         offenders += [f"{rel}: {m.group(0)}" for m in FAMILY_ID.finditer(text)]
     assert not offenders, "model ID strings in scripts/source outside config/roster.json:\n" + "\n".join(offenders)
 
@@ -175,9 +180,9 @@ def test_without_satvik_profile_the_test_profile_loads_with_every_role_free():
     roles = loaded["roles"]
     assert {r: roles[r]["model"] for r in ROLE_NAMES} == {
         "writer_a": "dots-studio/dots-3-note-preview:free",
-        "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
-        "reviewer_a": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner 2026-11-02: free test reviewer; the author is still never on the panel (test 3)
-        "reviewer_b": "cohere/north-mini-code:free",
+        "writer_b": "nvidia/nemotron-3-ultra-550b-a55b:free",     # owner 2026-11-03: Nemotron Ultra replaces Xing (HTTP 429 from the shared pool on every call)
+        "reviewer_a": "non_author_writer",                        # owner 2026-11-03: the free writer that did not write the code
+        "reviewer_b": "nvidia/nemotron-3.5-super-vl:free",        # owner 2026-11-03: replaces North (no verdict in 16K tokens, twice); not a writer, so the panel stays independent
         "repair": "off",
         "planner": "fake",
     }
@@ -245,10 +250,10 @@ def test_run_job_runs_a_production_job_under_the_test_roster_with_review_usd_zer
     profile("test")
     free = {role: spec["model"] for role, spec in oc.load_profile("test").items() if not spec["paid"]}
     # the fake transport names a provider in every reply; a free roster model has no pin, so the fake's name lookup needs one here (free slot: no effect on the request)
-    monkeypatch.setitem(oc.roster_state()["PINS"], free["reviewer_a"], {"name": "Fake", "slug": "fake"})
+    monkeypatch.setitem(oc.roster_state()["PINS"], free["reviewer_b"], {"name": "Fake", "slug": "fake"})
     job = prod_job(budget={"free_requests": 40, "review_usd": 0, "paid_usd": 0})
     provider = ph.Provider({free["writer_a"]: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-                            free["reviewer_a"]: [ph.READY], free["reviewer_b"]: [ph.READY]})
+                            free["writer_b"]: [ph.READY], free["reviewer_b"]: [ph.READY]})     # panel: Nemotron (reviewer_b), then Xing (non_author_writer)
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0)), scrub_keys=[])
     assert result["state"] == "passed", result
     assert provider.models() and set(provider.models()) <= set(free.values())   # every model call went to a free roster model

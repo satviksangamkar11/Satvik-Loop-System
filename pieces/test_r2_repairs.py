@@ -206,7 +206,10 @@ def test_both_profiles_carry_the_repair_cap_and_writer_b_at_temperature_0_2():
     roster = oc.load_roster_file()
     for name in ("test", "production"):
         assert roster[name]["repair_max_tokens"] == 10000
-        assert roster[name]["roles"]["writer_b"]["settings"]["temperature"] == 0.2
+        writer_b = roster[name]["roles"]["writer_b"]
+        if writer_b["model"].startswith("xingchen-agi/"):          # Xing's own setting (R2); the test roster's writer_b is Nemotron Ultra since 2026-11-03
+            assert writer_b["settings"]["temperature"] == 0.2
+    assert roster["production"]["roles"]["writer_b"]["model"].startswith("xingchen-agi/")
 
 
 # ---------------------------------------------------------------- 6. writer prompt example when reasoning is off

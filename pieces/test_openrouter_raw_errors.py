@@ -190,7 +190,7 @@ def test_probe_can_be_limited_to_named_models(tmp_path):
     fake.on("/chat/completions", ok("OK"), ok("OK"))
     built, _ = client(tmp_path, fake)
     summary = oc.probe(built, None, names=["writer_a", "reviewer_b"])
-    assert [p["body"]["model"] for p in fake.posts()] == [DOTS, NORTH]
+    assert [p["body"]["model"] for p in fake.posts()] == [DOTS, oc.roster_state()["ROLES"]["reviewer_b"]]
     assert set(summary["probes"]) == {"writer_a", "reviewer_b"}
 
 
@@ -202,4 +202,4 @@ def test_cli_models_option_runs_only_the_named_models(tmp_path, monkeypatch):
     monkeypatch.setattr(oc, "load_keys", lambda: {"free": FREE_KEY, "paid": PAID_KEY})
     code = oc.main(["probe", "--out", str(tmp_path / "probe.json"), "--ledger", str(tmp_path / "ledger"), "--models", "reviewer_b"])
     assert code == 0
-    assert [p["body"]["model"] for p in fake.posts()] == [NORTH]
+    assert [p["body"]["model"] for p in fake.posts()] == [oc.roster_state()["ROLES"]["reviewer_b"]]

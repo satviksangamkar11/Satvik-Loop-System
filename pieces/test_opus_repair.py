@@ -35,6 +35,12 @@ def fake(tmp_path, monkeypatch):
     return Fake()
 
 
+@pytest.fixture(autouse=True)
+def _production_profile(profile):
+    """2026-11-03: the repair model is the roster's repair role, opus at medium in the production profile (the test profile's is off)."""
+    profile("production")
+
+
 def envelope(result, is_error=False):
     return {"type": "result", "is_error": is_error, "result": result}
 
@@ -124,6 +130,38 @@ def test_a_non_zero_exit_is_a_failed_call(fake):
         opus.ask("p", enabled=True, runner=runner)
 
 
+# ---- 3b. the process exit code rides on the error (None when no process ended)
+
+def test_a_non_zero_exit_carries_its_exit_code(fake):
+    def runner(prompt, cwd, claude_cmd, timeout_s, env):
+        return 3, "", "boom"
+    with pytest.raises(opus.RepairFailed) as caught:
+        opus.ask("p", enabled=True, runner=runner)
+    assert caught.value.exit_code == 3
+
+
+def test_an_error_flag_or_a_bad_reply_on_a_clean_exit_carries_exit_code_zero(fake):
+    fake.reply(envelope("something went wrong", is_error=True))
+    with pytest.raises(opus.RepairFailed) as failed:
+        opus.ask("p", enabled=True)
+    assert failed.value.exit_code == 0
+    fake.reply(envelope("I would rather not write files."))
+    with pytest.raises(opus.RepairBadReply) as bad:
+        opus.ask("p", enabled=True)
+    assert bad.value.exit_code == 0
+
+
+def test_a_timeout_and_a_switch_off_carry_no_exit_code(monkeypatch):
+    def timed_out(prompt, cwd, claude_cmd, timeout_s, env):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout_s)
+    with pytest.raises(opus.RepairFailed) as timeout:
+        opus.ask("p", enabled=True, runner=timed_out)
+    assert timeout.value.exit_code is None
+    with pytest.raises(opus.RepairFailed) as off:
+        opus.ask("p", enabled=False, runner=timed_out)
+    assert off.value.exit_code is None
+
+
 def test_a_reply_with_no_file_blocks_is_a_bad_reply(fake):
     fake.reply(envelope("I would rather not write files."))
     with pytest.raises(opus.RepairBadReply, match="no FILE blocks"):
@@ -166,9 +204,11 @@ def test_the_word_opus_appears_in_no_p1b_module_but_opus_repair(name):
     assert "opus" not in text, f"{name} names opus; the Opus call lives only in opus_repair.py"
 
 
-def test_opus_is_a_model_name_only_in_opus_repair():
+def test_opus_repair_names_no_model_the_repair_role_is_read_from_the_roster():
+    """2026-11-03: the repair model and effort are the roster's repair role (config/roster.json); opus_repair.py holds no model name."""
     text = (REPO / "scripts" / "source" / "opus_repair.py").read_text(encoding="utf-8")
-    assert '"opus"' in text
+    assert '"opus"' not in text and "MODEL, EFFORT" not in text
+    assert opus.repair_model() == ("opus", "medium")             # today's production roster
 
 
 # ---- 9. the test guard: a real Claude command never starts under pytest (2026-11-02)

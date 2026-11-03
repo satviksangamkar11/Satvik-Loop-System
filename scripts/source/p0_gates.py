@@ -21,7 +21,7 @@ NEVER_INCLUDED = {"_moss", "_loop", "secrets", ".git"}
 # the loop's own control files (lower case, repo-relative, fnmatch patterns): a production job may never edit them
 PROTECTED_CONTROL_FILES = (
     "scripts/source/fix_loop.py", "scripts/source/p1b_*.py", "scripts/source/openrouter_call.py", "scripts/source/sandbox_runner.py",
-    "scripts/source/p0_gates.py", "scripts/source/opus_repair.py", "scripts/source/plan_job.py", "scripts/source/loop_home.py",
+    "scripts/source/p0_gates.py", "scripts/source/opus_repair.py", "scripts/source/claude_code.py", "scripts/source/plan_job.py", "scripts/source/loop_home.py",
     "scripts/source/launch.py", "scripts/source/merge_queue.py", "scripts/source/shared_limits.py", "config/roster.json", "tools/sandbox/*",
 )
 

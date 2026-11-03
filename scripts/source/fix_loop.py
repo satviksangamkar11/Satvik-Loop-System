@@ -1506,11 +1506,10 @@ def restore_files(wt: Path, files: list[str]) -> None:
 
 
 def ledger_budget() -> dict:
-    """The launcher's start figures from package E's account ledger (shared_limits.usage): free requests left today (the daily cap less
-    the ones used) and review spend."""
-    sl = _sibling_module("shared_limits")
-    usage = sl.usage()
-    return {"free_requests": sl.FREE_DAILY_CAP - usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
+    """The launcher's start figures from package E's account ledger (shared_limits.usage): free requests left today (the day's free cap, live
+    or fallback, less the ones used) and review spend."""
+    usage = _sibling_module("shared_limits").usage()
+    return {"free_requests": usage["free_cap"] - usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
 
 
 def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, **run_kwargs) -> dict:
@@ -1548,7 +1547,9 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
 
 
 def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
-    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it."""
+    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it. A passed job's own files (job
+    "files": the code and its tests) go into the same commit: they are what the merge delivers. A job that did not pass commits the doc only
+    (its files were restored to the originals)."""
     doc = Path(wt) / "docs" / "changes" / f"{job_id}.md"
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text("\n".join([
@@ -1563,6 +1564,11 @@ def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) 
     ]), encoding="utf-8")
     git = _sibling_module("launch").git
     git(["add", doc.relative_to(wt).as_posix()], wt)
+    if result.get("state") == "passed":                      # the delivered code: new, changed or deleted job files
+        tracked = set(git(["ls-files", "--", *job["files"]], wt).stdout.split())
+        paths = [rel for rel in job["files"] if (Path(wt) / rel).exists() or rel in tracked]
+        if paths:
+            git(["add", "-A", "--", *paths], wt)
     git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
     return doc
 

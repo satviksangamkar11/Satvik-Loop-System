@@ -1,0 +1,25 @@
+{
+ "name": "tl-roman",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/two-loop/TL_ROMAN_SPEC.md",
+ "files": ["scripts/source/tl_roman.py", "pieces/test_tl_roman.py"],
+ "tests": ["pieces/test_tl_roman.py"],
+ "acceptance_tests": ["tests/acceptance/tl_roman_acceptance.py"],
+ "negative_controls": [
+  {"name": "plain-i",
+   "replace": {"scripts/source/tl_roman.py": "tests/controls/tl_roman_plain.py"},
+   "must_fail": ["tests/acceptance/tl_roman_acceptance.py::test_examples",
+                 "tests/acceptance/tl_roman_acceptance.py::test_every_value_is_the_standard_numeral",
+                 "tests/acceptance/tl_roman_acceptance.py::test_out_of_range_raises"]}
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/tl_roman_acceptance.py::test_examples",
+  "tests/acceptance/tl_roman_acceptance.py::test_every_value_is_the_standard_numeral",
+  "tests/acceptance/tl_roman_acceptance.py::test_out_of_range_raises"
+ ],
+ "fixers": ["writer_a", "writer_b"],
+ "reviewers": "by_lineage",
+ "budget": {"free_requests": 40, "review_usd": 0, "paid_usd": 0},
+ "deadline_min": 60
+}
