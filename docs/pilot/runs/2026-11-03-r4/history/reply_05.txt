@@ -1,0 +1,26 @@
+
+
+FILE: scripts/source/loop_status.py
+<<<<<<< SEARCH
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 0:
+        loop_dir = argv[-1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+=======
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+>>>>>>> REPLACE

@@ -1,0 +1,86 @@
+{
+  "name": "pilot-loop-status",
+  "schema_version": 1,
+  "state": "review-open",
+  "profile": "production",
+  "tests_passed": true,
+  "review_verdict": "FIX FIRST",
+  "reason": "FIX FIRST repair round 1 by dots-studio/dots-3-note-preview:free left the tests red (tests/acceptance/test_loop_status_acceptance.py::test_main_output); the last green code is kept; nvidia/nemotron-3-ultra-550b-a55b:free: - scripts/source/loop_status.py:79 [SPEC 9]: default \"_loop\" never used; argv[-1] taken even when only script name present\n\n## Verdict: FIX FIRST",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "red: 1 failing"
+    },
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "repair",
+      "note": "1 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "green"
+    },
+    {
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "mode": "review",
+      "note": "## Verdict: FIX FIRST"
+    },
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "repair",
+      "note": "1 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "red: 1 failing"
+    },
+    {
+      "model": "checkout",
+      "mode": "restore-green",
+      "note": "the last green code is back on disk"
+    }
+  ],
+  "coder_calls": 3,
+  "reviewer_calls": {
+    "nvidia/nemotron-3.5-super-vl:free": 1,
+    "nvidia/nemotron-3-ultra-550b-a55b:free": 1
+  },
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/test_loop_status_acceptance.py": "a7b76ccd88b2986d1c9346fb8ca9b53aa6df2153589ed2c8ff8f11b78556f957",
+      "tests/controls/loop_status_empty.py": "5a280748e31dc51ae3f1332940db5bb8a530d7143f5bc0307dbd4cf2e91bab1b"
+    },
+    "calibration": "passed",
+    "review_hashes": [
+      "081818905dab6b502dcb898ab95a1d13873556a133df265ca201849fb9b2754f",
+      "081818905dab6b502dcb898ab95a1d13873556a133df265ca201849fb9b2754f"
+    ],
+    "budget": {
+      "free_requests_used": 5,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": []
+  },
+  "updated": "2026-11-03T13:02:21Z",
+  "findings": [
+    "scripts/source/loop_status.py:79 | SPEC 9: - KNOWN: main(argv) takes an optional loop folder (default \"_loop\"), prints one line per row as \"name | state | coder_calls | reason\", then, only if bad is not empty, one line \"unreadable: \" followed by the bad names joined by \", \", and returns 0. | default \"_loop\" never used; argv[-1] taken even when only script name present"
+  ]
+}

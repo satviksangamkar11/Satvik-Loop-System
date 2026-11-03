@@ -1,0 +1,10 @@
+........................F.                                               [100%]
+=================================== FAILURES ===================================
+_______________________________ test_main_output _______________________________
+tests/acceptance/test_loop_status_acceptance.py:87: in test_main_output
+    assert len(out) == 3
+E   assert 0 == 3
+E    +  where 0 = len([])
+=========================== short test summary info ============================
+FAILED tests/acceptance/test_loop_status_acceptance.py::test_main_output - as...
+1 failed, 25 passed in 0.56s

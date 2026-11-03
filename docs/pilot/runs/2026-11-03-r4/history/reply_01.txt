@@ -1,0 +1,357 @@
+
+
+FILE: scripts/source/loop_status.py
+```python
+import os
+import json
+import sys
+
+
+def collect(loop_dir):
+    if not os.path.isdir(loop_dir):
+        return [], []
+    
+    rows = []
+    bad = []
+    
+    for entry in os.listdir(loop_dir):
+        folder_path = os.path.join(loop_dir, entry)
+        if not os.path.isdir(folder_path):
+            continue
+        status_path = os.path.join(folder_path, "status.json")
+        if not os.path.exists(status_path):
+            continue
+        try:
+            with open(status_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            bad.append(entry)
+            continue
+        
+        if not isinstance(data, dict):
+            bad.append(entry)
+            continue
+        
+        # Extract fields with defaults
+        name = data.get("name")
+        if name is None:
+            name = ""
+        else:
+            name = str(name)
+        
+        state = data.get("state")
+        if state is None:
+            state = ""
+        else:
+            state = str(state)
+        
+        reason = data.get("reason")
+        if reason is None:
+            reason = ""
+        else:
+            reason = str(reason)
+        reason = reason[:80]
+        
+        coder_calls = data.get("coder_calls")
+        if coder_calls is None:
+            coder_calls = 0
+        
+        updated = data.get("updated")
+        if updated is None:
+            updated = ""
+        else:
+            updated = str(updated)
+        
+        rows.append({
+            "name": name,
+            "state": state,
+            "reason": reason,
+            "coder_calls": coder_calls,
+            "updated": updated
+        })
+    
+    # Sort: first by name A to Z, then by updated newest first (descending)
+    rows.sort(key=lambda r: r["name"])
+    rows.sort(key=lambda r: r["updated"], reverse=True)
+    
+    bad.sort()
+    return rows, bad
+
+
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+```
+
+FILE: pieces/test_loop_status.py
+```python
+import sys
+import os
+import unittest
+import tempfile
+import shutil
+import json
+import io
+from contextlib import redirect_stdout
+
+# Adjust path to import loop_status
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+import loop_status
+
+
+class TestLoopStatus(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_collect_nonexistent_dir(self):
+        rows, bad = loop_status.collect(os.path.join(self.tmpdir, "nonexistent"))
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+
+    def test_collect_empty_dir(self):
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+
+    def test_collect_valid(self):
+        job1 = os.path.join(self.tmpdir, "job1")
+        os.makedirs(job1)
+        status1 = {"name": "job1", "state": "running", "reason": "ok", "coder_calls": 5, "updated": "2023-01-01T10:00:00"}
+        with open(os.path.join(job1, "status.json"), "w") as f:
+            json.dump(status1, f)
+        
+        job2 = os.path.join(self.tmpdir, "job2")
+        os.makedirs(job2)
+        status2 = {"name": "job2", "state": "done", "reason": "finished", "coder_calls": 10, "updated": "2023-01-02T10:00:00"}
+        with open(os.path.join(job2, "status.json"), "w") as f:
+            json.dump(status2, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(bad, [])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["name"], "job2")
+        self.assertEqual(rows[1]["name"], "job1")
+        self.assertEqual(rows[0]["state"], "done")
+        self.assertEqual(rows[0]["coder_calls"], 10)
+        self.assertEqual(rows[0]["reason"], "finished")
+        self.assertEqual(rows[0]["updated"], "2023-01-02T10:00:00")
+
+    def test_collect_missing_fields(self):
+        job = os.path.join(self.tmpdir, "job_missing")
+        os.makedirs(job)
+        status = {"name": "job_missing"}
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(bad, [])
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["name"], "job_missing")
+        self.assertEqual(row["state"], "")
+        self.assertEqual(row["reason"], "")
+        self.assertEqual(row["coder_calls"], 0)
+        self.assertEqual(row["updated"], "")
+
+    def test_reason_truncation(self):
+        job = os.path.join(self.tmpdir, "job_long")
+        os.makedirs(job)
+        long_reason = "a" * 100
+        status = {"name": "job_long", "reason": long_reason, "updated": "2023-01-01"}
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]["reason"]), 80)
+        self.assertEqual(rows[0]["reason"], "a" * 80)
+
+    def test_collect_invalid_json(self):
+        job = os.path.join(self.tmpdir, "job_bad_json")
+        os.makedirs(job)
+        with open(os.path.join(job, "status.json"), "w") as f:
+            f.write("{invalid json")
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, ["job_bad_json"])
+
+    def test_collect_non_object_json(self):
+        job = os.path.join(self.tmpdir, "job_list")
+        os.makedirs(job)
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump([1, 2, 3], f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, ["job_list"])
+
+    def test_collect_unreadable_status_json_directory(self):
+        job = os.path.join(self.tmpdir, "job_dir_status")
+        os.makedirs(job)
+        os.makedirs(os.path.join(job, "status.json"))
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, ["job_dir_status"])
+
+    def test_collect_missing_status_json(self):
+        job = os.path.join(self.tmpdir, "job_no_status")
+        os.makedirs(job)
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+
+    def test_collect_ignores_deep_files(self):
+        job = os.path.join(self.tmpdir, "job_deep")
+        os.makedirs(job)
+        deep_dir = os.path.join(job, "sub")
+        os.makedirs(deep_dir)
+        status = {"name": "deep", "updated": "2023-01-01"}
+        with open(os.path.join(deep_dir, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows, [])
+        self.assertEqual(bad, [])
+
+    def test_sorting_equal_updated(self):
+        job_a = os.path.join(self.tmpdir, "aaa")
+        os.makedirs(job_a)
+        status_a = {"name": "aaa", "updated": "2023-01-01"}
+        with open(os.path.join(job_a, "status.json"), "w") as f:
+            json.dump(status_a, f)
+        
+        job_b = os.path.join(self.tmpdir, "bbb")
+        os.makedirs(job_b)
+        status_b = {"name": "bbb", "updated": "2023-01-01"}
+        with open(os.path.join(job_b, "status.json"), "w") as f:
+            json.dump(status_b, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["name"], "aaa")
+        self.assertEqual(rows[1]["name"], "bbb")
+
+    def test_sorting_updated_descending(self):
+        job_old = os.path.join(self.tmpdir, "old")
+        os.makedirs(job_old)
+        status_old = {"name": "old", "updated": "2023-01-01"}
+        with open(os.path.join(job_old, "status.json"), "w") as f:
+            json.dump(status_old, f)
+        
+        job_new = os.path.join(self.tmpdir, "new")
+        os.makedirs(job_new)
+        status_new = {"name": "new", "updated": "2023-01-02"}
+        with open(os.path.join(job_new, "status.json"), "w") as f:
+            json.dump(status_new, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(rows[0]["name"], "new")
+        self.assertEqual(rows[1]["name"], "old")
+
+    def test_main_prints_rows(self):
+        job = os.path.join(self.tmpdir, "job1")
+        os.makedirs(job)
+        status = {"name": "job1", "state": "running", "reason": "ok", "coder_calls": 5, "updated": "2023-01-01"}
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = loop_status.main(["loop_status", self.tmpdir])
+        output = buf.getvalue().strip()
+        self.assertEqual(ret, 0)
+        self.assertIn("job1 | running | 5 | ok", output)
+
+    def test_main_prints_unreadable(self):
+        job = os.path.join(self.tmpdir, "bad_job")
+        os.makedirs(job)
+        with open(os.path.join(job, "status.json"), "w") as f:
+            f.write("invalid")
+        
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            ret = loop_status.main(["loop_status", self.tmpdir])
+        output = buf.getvalue().strip()
+        self.assertEqual(ret, 0)
+        self.assertIn("unreadable: bad_job", output)
+
+    def test_main_default_loop_dir(self):
+        old_cwd = os.getcwd()
+        os.chdir(self.tmpdir)
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ret = loop_status.main(["loop_status"])
+            output = buf.getvalue().strip()
+            self.assertEqual(ret, 0)
+            self.assertEqual(output, "")
+        finally:
+            os.chdir(old_cwd)
+
+    def test_collect_non_string_fields(self):
+        job = os.path.join(self.tmpdir, "job_num")
+        os.makedirs(job)
+        status = {"name": 123, "state": True, "reason": 456, "updated": 789, "coder_calls": 1}
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["name"], "123")
+        self.assertEqual(row["state"], "True")
+        self.assertEqual(row["reason"], "456")
+        self.assertEqual(row["updated"], "789")
+        self.assertEqual(row["coder_calls"], 1)
+
+    def test_collect_null_fields(self):
+        job = os.path.join(self.tmpdir, "job_null")
+        os.makedirs(job)
+        status = {"name": None, "state": None, "reason": None, "coder_calls": None, "updated": None}
+        with open(os.path.join(job, "status.json"), "w") as f:
+            json.dump(status, f)
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["name"], "")
+        self.assertEqual(row["state"], "")
+        self.assertEqual(row["reason"], "")
+        self.assertEqual(row["coder_calls"], 0)
+        self.assertEqual(row["updated"], "")
+
+    def test_collect_bad_sorted(self):
+        os.makedirs(os.path.join(self.tmpdir, "zeta"))
+        with open(os.path.join(self.tmpdir, "zeta", "status.json"), "w") as f:
+            f.write("bad")
+        os.makedirs(os.path.join(self.tmpdir, "alpha"))
+        with open(os.path.join(self.tmpdir, "alpha", "status.json"), "w") as f:
+            f.write("bad")
+        os.makedirs(os.path.join(self.tmpdir, "middle"))
+        with open(os.path.join(self.tmpdir, "middle", "status.json"), "w") as f:
+            f.write("bad")
+        
+        rows, bad = loop_status.collect(self.tmpdir)
+        self.assertEqual(bad, ["alpha", "middle", "zeta"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+```

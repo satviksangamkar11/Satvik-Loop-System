@@ -1,0 +1,3 @@
+- scripts/source/loop_status.py:79 [SPEC 9]: default "_loop" never used; argv[-1] taken even when only script name present
+
+## Verdict: FIX FIRST

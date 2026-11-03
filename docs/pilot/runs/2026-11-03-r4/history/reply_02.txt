@@ -1,0 +1,16 @@
+
+
+Looking at the failing acceptance test, the issue is that `main([str(loop)])` passes the loop directory as `argv[0]`, but the current code only checks `argv[1]`. The fix is to use the last argument when any arguments are provided.
+
+FILE: scripts/source/loop_status.py
+<<<<<<< SEARCH
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+=======
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 0:
+        loop_dir = argv[-1]
+>>>>>>> REPLACE

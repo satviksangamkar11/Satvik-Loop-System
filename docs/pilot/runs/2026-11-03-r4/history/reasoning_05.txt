@@ -1,0 +1,65 @@
+We need to fix the main function to use default "_loop" when no argument provided, and only use argv[-1] if there is at least one argument beyond script name? Actually the spec says main(argv) takes an optional loop folder (default "_loop"). So we need to check len(argv) > 1? Usually argv[0] is script name, so optional argument is argv[1] if present. The current code uses argv[-1] which would be the script name if no arguments, causing default never used. We need to change to: if len(argv) > 1: loop_dir = argv[1] else loop_dir = "_loop". Or could use argv[-1] but only if len(argv) > 1. The fix should be exactly that.
+
+We must output only SEARCH/ REPLACE blocks for the file changed. We'll change the main function.
+
+We need to copy exact lines from file. Let's view the file content as given. The main function is:
+
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 0:
+        loop_dir = argv[-1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+
+We need to replace with correct logic. The fix: use default if len(argv) <= 1, else use argv[1] (or argv[-1] but safer to use argv[1]). The spec says optional loop folder, so likely first argument after script name. We'll implement:
+
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+    ...
+
+Alternatively could use argv[-1] but only if len(argv) > 1. But using argv[1] is clearer.
+
+We'll produce SEARCH/REPLACE block.
+
+We must ensure the SEARCH text matches exactly the lines in the file. The file includes the lines exactly as shown. We'll copy them.
+
+Potential issues: indentation is 4 spaces. We'll include exactly.
+
+We'll output:
+
+FILE: scripts/source/loop_status.py
+<<<<<<< SEARCH
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 0:
+        loop_dir = argv[-1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+=======
+def main(argv):
+    loop_dir = "_loop"
+    if len(argv) > 1:
+        loop_dir = argv[1]
+    rows, bad = collect(loop_dir)
+    for row in rows:
+        print(f"{row['name']} | {row['state']} | {row['coder_calls']} | {row['reason']}")
+    if bad:
+        print("unreadable: " + ", ".join(bad))
+    return 0
+>>>>>>> REPLACE
+
+Make sure to include the exact lines.
+
+We also need to ensure we don't change anything else. So only this block.
+
+Let's output.
