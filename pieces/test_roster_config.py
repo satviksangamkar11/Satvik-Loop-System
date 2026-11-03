@@ -176,8 +176,8 @@ def test_without_satvik_profile_the_test_profile_loads_with_every_role_free():
     assert {r: roles[r]["model"] for r in ROLE_NAMES} == {
         "writer_a": "dots-studio/dots-3-note-preview:free",
         "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
-        "reviewer_a": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner 2026-11-02: free test reviewer; the author is still never on the panel (test 3)
-        "reviewer_b": "cohere/north-mini-code:free",
+        "reviewer_a": "non_author_writer",                        # owner 2026-11-03: the free writer that did not write the code
+        "reviewer_b": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner 2026-11-03: Nemotron Ultra replaces North (no verdict in 16K tokens, twice)
         "repair": "off",
         "planner": "fake",
     }
@@ -245,10 +245,10 @@ def test_run_job_runs_a_production_job_under_the_test_roster_with_review_usd_zer
     profile("test")
     free = {role: spec["model"] for role, spec in oc.load_profile("test").items() if not spec["paid"]}
     # the fake transport names a provider in every reply; a free roster model has no pin, so the fake's name lookup needs one here (free slot: no effect on the request)
-    monkeypatch.setitem(oc.roster_state()["PINS"], free["reviewer_a"], {"name": "Fake", "slug": "fake"})
+    monkeypatch.setitem(oc.roster_state()["PINS"], free["reviewer_b"], {"name": "Fake", "slug": "fake"})
     job = prod_job(budget={"free_requests": 40, "review_usd": 0, "paid_usd": 0})
     provider = ph.Provider({free["writer_a"]: [ph.file_reply(("pieces/calc.py", GOOD_CODE), ("pieces/test_calc.py", GOOD_TEST))],
-                            free["reviewer_a"]: [ph.READY], free["reviewer_b"]: [ph.READY]})
+                            free["writer_b"]: [ph.READY], free["reviewer_b"]: [ph.READY]})     # panel: Nemotron (reviewer_b), then Xing (non_author_writer)
     result = fl.run_job(job, root, openrouter=ph.client(tmp_path, provider, budget=oc.JobBudget(40, 0)), scrub_keys=[])
     assert result["state"] == "passed", result
     assert provider.models() and set(provider.models()) <= set(free.values())   # every model call went to a free roster model

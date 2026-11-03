@@ -946,7 +946,7 @@ def _production_profile(profile):
 
 def test_step9_probe_roles_follow_the_active_profile_and_skip_the_paid_reviewer(profile):
     profile("test")
-    assert oc.probe_roles() == ["writer_a", "writer_b", "reviewer_b", "reviewer_a"]      # the test roster's reviewer_a is free nemotron
+    assert oc.probe_roles() == ["writer_a", "writer_b", "reviewer_b"]                    # the test roster's reviewer_a is non_author_writer (a writer already probed)
     profile("production")
     assert oc.probe_roles() == ["writer_a", "writer_b", "reviewer_b"]                    # the production reviewer_a is paid GLM: never probed
 
