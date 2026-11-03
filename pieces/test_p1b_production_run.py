@@ -303,7 +303,7 @@ class FakeClient:
     def set_job_deadline(self, seconds):
         pass
 
-    def call(self, role, system, user, kind):
+    def call(self, role, system, user, kind, effort=None):
         self.calls.append(oc.ROLES[role])
         item = self.queue.pop(0)
         if isinstance(item, tuple):             # (attempts, error): the adapter's failed attempts for this call, then its error
@@ -503,7 +503,7 @@ class PromptClient(FakeClient):
         super().__init__(queue)
         self.users = []
 
-    def call(self, role, system, user, kind):
+    def call(self, role, system, user, kind, effort=None):
         self.users.append(user)
         return super().call(role, system, user, kind)
 
@@ -589,3 +589,18 @@ def test_a_repair_call_writes_a_call_record_with_no_usage(tmp_path):
     record = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
     assert record["model"] == ANTHROPIC and record["mode"] == "repair" and record["failed"] is True and record["status"] is None
     assert record["prompt_tokens"] is None and record["finish_reason"] is None and record["seconds"] >= 0
+
+
+def test_a_running_job_rewrites_its_status_json_with_progress_and_no_secret(tmp_path):
+    """R1: status.json is rewritten after every step, with state running, the counts so far, and the scrub applied."""
+    job_dir = tmp_path / "calc"
+    job_dir.mkdir()
+    fake = SimpleNamespace(job={"name": "calc"}, job_dir=job_dir, scrub_keys=("sk-secret-key-123",), steps=[])
+    fake.steps.append({"model": "dots", "mode": "write", "note": "3 file(s) returned"})
+    fake.steps.append({"model": "north", "mode": "review", "note": "sk-secret-key-123 in a note"})
+    pm.Production._heartbeat(fake)
+    text = (job_dir / "status.json").read_text(encoding="utf-8")
+    status = json.loads(text)
+    assert status["state"] == "running" and status["coder_calls"] == 1 and status["reviewer_calls"] == {"north": 1}
+    assert "sk-secret-key-123" not in text
+

@@ -465,7 +465,7 @@ class Production:
 
     def _ask(self, model, system, user, kind, mode):
         try:
-            text, _info = self.client.call(role_by_model()[model], system, user, kind=kind)
+            text, _info = self.client.call(role_by_model()[model], system, user, kind=kind, effort=oc.effort_for_mode(mode))
         except oc.OpenRouterError as exc:
             self._record_history(model, mode)
             if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
@@ -523,6 +523,7 @@ class Production:
             (self.history / name).write_text(json.dumps(record, indent=2), encoding="utf-8")
             step["history"] = f"history/{name}"
         self.steps.append(step)
+        self._heartbeat()
 
     def _repair_step(self):
         """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
@@ -681,6 +682,22 @@ class Production:
 
     def _step(self, model, mode, note):
         self.steps.append({"model": model, "mode": mode, "note": note})
+        self._heartbeat()
+
+    def _heartbeat(self):
+        """R1: status.json is rewritten after every step and failed call, so a running job shows its progress instead of a stale time. The
+        fields are the end-of-job status's, with state running; the end-of-job write replaces this file."""
+        if self.job_dir is None:
+            return
+        coder_calls, reviewer_calls = 0, {}
+        for step in self.steps:
+            if step["mode"] in ("write", "repair"):
+                coder_calls += 1
+            elif step["mode"] in ("review", "review-reask"):
+                reviewer_calls[step["model"]] = reviewer_calls.get(step["model"], 0) + 1
+        status = {"name": self.job["name"], "schema_version": 1, "state": "running", "profile": "production", "steps": self.steps,
+                  "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "updated": _now()}
+        (self.job_dir / "status.json").write_text(json.dumps(_scrubbed_obj(status, self.scrub_keys), indent=2), encoding="utf-8")
 
 
 def _messages(junit, ids):
