@@ -136,13 +136,13 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
 ### System (`GET /system/health`, `GET /system/limits`)
 - **`health`:**
   ```json
-  {"backend": "ok", "engine_version": "<main sha>", "docker": "ok|down", "sandbox_image": "ok|missing", "satvik_home": "<path>",
+  {"backend": "ok", "profile": "test|production", "engine_version": "<main sha>", "docker": "ok|down", "sandbox_image": "ok|missing", "satvik_home": "<path>",
    "index_ok": true, "keys": [{"alias": "free", "present": true}, {"alias": "paid", "present": false}], "stop": false}
   ```
   Key values are never returned.
 - **`limits`:**
   ```json
-  {"leases": [{"job_id": "…", "held": true, "heartbeat_age_s": 4, "pid_alive": true}], "claims": [{"path": "…", "job_id": "…"}],
+  {"revision": 1, "leases": [{"job_id": "…", "held": true, "heartbeat_age_s": 4, "pid_alive": true}], "claims": [{"path": "…", "job_id": "…"}],
    "gates": [{"gate": "nemotron", "holders": 1, "capacity": 1}], "ledger": {"free_used": 87, "free_cap": 1000, "review_spent_usd": 0.0}}
   ```
 
@@ -184,5 +184,5 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
 7. **Waiting with no reason** is `waiting-unknown`. A late heartbeat is `stale-warning`. Only `orphan` means dead.
 
 ## 5. Fixtures (sample responses in `monitor/fixtures/`)
-`running_job.json`, `completed_job.json`, `failed_review_job.json`, `quota_refusal.json`, `untriggered_stage_job.json`,
+`jobs.json` (GET /jobs: `{"jobs": [JobSummary…], "index_ok"}`), `running_job.json`, `completed_job.json`, `failed_review_job.json`, `quota_refusal.json`, `untriggered_stage_job.json`,
 `recovered_merge_job.json`, `overview.json`, `models.json`, `stages.json`, `results_escalate.json`, `system_health.json`, `error_examples.json`.

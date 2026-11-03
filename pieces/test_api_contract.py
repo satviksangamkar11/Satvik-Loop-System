@@ -503,6 +503,21 @@ def test_jobs_list_shape_and_filters(world):
     assert world.client.get("/api/jobs", params={"filter": "nope"}).status_code == 400
 
 
+def test_jobs_list_matches_the_jobs_fixture(world):
+    """GET /jobs is {jobs: [JobSummary], index_ok}: each fixture job appears with the same shape and the same derived state."""
+    scripted_completed(world)
+    scripted_escalate(world)
+    scripted_running(world, job_id="fl-top-20261103-2310-9a1c", lease="alive", waiting=True)
+    expected = fixture("jobs.json")
+    body = world.client.get("/api/jobs").json()
+    assert set(body) == {"jobs", "index_ok"} and body["index_ok"] is True
+    got = {j["job_id"]: j for j in body["jobs"]}
+    for want in expected["jobs"]:
+        assert shape_diff(want, got[want["job_id"]]) == [], want["job_id"]
+        assert got[want["job_id"]]["derived_state"] == want["derived_state"]
+        assert got[want["job_id"]]["end_state"] == want["end_state"]
+
+
 def test_error_envelope_matches_error_examples(world):
     examples = fixture("error_examples.json")["examples"]
     assert {e["error"]["code"] for e in examples} >= {"invalid-job", "duplicate-pending", "stage-started", "already-completed",
@@ -655,6 +670,15 @@ def test_limits_revision_range_and_stale(world):
     assert ok.status_code == 200 and ok.json() == {"revision": 2}
     assert limits_config.sandbox_slots() == 2                       # the engine reads it at each start
     assert json.loads((world.repo / "config" / "limits.json").read_text())["revision"] == 2
+    assert world.client.get("/api/system/limits").json()["revision"] == 2        # the UI's next PUT carries this revision
+    assert world.client.put("/api/system/limits", json={"revision": 2, "sandbox_slots": 3}).status_code == 200
+    assert world.client.get("/api/system/limits").json()["revision"] == 3
+
+
+def test_health_names_the_active_profile(world):
+    assert world.client.get("/api/system/health").json()["profile"] == "test"
+    world.monkeypatch.setenv("SATVIK_PROFILE", "production")
+    assert world.client.get("/api/system/health").json()["profile"] == "production"
 
 
 def test_limits_change_waits_for_free_sandbox_slots(world):

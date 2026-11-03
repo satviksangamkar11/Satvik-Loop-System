@@ -468,6 +468,7 @@ def health(home):
     keys = oc.load_keys()
     return {
         "backend": "ok",
+        "profile": oc.active_profile(),
         "engine_version": version,
         "docker": docker_status(),
         "sandbox_image": sandbox_image_status(),
@@ -502,7 +503,7 @@ def limits_view(home):
         capacity = limits["sandbox_slots"] if name == "sandbox" else shared_limits.slot_capacity(name)
         gates.append({"gate": name, "holders": len(holders), "capacity": capacity})
     usage = shared_limits.usage(home)
-    return {"leases": leases, "claims": claims, "gates": gates,
+    return {"revision": limits["revision"], "leases": leases, "claims": claims, "gates": gates,
             "ledger": {"free_used": usage["free_today"], "free_cap": usage["free_cap"], "review_spent_usd": usage["review_spent_usd"]}}
 
 
