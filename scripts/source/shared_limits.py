@@ -56,6 +56,15 @@ def _micro(usd) -> int:
     return value
 
 
+def _review_cap_micro() -> int:
+    """The daily review cap in millionths of a USD: config/limits.json (limits_config, read at each call), REVIEW_CAP_MICRO when unreadable."""
+    try:
+        import limits_config
+        return _micro(limits_config.review_usd_daily_cap())
+    except Exception:
+        return REVIEW_CAP_MICRO
+
+
 def _path(root) -> Path:
     return Path(root) / "ledger" / "limits.json"
 
@@ -134,8 +143,9 @@ def reserve_review(job_id, gen, usd, home_dir=None):
     with lh._locked(root):
         lh._fence(root, job_id, gen)
         st = _state(root, time.time())
-        if st["review_spent"] + st["review_reserved"] + micro > REVIEW_CAP_MICRO:
-            raise ReviewCapReached(f"review spend today would pass ${REVIEW_CAP_MICRO / 1e6:.2f}; nothing was sent")
+        cap = _review_cap_micro()
+        if st["review_spent"] + st["review_reserved"] + micro > cap:
+            raise ReviewCapReached(f"review spend today would pass ${cap / 1e6:.2f}; nothing was sent")
         st["review_reserved"] += micro
         _save_state(root, st)
 

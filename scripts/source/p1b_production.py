@@ -16,6 +16,7 @@ DIFF, FILES, TESTS, RESULTS (from the JUnit file of the last green run), STATIC 
 and 9 are mandatory: if they do not fit PACKAGE_LIMIT the job is blocked before any reviewer call. Only CONTEXT is cut to fit. Excluded paths
 (_loop, _moss, secrets, .git, .env, keys, and anything that resolves outside the repo) are never read."""
 import ast
+import copy
 import difflib
 import json
 import os
@@ -1135,12 +1136,14 @@ def _spec_line(spec_text, test_id, message):
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
-    """Runs the production unit (_run), then releases the lease the job's client took for itself (client.release_job), whatever the outcome."""
+        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None):
+    """Runs the production unit (_run), then releases the lease the job's client took for itself (client.release_job), whatever the outcome.
+    frozen_snapshot: the stage table frozen when the job was queued (stage_config.snapshot, saved beside the queue file); None reads the roster
+    now, as before."""
     try:
         return _run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                     evidence=evidence, client=client, parse_files=parse_files, check_path=check_path, content_problem=content_problem,
-                    scrub_keys=scrub_keys, repair_ask=repair_ask, claude_ask=claude_ask)
+                    scrub_keys=scrub_keys, repair_ask=repair_ask, claude_ask=claude_ask, frozen_snapshot=frozen_snapshot)
     finally:
         release = getattr(client, "release_job", None)
         if release is not None:
@@ -1148,7 +1151,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
 
 
 def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
+         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""
@@ -1157,12 +1160,18 @@ def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, orig
     history = status_dir_job / "history"
     history.mkdir(exist_ok=True)
     try:                                            # the job's stage table, frozen once: every model call of this job resolves through it
-        snap, sha = sc.snapshot(oc.active_profile())
+        if frozen_snapshot is not None:             # frozen at queue time (POST /jobs): used as it was saved, never re-read from the roster
+            if frozen_snapshot.get("profile") != oc.active_profile():
+                raise oc.RosterRefused(f"the frozen stage table is for profile {frozen_snapshot.get('profile')!r}, the run is {oc.active_profile()!r}",
+                                       code="profile-mismatch")
+            snap = copy.deepcopy(frozen_snapshot)
+        else:
+            snap, _sha = sc.snapshot(oc.active_profile())
     except oc.RosterRefused as exc:
         reason = f"stage configuration refused ({getattr(exc, 'code', 'roster-refused')}): {exc}"
         return _finish(job, root, status_dir_job, evidence, scrub_keys, None, p1b.Outcome("refused", reason), None, originals)
     stage_file = sc.write_snapshot(status_dir_job, snap)
-    evidence["stage_snapshot"] = {"sha256": sha, "revision": snap["revision"]}
+    evidence["stage_snapshot"] = sc.snapshot_evidence(snap)
     try:
         client.begin_job()
     except oc.OpenRouterError as exc:
