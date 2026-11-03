@@ -8,5 +8,5 @@
 - KNOWN: rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z.
 - KNOWN: a status.json that cannot be read, is not valid JSON, or is not a JSON object is skipped, and its folder name is added to bad; bad is sorted A to Z.
 - KNOWN: if loop_dir does not exist, collect returns ([], []).
-- KNOWN: main(argv) takes an optional loop folder (default "_loop"), prints one line per row as "name | state | coder_calls | reason", then, only if bad is not empty, one line "unreadable: " followed by the bad names joined by ", ", and returns 0.
+- KNOWN: main(argv) takes the argument list WITHOUT the program name (not sys.argv): argv is [] (loop folder "_loop") or [loop_folder], so argv[0] is the loop folder when given; main prints one line per row as "name | state | coder_calls | reason", then, only if bad is not empty, one line "unreadable: " followed by the bad names joined by ", ", and returns 0.
 - KNOWN: the module is read-only: it never creates, changes or deletes any file or folder.
