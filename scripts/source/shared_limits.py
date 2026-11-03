@@ -69,6 +69,7 @@ def _state(root, now) -> dict:
         "review_reserved": 0 if fresh else int(raw.get("review_reserved", 0)),
         "review_spent": 0 if fresh else int(raw.get("review_spent", 0)),
         "minute": [float(t) for t in raw.get("minute", []) if now - float(t) < WINDOW_S],
+        "notes": list(raw.get("notes", [])),
     }
 
 
@@ -76,10 +77,10 @@ def _save_state(root, state):
     lh._save(_path(root), state)
 
 
-def reserve_free(job_id, gen):
+def reserve_free(job_id, gen, note=None, home_dir=None):
     """One free request for `job_id`: refused when today's count is at FREE_DAILY_CAP or PER_MINUTE requests were sent in the last 60 s.
-    A request that is then sent and fails still counts."""
-    root = lh.home()
+    A request that is then sent and fails still counts. `note` (optional) is kept in the ledger's "notes" list with the job id."""
+    root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         lh._fence(root, job_id, gen)
         now = time.time()
@@ -90,13 +91,15 @@ def reserve_free(job_id, gen):
             raise MinuteFull(f"{PER_MINUTE} requests were sent in the last {WINDOW_S:.0f} s")
         st["free_used"] += 1
         st["minute"].append(now)
+        if note:
+            st["notes"].append({"job": job_id, "note": str(note)})
         _save_state(root, st)
 
 
-def reserve_review(job_id, gen, usd):
+def reserve_review(job_id, gen, usd, home_dir=None):
     """Hold `usd` of today's review spend for `job_id`. Refused when spend plus holds would pass REVIEW_CAP_MICRO (`$0.50`)."""
     micro = _micro(usd)
-    root = lh.home()
+    root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         lh._fence(root, job_id, gen)
         st = _state(root, time.time())
@@ -106,10 +109,10 @@ def reserve_review(job_id, gen, usd):
         _save_state(root, st)
 
 
-def settle_review(job_id, gen, reserved, spent):
+def settle_review(job_id, gen, reserved, spent, home_dir=None):
     """Release the `reserved` hold and book the `spent` actually paid."""
     reserved_micro, spent_micro = _micro(reserved), _micro(spent)
-    root = lh.home()
+    root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         lh._fence(root, job_id, gen)
         st = _state(root, time.time())
@@ -118,11 +121,11 @@ def settle_review(job_id, gen, reserved, spent):
         _save_state(root, st)
 
 
-def pace(timeout_s=None) -> float:
+def pace(timeout_s=None, home_dir=None) -> float:
     """Wait until fewer than PER_MINUTE requests were sent in the last 60 s, then record this send. Returns the send time.
     Call it before every paid send (after reserve_review). reserve_free records its own send, so do not call pace for a free request.
     TimeoutError, without recording a send, when the wait would pass `timeout_s` (the unit deadline's time left)."""
-    root = lh.home()
+    root = lh.home() if home_dir is None else Path(home_dir)
     end = None if timeout_s is None else time.time() + timeout_s
     while True:
         with lh._locked(root):
@@ -148,16 +151,17 @@ def slot_name(model) -> str:
 
 
 @contextmanager
-def model_slot(model, gen, timeout_s):
+def model_slot(model, gen, timeout_s, home_dir=None):
     """Hold one slot of the model's gate for the block. TimeoutError when none frees within timeout_s."""
     name = slot_name(model)
-    with lh.gate.slot(name, gen, timeout_s, capacity=SLOTS[name]):
+    gate = lh.gate if home_dir is None else lh.Gate(home_dir)
+    with gate.slot(name, gen, timeout_s, capacity=SLOTS[name]):
         yield
 
 
-def usage() -> dict:
+def usage(home_dir=None) -> dict:
     """What the ledger holds now (read-only): free requests today, sends in the last 60 s, review spend and holds in USD."""
-    root = lh.home()
+    root = lh.home() if home_dir is None else Path(home_dir)
     with lh._locked(root):
         st = _state(root, time.time())
     return {"day": st["day"], "free_today": st["free_used"], "sent_last_60s": len(st["minute"]),

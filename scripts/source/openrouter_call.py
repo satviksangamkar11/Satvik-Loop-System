@@ -1,8 +1,9 @@
 """OpenRouter adapter (P1a, architecture Revision 2). The only path to OpenRouter.
 
 Models come only from config/roster.json, read for the profile named by SATVIK_PROFILE (default "test"). Roster roles or exact free roster IDs
-only: no auto-routing alias, no fallback lists. Free IDs use the free key and one account-wide ledger; every free attempt is reserved there
-under the lock p1_claims uses (key_ledger.lock), and a failed attempt keeps its reservation. A paid OpenRouter role (production reviewer_a)
+only: no auto-routing alias, no fallback lists. Free IDs use the free key; every free attempt is reserved on the shared ledger
+(shared_limits, in the loop home) under its job, including solo runs, and a failed attempt keeps its reservation. The per-key folder keeps
+only the saved key snapshots: it never changes the count. A paid OpenRouter role (production reviewer_a)
 uses the paid key, is pinned to its roster provider, is reviewer-only (any other kind is refused before a request), and its reviews share one
 per-job ceiling that is reserved before each call. The test profile refuses any paid role when the roster is loaded, before any request.
 Every reply is checked before it counts. Errors are named exceptions; nothing falls back to another model or key. Private code is refused
@@ -33,8 +34,6 @@ SETTING_KEYS = ("temperature", "reasoning", "max_tokens", "timeout_s", "sampling
 NON_AUTHOR_WRITER = "non_author_writer"  # reviewer_a under the test profile: the free writer that did not write the code
 SENTINELS = frozenset({NON_AUTHOR_WRITER, "off", "fake"})   # roster values that are not model IDs
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
-FREE_DAILY_CAP = 1000               # per account, once $10 has been bought (50 below that)
-FREE_PER_MINUTE = 15                # OpenRouter allows 20
 JOB_FREE_REQUESTS = 40
 JOB_REVIEW_USD_BY_PROFILE = {"test": 0.0, "production": 0.05}   # owner 2026-11-02: the paid-review ceiling per job is exactly 0 under test, exactly 0.05 in production
 JOB_REVIEW_USD = JOB_REVIEW_USD_BY_PROFILE["production"]        # reserved before each paid review call
@@ -62,14 +61,32 @@ def _shared_limits():
     return shared_limits
 
 
-def _count_429(model):
-    """One upstream or per-minute 429 for `model`, as the registry counter "429:<model>" (loop_home, step 8). The loop home is SATVIK_HOME,
-    else the repo's _loop, the same fallback p1_claims uses."""
+def _loop_home():
+    """scripts/source/loop_home.py, imported on first use (the same path rule as _shared_limits)."""
     source = str(REPO / "scripts" / "source")
     if source not in sys.path:
         sys.path.insert(0, source)
     import loop_home
-    loop_home.Registry(loop_home.home(fallback=REPO / "_loop")).bump("429:" + model)
+    return loop_home
+
+
+def shared_job(name, fallback):
+    """A job id and its generation on the loop home (shared_limits), for a client that the launcher did not start (a solo run, a probe, a
+    test). The home is SATVIK_HOME, else `fallback`; loop_home refuses a home inside a git worktree."""
+    lh = _loop_home()
+    home = lh.home(loops=1, fallback=fallback)
+    job_id = lh.new_job_id(name, home_dir=home)
+    return job_id, lh.Lease(home).acquire(job_id), home
+
+
+def _count_429(model, home=None):
+    """One upstream or per-minute 429 for `model`, as the registry counter "429:<model>" (loop_home, step 8). The loop home is the client's
+    job home when it has one (Track L), else SATVIK_HOME, else the repo's _loop, the same fallback p1_claims uses."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import loop_home
+    loop_home.Registry(home if home is not None else loop_home.home(fallback=REPO / "_loop")).bump("429:" + model)
 
 
 def _load_p1_claims():
@@ -360,88 +377,6 @@ def review_cost(data, prices):
     return None
 
 
-class FreeLedger:
-    """Account-wide free-request ledger, shared by every free key and every job. Reservations are written before a request is sent and are
-    never returned, so a failed request still counts. `snapshot` is the provider's remaining count when it was last read, and the local count
-    since then is taken off it; a daily 429 sets it to 0 until a new snapshot shows requests again."""
-
-    def __init__(self, directory, clock=time.time, daily_cap=FREE_DAILY_CAP, per_minute=FREE_PER_MINUTE, lock_timeout_s=30.0):
-        folder = str(directory)
-        os.makedirs(folder, exist_ok=True)
-        self.folder = folder
-        self.path = os.path.join(folder, "openrouter_free_ledger.json")
-        self._lock = FileLock(os.path.join(folder, "key_ledger.lock"))
-        self.clock, self.daily_cap, self.per_minute, self.lock_timeout_s = clock, daily_cap, per_minute, lock_timeout_s
-
-    def _acquire(self):
-        try:
-            self._lock.acquire(self.lock_timeout_s)
-        except LedgerError as exc:
-            raise OpenRouterError(f"free ledger lock: {exc}") from exc
-
-    def _read(self, now):
-        try:
-            with open(self.path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except FileNotFoundError:
-            data = {}
-        except (OSError, ValueError) as exc:
-            raise OpenRouterError(f"free ledger unreadable, so today's count is unknown; not guessing: {exc}") from exc
-        if not isinstance(data, dict) or (data.get("day") == utc_day(now) and not isinstance(data.get("used"), int)):
-            raise OpenRouterError("free ledger is malformed; not guessing today's count")
-        if data.get("day") != utc_day(now):
-            data = {"day": utc_day(now), "used": 0, "snapshot": None, "snapshot_used": 0, "minute": []}
-        data["minute"] = [t for t in data.get("minute", []) if isinstance(t, (int, float)) and now - t < 60]
-        return data
-
-    def _save(self, data):
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        os.replace(tmp, self.path)
-
-    def _remaining(self, data):
-        left = self.daily_cap - data["used"]
-        if data["snapshot"] is not None:
-            left = min(left, data["snapshot"] - (data["used"] - data["snapshot_used"]))
-        return left
-
-    def reserve(self):
-        """0.0 when one request is reserved; otherwise the seconds to wait for the per-minute window. Raises QuotaExhausted for the day."""
-        self._acquire()
-        try:
-            now = self.clock()
-            data = self._read(now)
-            if self._remaining(data) <= 0:
-                raise QuotaExhausted("free requests for today are used up on this account")
-            if len(data["minute"]) >= self.per_minute:
-                return max(min(data["minute"]) + 60 - now, 0.05)
-            data["used"] += 1
-            data["minute"].append(now)
-            self._save(data)
-            return 0.0
-        finally:
-            self._lock.release()
-
-    def set_snapshot(self, remaining):
-        self._acquire()
-        try:
-            data = self._read(self.clock())
-            data["snapshot"] = max(int(remaining), 0)
-            data["snapshot_used"] = data["used"]
-            self._save(data)
-        finally:
-            self._lock.release()
-
-    def has_room(self):
-        """True when one more free request fits today's count. Reads only: nothing is reserved."""
-        self._acquire()
-        try:
-            return self._remaining(self._read(self.clock())) > 0
-        finally:
-            self._lock.release()
-
-
 class JobBudget:
     """Per-job ceilings. Every free attempt counts. The GLM reviews share one review ceiling: each call's worst case is reserved before it is
     sent; what its reply reports (or the whole reservation when no reply came) is kept as spent."""
@@ -525,10 +460,11 @@ class OpenRouter:
     """One job's client. `call` returns (text, info) and raises an OpenRouterError subclass for anything that does not count."""
 
     def __init__(self, keys, ledger_dir, budget=None, transport=None, clock=time.time, sleep=time.sleep, rand=random.random,
-                 approved_private=APPROVED_PRIVATE, daily_cap=FREE_DAILY_CAP, per_minute=FREE_PER_MINUTE):
+                 approved_private=APPROVED_PRIVATE):
         self.keys = {slot: value for slot, value in dict(keys).items() if value}
         self._secrets = list(self.keys.values())
-        self.ledger = FreeLedger(ledger_dir, clock=clock, daily_cap=daily_cap, per_minute=per_minute)
+        self.ledger_dir = str(ledger_dir)     # holds the key snapshots only: the free count is the shared ledger (shared_limits)
+        os.makedirs(self.ledger_dir, exist_ok=True)
         self.budget = budget or JobBudget()
         self.breaker = Breaker()
         self.transport = transport or default_transport
@@ -540,15 +476,17 @@ class OpenRouter:
         self.retry_log = []                 # every retry: model, the attempt it starts, the wait in seconds, the error (scrubbed); the job's status keeps it
         self.deadline_at = None             # the unit deadline on this client's clock; no retry may start after it (set_job_deadline)
         self.shared = None                  # (job_id, generation) once set_job puts this client on the account ledger (package E)
+        self.shared_home = None             # the loop home that job lives in (None: SATVIK_HOME)
 
     def set_job_deadline(self, seconds):
         """The unit deadline, `seconds` from now. p1b_production sets it just before the unit's walk starts."""
         self.deadline_at = self.clock() + seconds
 
-    def set_job(self, job_id, gen):
+    def set_job(self, job_id, gen, home=None):
         """Puts every request on the account ledger (shared_limits, package E) under this job and generation: reserve, pace and the model
         slot are taken there. Without it the client keeps its own ledger (the probe and the older tests use that)."""
         self.shared = (job_id, gen)
+        self.shared_home = home
 
     def _deadline_left(self):
         return None if self.deadline_at is None else self.deadline_at - self.clock()
@@ -564,7 +502,7 @@ class OpenRouter:
         """Before a reviewer's 429 retry: the job's free-request count and the account's daily count must leave room for one more request."""
         if self.budget.free_used >= self.budget.free_requests:
             raise self._err(ProviderUnavailable, f"{model}: the job's free requests are used up; the retry is not sent; last 429: {message[:300]}")
-        if not self.ledger.has_room():
+        if self.shared is not None and _shared_limits().usage(self.shared_home)["free_today"] >= _shared_limits().FREE_DAILY_CAP:
             raise self._err(QuotaExhausted, f"{model}: free requests for today are used up; the retry is not sent; last 429: {message[:300]}")
 
     def _reviewer_window_wait(self, model, started, used, floor, message, attempt):
@@ -655,7 +593,7 @@ class OpenRouter:
         free_model_daily_requests (limit, remaining) is used when present; when absent, the local cap is 1000 for a paid-tier key
         (is_free_tier false) and 50 otherwise. Returns a summary with no key values."""
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(self.clock()))
-        folder = os.path.join(self.ledger.folder, "key_snapshots")
+        folder = os.path.join(self.ledger_dir, "key_snapshots")
         os.makedirs(folder, exist_ok=True)
         summary = {}
         for slot in self.keys:
@@ -668,13 +606,9 @@ class OpenRouter:
             info = payload["data"]
             quota = info.get("free_model_daily_requests")
             if isinstance(quota, dict) and isinstance(quota.get("limit"), int) and isinstance(quota.get("remaining"), int):
-                self.ledger.daily_cap = quota["limit"]
-                self.ledger.set_snapshot(quota["remaining"])
-                summary[slot] = {"saved": True, "quota": "provider", "note": "free_model_daily_requests read"}
+                summary[slot] = {"saved": True, "quota": "provider", "note": "free_model_daily_requests read (evidence only; not counted)"}
             else:
-                self.ledger.daily_cap = 1000 if info.get("is_free_tier") is False else 50
-                summary[slot] = {"saved": True, "quota": "local",
-                                 "note": "free_model_daily_requests absent; local cap " + str(self.ledger.daily_cap)}
+                summary[slot] = {"saved": True, "quota": "local", "note": "free_model_daily_requests absent (evidence only; not counted)"}
         return summary
 
     def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None):
@@ -750,9 +684,8 @@ class OpenRouter:
                 self._note(model, http_status, message)
                 limit = classify_429(message)
                 if limit == "daily":
-                    self.ledger.set_snapshot(0)
                     raise self._err(QuotaExhausted, f"{model}: daily free limit reached: {message[:200]}")
-                _count_429(model)                       # upstream or per-minute only; a daily 429 stops above and is not counted
+                _count_429(model, self.shared_home)     # upstream or per-minute only; a daily 429 stops above and is not counted
                 if limit == "minute":
                     self._wait_before_retry(model, retries, retry_after(headers) or MINUTE_WAIT_DEFAULT_S, "rate limited per minute", attempts + 1)
                     retries += 1
@@ -783,6 +716,8 @@ class OpenRouter:
     def _reserve(self, model, slot, system, user, tokens):
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
+        if slot == "free" and self.shared is None:      # solo, probe and tests: a job on the loop home, so the call counts on the shared ledger
+            self.set_job(*shared_job("openrouter-client", self.ledger_dir))
         if self.shared is not None:
             return self._reserve_shared(model, slot, system, user, tokens)
         if slot == "paid":
@@ -791,40 +726,34 @@ class OpenRouter:
             self.endpoint(model)
             self.budget.reserve_review(estimate)
             return estimate
-        self.budget.check_free()
-        while True:
-            wait = self.ledger.reserve()
-            if not wait:
-                break
-            self.sleep(wait)
-        self.budget.free_used += 1
-        return 0.0
+        raise AssertionError("unreachable: a free call always takes the shared ledger")
 
     def _reserve_shared(self, model, slot, system, user, tokens):
         """The account ledger (package E). A wait for the minute window or the pace counts against the unit deadline: it is cut off there."""
         sl = _shared_limits()
         job_id, gen = self.shared
+        home = self.shared_home
         if slot == "paid":
             estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
             self.budget.check_review(estimate)
             self.endpoint(model)
             self.budget.reserve_review(estimate)
             try:
-                sl.reserve_review(job_id, gen, estimate)
+                sl.reserve_review(job_id, gen, estimate, home_dir=home)
             except sl.ReviewCapReached as exc:
                 self.budget.settle_review(estimate, 0.0)
                 raise self._err(ReviewBudgetExceeded, str(exc))
             try:
-                sl.pace(timeout_s=self._deadline_left())
+                sl.pace(timeout_s=self._deadline_left(), home_dir=home)
             except TimeoutError as exc:
-                sl.settle_review(job_id, gen, estimate, 0.0)
+                sl.settle_review(job_id, gen, estimate, 0.0, home_dir=home)
                 self.budget.settle_review(estimate, 0.0)
                 raise self._err(ProviderUnavailable, f"{model}: no send pace before the unit deadline ({exc})")
             return estimate
         self.budget.check_free()
         while True:
             try:
-                sl.reserve_free(job_id, gen)
+                sl.reserve_free(job_id, gen, home_dir=home)
                 break
             except sl.DailyCapReached as exc:
                 raise self._err(QuotaExhausted, str(exc))
@@ -850,7 +779,7 @@ class OpenRouter:
         left = self._deadline_left()
         if left is not None and left <= 0:
             raise self._err(ProviderUnavailable, f"{model}: the unit deadline passed before a slot was free")
-        slot_cm = sl.model_slot(model, gen, timeout_s if left is None else left)
+        slot_cm = sl.model_slot(model, gen, timeout_s if left is None else left, home_dir=self.shared_home)
         try:
             slot_cm.__enter__()
         except TimeoutError as exc:
@@ -871,7 +800,7 @@ class OpenRouter:
         self.budget.settle_review(reserved, spent)
         if self.shared is not None:
             job_id, gen = self.shared
-            _shared_limits().settle_review(job_id, gen, reserved, spent)
+            _shared_limits().settle_review(job_id, gen, reserved, spent, home_dir=self.shared_home)
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s):

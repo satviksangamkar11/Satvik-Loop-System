@@ -70,9 +70,19 @@ def _inside(child, parent) -> bool:
     return c == p or c.startswith(p.rstrip(os.sep) + os.sep)
 
 
+def _git_worktree(path):
+    """The folder of the git worktree that holds `path`, or None. A worktree or a repository has a `.git` entry at its top (a folder, or a
+    file in a linked worktree), so the nearest ancestor with one is the answer. No subprocess: a production job must start no other process."""
+    here = Path(os.path.realpath(str(path)))
+    for folder in (here, *here.parents):
+        if (folder / ".git").exists():
+            return str(folder)
+    return None
+
+
 def home(loops=1, fallback=None, worktrees=()) -> Path:
     """The SATVIK_HOME folder. More than one loop needs it set (HomeRequired otherwise); one loop may use `fallback` when it is unset.
-    A home inside any of `worktrees` is refused."""
+    A home inside any git worktree is refused (git asks where the folder lives), as is a home inside any of `worktrees`."""
     raw = os.environ.get(ENV, "").strip()
     if not raw:
         if loops > 1:
@@ -86,6 +96,9 @@ def home(loops=1, fallback=None, worktrees=()) -> Path:
     for wt in worktrees:
         if _inside(path, wt):
             raise LoopHomeError(f"the loop home {path} is inside the worktree {wt}")
+    top = _git_worktree(path)
+    if top:
+        raise LoopHomeError(f"the loop home {path} is inside the git worktree {top}; a checkout or merge can wipe it. Use a folder outside every worktree")
     path.mkdir(parents=True, exist_ok=True)
     return path
 

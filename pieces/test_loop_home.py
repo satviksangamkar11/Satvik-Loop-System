@@ -402,3 +402,18 @@ def test_the_lock_file_is_one_os_lock_for_every_process(tmp_path, workers):
     with lh._locked(home, timeout_s=2):
         pass
     assert (home / "lock").exists()
+
+
+def test_home_inside_a_git_worktree_is_refused(tmp_path, monkeypatch):
+    """Track L: a home inside any git worktree is refused by home() itself (checkouts and merges can wipe it)."""
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    monkeypatch.setenv("SATVIK_HOME", str(repo / "satvik_home"))
+    with pytest.raises(lh.LoopHomeError, match="worktree"):
+        lh.home()
+    monkeypatch.delenv("SATVIK_HOME")
+    with pytest.raises(lh.LoopHomeError, match="worktree"):
+        lh.home(fallback=repo / "_loop")
+    assert not (repo / "satvik_home").exists()

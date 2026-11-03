@@ -93,10 +93,12 @@ class AcceptanceTampered(Exception):
 
 def client_for(root, job, keys=None):
     """The job's OpenRouter client: the keys (secrets/ or the environment, or `keys` when given), the job's budget exactly as the job states it,
-    and the ledger under _loop/openrouter."""
+    the key snapshots under _loop/openrouter, and a job on the loop home (SATVIK_HOME, else <root>/_loop) for the shared ledger."""
     budget = job["budget"]
-    return oc.OpenRouter(oc.load_keys() if keys is None else keys, Path(root) / "_loop" / "openrouter",
-                         budget=oc.JobBudget(free_requests=budget["free_requests"], review_usd=budget["review_usd"]))
+    client = oc.OpenRouter(oc.load_keys() if keys is None else keys, Path(root) / "_loop" / "openrouter",
+                           budget=oc.JobBudget(free_requests=budget["free_requests"], review_usd=budget["review_usd"]))
+    client.set_job(*oc.shared_job(job.get("name") or "production-client", Path(root) / "_loop"))     # launched or --solo: every call counts on the shared ledger (Track L)
+    return client
 
 
 def restore_files(root, originals):

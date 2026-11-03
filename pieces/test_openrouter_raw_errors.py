@@ -67,6 +67,15 @@ def fail(status, message, headers=None):
     return status, headers or {}, json.dumps({"error": {"code": status, "message": message, "metadata": {}}}).encode()
 
 
+@pytest.fixture(autouse=True)
+def shared_home(tmp_path, monkeypatch):
+    """Track L: free calls count on the loop home (SATVIK_HOME); each test gets its own folder."""
+    folder = tmp_path / "satvik_home"
+    folder.mkdir()
+    monkeypatch.setenv("SATVIK_HOME", str(folder))
+    return folder
+
+
 def client(tmp_path, fake, clock=None, keys=None):
     clock = clock or Clock()
     keys = keys if keys is not None else {"free": FREE_KEY, "paid": PAID_KEY}
