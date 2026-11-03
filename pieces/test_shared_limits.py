@@ -188,6 +188,7 @@ SLOT_CASES = [
     ("z-ai/glm-5.3-flash", 2),
     ("claude-opus", 1),
     ("sandbox", 4),
+    ("google/gemma-4-31b-it:free", 1),            # named by no entry: a gate of its own, one wide
 ]
 
 
@@ -203,9 +204,17 @@ def test_model_slots_never_exceed_their_count_across_processes(model, cap, share
     assert out.strip().splitlines()[-1] == "timeout", err
 
 
-def test_a_model_with_no_slot_is_refused(shared_home):
+def test_a_model_named_by_no_slot_gets_a_gate_of_its_own(shared_home):
+    assert sl.slot_name("Mystery/Model:free") == "mystery/model:free" and sl.slot_capacity("mystery/model:free") == sl.OWN_SLOT == 1
+    assert sl.slot_name("nvidia/nemotron-3.5-super-vl:free") == "nemotron"       # a named family keeps its shared gate
+    with sl.model_slot("mystery/model:free", 1, 0.1):
+        pass
+
+
+@pytest.mark.parametrize("model", ["", "   ", None, 7])
+def test_an_empty_or_non_text_model_has_no_slot(shared_home, model):
     with pytest.raises(ValueError):
-        with sl.model_slot("mystery/model:free", 1, 0.1):
+        with sl.model_slot(model, 1, 0.1):
             pass
 
 

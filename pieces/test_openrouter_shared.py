@@ -124,3 +124,24 @@ def test_production_client_is_on_the_shared_ledger_under_the_root_loop_home(home
     client = p1b_production.client_for(tmp_path, {"name": "solo-check", "budget": {"free_requests": 40, "review_usd": 0.0, "paid_usd": 0}},
                                        keys={"free": KEYS["free"]})
     assert client.shared is not None and client.shared[0].startswith("solo-check-")
+
+
+def test_a_brand_new_roster_model_is_called_on_the_shared_ledger_with_no_code_change(home, tmp_path, monkeypatch, profile):
+    """2026-11-03: any model named in config/roster.json can be used. A model id that no shared_limits.SLOTS entry names gets a gate of its
+    own (one call at a time), so changing the roster is the only change needed."""
+    profile("test")
+    new = "acme/brand-new-coder:free"
+    data = json.loads((REPO / "config" / "roster.json").read_text(encoding="utf-8"))
+    data["profiles"]["test"]["roles"]["reviewer_b"]["model"] = new
+    path = tmp_path / "roster.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(oc, "ROSTER_PATH", path)
+    monkeypatch.setattr(oc, "_ROSTER_STATE", {})
+    payload = {"id": "gen-1", "model": new, "provider": "Acme",
+               "choices": [{"index": 0, "message": {"role": "assistant", "content": REVIEW_OK}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    fake = Fake([(200, {}, json.dumps(payload).encode())])
+    text, info = shared_client(tmp_path, fake, Clock()).call("reviewer_b", "system", "user", kind="reviewer")
+    assert text == REVIEW_OK and info["model"] == new and fake.posts == 1
+    assert sl.usage()["free_today"] == 1
+    assert sl.slot_name(new) == new

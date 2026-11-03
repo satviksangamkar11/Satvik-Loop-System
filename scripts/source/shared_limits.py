@@ -25,6 +25,7 @@ PER_MINUTE = 15                  # the whole account, free and paid; OpenRouter 
 WINDOW_S = 60.0
 REVIEW_CAP_MICRO = 500_000       # $0.50 of review spend per day
 SLOTS = {"dots": 1, "xing": 1, "north": 1, "nemotron": 1, "glm": 2, "opus": 1, "sandbox": 4}
+OWN_SLOT = 1                     # a model named by none of SLOTS gets a gate of its own, this wide (2026-11-03: any roster model may be used)
 
 
 class LimitRefused(RuntimeError):
@@ -172,12 +173,21 @@ def pace(timeout_s=None, home_dir=None) -> float:
 
 
 def slot_name(model) -> str:
-    """The gate name for a model: a short name ("dots") or a roster id that contains one of them. Anything else has no slot."""
-    text = str(model).lower()
+    """The gate name for a model: a short name ("dots") or a roster id that contains one of them; any other model id is a gate of its own
+    (OWN_SLOT wide), so a model added to config/roster.json needs no change here. The roster stays the allow-list: the adapter refuses a
+    model it does not name before a slot is asked for. An empty or non-text model has no slot."""
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError(f"no slot for model {model!r}")
+    text = model.strip().lower()
     for name in SLOTS:
         if text == name or name in text:
             return name
-    raise ValueError(f"no slot for model {model!r}; known: {', '.join(SLOTS)}")
+    return text
+
+
+def slot_capacity(name) -> int:
+    """How many calls the gate `name` (from slot_name) lets run at once."""
+    return SLOTS.get(name, OWN_SLOT)
 
 
 @contextmanager
@@ -185,7 +195,7 @@ def model_slot(model, gen, timeout_s, home_dir=None):
     """Hold one slot of the model's gate for the block. TimeoutError when none frees within timeout_s."""
     name = slot_name(model)
     gate = lh.gate if home_dir is None else lh.Gate(home_dir)
-    with gate.slot(name, gen, timeout_s, capacity=SLOTS[name]):
+    with gate.slot(name, gen, timeout_s, capacity=slot_capacity(name)):
         yield
 
 

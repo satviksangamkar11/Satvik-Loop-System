@@ -387,7 +387,7 @@ the key is absent) or `"claude_code"`, which also needs `"effort"`. Example: `"r
   one `history/call_NN.json` with `"via": "claude_code"`. It is never on the OpenRouter ledger. The panel still never includes the author's model.
 - **Repair or planner on OpenRouter.** A repair role on OpenRouter is one adapter repair call; a planner on OpenRouter is one checked text call
   kept in the claude envelope shape. A paid OpenRouter role still takes reviewer calls only.
-- **Limit.** A new OpenRouter model also needs a gate in `shared_limits.SLOTS` (an unknown model has no slot and is refused before a request).
+- **No code change for a new model.** A model id that no `shared_limits.SLOTS` entry names gets a gate of its own, one call at a time (`shared_limits.OWN_SLOT`). The roster stays the allow-list: the adapter refuses any model it does not name.
 
 ## Change index (close-1 step 7)
 
