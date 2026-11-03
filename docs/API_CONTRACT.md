@@ -23,6 +23,10 @@ these shapes do not without a version bump. The engine facts behind each field a
 - **Index health:** every list response has `"index_ok": true|false`. With `false`, the data came straight from the files (slower, but still
   correct); show a small notice, not an error.
 
+**Running the backend:** `pip install -r monitor/requirements.txt` (fastapi, uvicorn, httpx), then from the repo root
+`SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765`. The base URL is `http://127.0.0.1:8765/api`.
+`SATVIK_UI_ORIGIN` (comma-separated) sets the CORS origins; the default is the two local dev origins on port 5173.
+
 ## 1. Enums (closed sets: show only these)
 - `derived_state` (a job, as the UI shows it): `queued`, `running`, `waiting`, `waiting-unknown`, `stale-warning`, `orphan`, `finished`,
   `merged`.
