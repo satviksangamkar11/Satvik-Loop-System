@@ -1,0 +1,12 @@
+I5 lease check: ah-budget-, ah-idempotency-, ah-shape- leases in D:\aai work\satvik_loop_home\leases (3-loop run 2026-11-04 03:44 IST)
+
+file                                          released   generation
+ah-budget-20261104-0344-1119.json             true:      1         
+ah-budget-20261104-0344-a4a9.json             true:      1         
+ah-idempotency-20261104-0344-978b.json        true:      1         
+ah-idempotency-20261104-0344-b701.json        true:      1         
+ah-shape-20261104-0344-4b72.json              true:      1         
+ah-shape-20261104-0344-61c6.json              true:      1         
+
+found: 6
+released true: 6
