@@ -1,0 +1,137 @@
+We need to produce two files: scripts/source/fl_top.py and pieces/test_fl_top.py.
+
+We must follow the spec exactly. The spec describes the module fl_top.py, which imports fl_wordcount (scripts/source/fl_wordcount.py). It defines top_words(text, k) that returns list of (word, count) tuples, sorted by count descending, then word ascending. Only first k entries. If k=0 returns []. If k<0 raises ValueError. It uses word_counts(text) from fl_wordcount.
+
+We need to write the module accordingly. Also write a test file pieces/test_fl_top.py. Probably test cases for top_words.
+
+We need to output only FILE blocks.
+
+We must ensure the module is read-only, no prints, no file ops, no network.
+
+We need to import fl_wordcount. Since it's in scripts/source, we need to ensure import works. Could use relative import? The spec says "import fl_wordcount" (scripts/source/fl_wordcount.py). So we can just do import fl_wordcount. That implies the directory is on sys.path. In the test file, we might need to adjust path.
+
+But we just need to write the files.
+
+We'll write fl_top.py:
+
+```python
+import fl_wordcount
+
+def top_words(text, k):
+    if k < 0:
+        raise ValueError("k must be non-negative")
+    counts = fl_wordcount.word_counts(text)
+    # sort by count descending, then word ascending
+    sorted_items = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    if k == 0:
+        return []
+    return sorted_items[:k]
+```
+
+But need to handle k=0 returns [] (empty list). Our code returns sorted_items[:0] which is [] anyway, but spec says k=0 returns []. So fine.
+
+But ensure if k > len, returns all.
+
+Also need to handle case where counts is dict? word_counts returns dict mapping word to count.
+
+We'll assume word_counts returns dict.
+
+We'll write test file with some tests.
+
+Test file: pieces/test_fl_top.py
+
+Probably use unittest or pytest. We'll write simple tests.
+
+We need to import top_words from fl_top. Might need to adjust sys.path.
+
+We'll write:
+
+```python
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+from fl_top import top_words
+```
+
+But the spec says the module is scripts/source/fl_top.py. The test file is pieces/test_fl_top.py. So relative path.
+
+We'll include tests:
+
+- test_k_zero
+- test_negative_k_raises
+- test_basic_sorting
+- test_equal_counts_sorted_by_word
+- test_k_larger_than_list
+
+We'll use simple assert or unittest.
+
+Probably better to use unittest for clarity.
+
+We'll write:
+
+```python
+import unittest
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts', 'source'))
+from fl_top import top_words
+
+class TestTopWords(unittest.TestCase):
+    def test_k_zero(self):
+        self.assertEqual(top_words("hello world", 0), [])
+    def test_negative_k(self):
+        with self.assertRaises(ValueError):
+            top_words("hello", -1)
+    def test_basic(self):
+        text = "apple banana apple"
+        result = top_words(text, 1)
+        self.assertEqual(result, [('apple', 2)])
+    def test_equal_counts(self):
+        text = "apple banana"
+        result = top_words(text, 2)
+        # both have count 1, sorted by word ascending
+        self.assertEqual(result, [('apple', 1), ('banana', 1)])
+    def test_k_larger(self):
+        text = "a b c"
+        result = top_words(text, 5)
+        self.assertEqual(len(result), 3)
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+But need to ensure fl_wordcount is importable. In test, we import fl_top which imports fl_wordcount. Since we added scripts/source to path, it should work.
+
+We'll output both files.
+
+Make sure to follow format: FILE: <path> then fenced block.
+
+We need to output only these two files.
+
+Check spec: "Reply with FILE blocks only: for each file you were given, `FILE: <path>` then the complete file in a fenced block, nothing else. Never write a reviewer verdict line."
+
+So we output:
+
+FILE: scripts/source/fl_top.py
+```python
+...
+```
+
+FILE: pieces/test_fl_top.py
+```python
+...
+```
+
+No extra text.
+
+We'll produce exactly that.
+
+Potential nuance: The module should be read-only, no prints. Our code is fine.
+
+Make sure to import fl_wordcount correctly. Use import fl_wordcount.
+
+Maybe need to handle if fl_wordcount not found? Not needed.
+
+Write code.
+
+We'll produce final answer.

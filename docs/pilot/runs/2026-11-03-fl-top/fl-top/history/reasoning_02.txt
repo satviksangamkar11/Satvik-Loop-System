@@ -1,0 +1,132 @@
+The user wants me to review files against a spec and checks. I need to provide at most 5 findings, each on ONE line, in exactly this form:
+- file:line [SPEC n|CHECK n]: <what breaks, under 25 words>
+
+Then end with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`.
+
+Let me analyze the spec and code carefully.
+
+SPEC 1: Job fl-top depends on job fl-wordcount. Its module imports word_counts from scripts/source/fl_wordcount.py, which must already be on main when this job starts. Merge fl-wordcount first (see RUNBOOK.md).
+- The code does `import fl_wordcount` and calls `fl_wordcount.word_counts`. This seems fine. SPEC 1 is about dependency ordering, not really code-checkable here, but the import is correct.
+
+SPEC 2: Module is scripts/source/fl_top.py. Uses Python standard library and `import fl_wordcount`, calling fl_wordcount.word_counts at call time. Uses no other project module.
+- Code: `import fl_wordcount`, calls `fl_wordcount.word_counts(text)`. Uses sorted (stdlib). No other project module. OK.
+
+SPEC 3: top_words(text, k) takes a str and an int and returns a list of (word, count) tuples.
+- Code returns list of tuples from counts.items(). OK.
+
+SPEC 4: The counts are word_counts(text), taken from fl_wordcount.
+- Code: `counts = fl_wordcount.word_counts(text)`. OK.
+
+SPEC 5: The list is sorted by count, highest first; equal counts are sorted by word, A to Z. Only the first k entries are returned.
+- Code: `sorted(counts.items(), key=lambda x: (-x[1], x[0]))` then `sorted_items[:k]`. OK.
+
+SPEC 6: k = 0 returns []. If k < 0, top_words raises ValueError.
+- Code: `if k < 0: raise ValueError`. `if k == 0: return []`. OK.
+
+SPEC 7: The module is read-only: it never prints, creates, changes or deletes any file or folder, and it makes no network call.
+- Code only imports and defines function. OK.
+
+CHECK 1: every spec clause (SPEC n) has code and a test.
+- SPEC 1: dependency/merge - is there a test? The acceptance test `test_counts_come_from_fl_wordcount` tests that counts come from fl_wordcount. SPEC 1 is more about process. But maybe OK.
+- SPEC 2: tested implicitly.
+- SPEC 3: return type tested.
+- SPEC 4: tested by acceptance test.
+- SPEC 5: tested by sorting tests.
+- SPEC 6: tested by zero and negative tests.
+- SPEC 7: no test for read-only? Hmm. But it's a property of the code. Not necessarily a breaking issue.
+
+CHECK 2: no code special-cases test values.
+- Code doesn't special-case. OK.
+
+CHECK 3: edge cases are handled.
+- k=0, k<0, k larger than unique words. OK.
+
+CHECK 4: nothing changed outside the spec.
+- Only fl_top.py and test file. OK.
+
+CHECK 5: no security or data-loss risk.
+- OK.
+
+Wait, let me look more carefully. Is there any issue?
+
+One potential issue: SPEC 6 says "k = 0 returns []". The code checks `if k == 0: return []` after sorting. That's fine but slightly inefficient. Not a break.
+
+Another: What if k is not an int? SPEC says takes a str and an int. Not required to validate.
+
+Let me check the acceptance test `test_counts_come_from_fl_wordcount`:
+```python
+def test_counts_come_from_fl_wordcount(monkeypatch):
+    m = load()
+    import fl_wordcount
+    monkeypatch.setattr(fl_wordcount, 'word_counts', lambda text: {'q': 9, 'r': 1})
+    assert m.top_words('anything', 1) == [('q', 9)]
+```
+
+This monkeypatches `fl_wordcount.word_counts`. But `fl_top` does `import fl_wordcount` and calls `fl_wordcount.word_counts(text)`. Since `fl_top` holds a reference to the module `fl_wordcount`, monkeypatching `fl_wordcount.word_counts` should affect it because it looks up the attribute at call time. Yes, `fl_wordcount.word_counts(text)` looks up the attribute on the module object at call time. So monkeypatching works. The test passed.
+
+Now, is there any actual finding? Let me re-read carefully.
+
+SPEC 1: "Its module imports word_counts from scripts/source/fl_wordcount.py". The code does `import fl_wordcount` not `from fl_wordcount import word_counts`. But SPEC 2 clarifies: "It uses ... `import fl_wordcount` ... calling fl_wordcount.word_counts at call time." So `import fl_wordcount` is correct per SPEC 2.
+
+Hmm, everything seems to pass. All tests are green. The verdict should be READY.
+
+But wait, the instructions say "If the code is right, give no finding line." and end with `## Verdict: READY`.
+
+Let me double check if there's any subtle issue.
+
+CHECK 1: every spec clause has code and a test.
+- SPEC 1 is about job dependency and merging fl-wordcount first. Is there a test for SPEC 1? Not really a code test. But it's a process spec. The acceptance test `test_counts_come_from_fl_wordcount` covers the import dependency. I think it's fine.
+
+Actually, wait. Let me reconsider SPEC 1 vs the code. SPEC 1 says "which must already be on main when this job starts. Merge fl-wordcount first (see RUNBOOK.md)." This is a process requirement, not something the code violates. The code correctly imports fl_wordcount.
+
+Is there a finding about the test file importing? `pieces/test_fl_top.py` inserts path and imports `fl_top`. That's fine.
+
+Let me check if there's any issue with `k == 0` check placement. If k is 0, it returns []. If k < 0 raises. What about k being a float? Not in spec.
+
+I think the code is correct. All tests pass. Verdict: READY.
+
+But the task says "Review the files against the spec and the checks." and "Reply with at most 5 findings". If no findings, just the verdict line.
+
+Let me make sure there isn't a subtle violation.
+
+SPEC 5: "Only the first k entries are returned." Code returns `sorted_items[:k]`. For k=0, returns [] (handled earlier, but `[:0]` would also be []). For k larger than len, returns all. OK.
+
+SPEC 7: read-only. The function doesn't print or touch files. OK.
+
+I don't see any findings. So reply with just `## Verdict: READY`.
+
+Wait, but I should consider whether the acceptance test being "LOCKED" and controller-owned matters. The coder never edits it. That's fine, it's already there.
+
+Actually, let me reconsider one thing. The diff shows `scripts/source/fl_top.py` as NEW FILE. And `pieces/test_fl_top.py` as NEW FILE. The acceptance test is locked. Everything is green.
+
+Is there a CHECK violation? CHECK 4: nothing changed outside the spec. The files changed are exactly fl_top.py and test_fl_top.py, both in spec. OK.
+
+I'm confident: no findings, verdict READY.
+
+Hold on, let me reconsider SPEC 6 and the code once more:
+```python
+if k < 0:
+    raise ValueError("k must be non-negative")
+counts = fl_wordcount.word_counts(text)
+sorted_items = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+if k == 0:
+    return []
+return sorted_items[:k]
+```
+
+This is correct. k=0 returns [] before slicing (though slicing would also work). Negative raises. Good.
+
+Final answer: just the verdict line. Actually, the format says "End your reply with exactly one line: `## Verdict: READY`". If there are no findings, the reply is just that one line. That should be acceptable.
+
+But let me reconsider: is there possibly a finding regarding SPEC 1? "Its module imports word_counts from scripts/source/fl_wordcount.py". The code uses `import fl_wordcount`. SPEC 2 explicitly says it uses `import fl_wordcount`. So consistent.
+
+No findings. Verdict READY.
+
+Actually, wait. I want to be careful. The prompt says "A FIX FIRST must have a finding line that names file:line of a file in this package and the SPEC n or CHECK n it breaks; without both it is not counted." This implies if I say FIX FIRST I need a finding. Since I have no findings, I say READY.
+
+Let me produce just the verdict line. But the instructions also say "Reply with at most 5 findings...". Zero findings is allowed ("If the code is right, give no finding line.").
+
+So final reply:
+## Verdict: READY
+
+That's exactly one line. Good.

@@ -1,0 +1,61 @@
+{
+  "name": "fl-top",
+  "schema_version": 1,
+  "state": "passed",
+  "profile": "production",
+  "tests_passed": true,
+  "review_verdict": "READY",
+  "reason": "READY from: nvidia/nemotron-3.5-super-vl:free, nvidia/nemotron-3-ultra-550b-a55b:free",
+  "failing_tests": [],
+  "steps": [
+    {
+      "model": "dots-studio/dots-3-note-preview:free",
+      "mode": "write",
+      "note": "2 file(s) returned"
+    },
+    {
+      "model": "sandbox",
+      "mode": "tests",
+      "note": "green"
+    },
+    {
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "mode": "review",
+      "note": "## Verdict: READY"
+    }
+  ],
+  "coder_calls": 1,
+  "reviewer_calls": {
+    "nvidia/nemotron-3.5-super-vl:free": 1,
+    "nvidia/nemotron-3-ultra-550b-a55b:free": 1
+  },
+  "evidence": {
+    "acceptance_lock": {
+      "tests/acceptance/fl_top_acceptance.py": "266e7fa570e62d6dee7f08d8342435e5b8972ec3a3b188e1fb6a658ce2d92e06",
+      "tests/controls/fl_top_own_count.py": "109506744a0fb9249d69043ac3ae037f5fca8320bc0a5e95d1a8df92e35c23bb"
+    },
+    "calibration": "passed",
+    "tested_hash": "240a93902343bb4adf2aba944cc7907b7285ee6198c6c1ec3d1036c73329f811",
+    "final_hash": "240a93902343bb4adf2aba944cc7907b7285ee6198c6c1ec3d1036c73329f811",
+    "reviewed_hash": "240a93902343bb4adf2aba944cc7907b7285ee6198c6c1ec3d1036c73329f811",
+    "review_hashes": [
+      "240a93902343bb4adf2aba944cc7907b7285ee6198c6c1ec3d1036c73329f811",
+      "240a93902343bb4adf2aba944cc7907b7285ee6198c6c1ec3d1036c73329f811"
+    ],
+    "budget": {
+      "free_requests_used": 3,
+      "free_requests": 40,
+      "review_usd_spent": 0.0,
+      "review_usd": 0,
+      "repair_calls": 0,
+      "repair_enabled": false
+    },
+    "openrouter_retries": []
+  },
+  "updated": "2026-11-03T17:41:03Z"
+}
