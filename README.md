@@ -394,4 +394,5 @@ the key is absent) or `"claude_code"`, which also needs `"effort"`. Example: `"r
 Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge queue adds one line per merged job between the markers below.
 
 <!-- change-index:start -->
+- docs/changes/tl-roman-20261103-2214-6a93.md
 <!-- change-index:end -->
