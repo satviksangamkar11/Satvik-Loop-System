@@ -49,6 +49,24 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 8. [ ] **Docs:** add an "As integrated" section to `docs/ARCHITECTURE_REVISION_4.md` (API and UI), tick this checklist, and record a STATUS
    entry. Done when merged.
 
+## D. Issues register (every known issue; none may be skipped)
+| # | Issue | Fix / owner | Done when |
+|---|---|---|---|
+| I1 | The archive copies `_loop/.gitignore` (`*`, written by `event_log`), so published evidence folders are git-ignored. Found in `ah-run-2026-11-04` | Add `.gitignore` to `launch.ARCHIVE_SKIP`, plus a test (item 3) | A test proves `results/<id>/.gitignore` is absent |
+| I2 | The stages response has no **required contract** per stage, so the UI cannot filter which models are eligible (the UI repair noted it) | Add `required_contract` to each `GET /stages` row, and a fixture (item 4) | The UI shows only models whose required contract is `verified` |
+| I3 | Planner calls emit no events (`plan_job` is not hooked) | `plan_job` emits `attempt-start` / `attempt-end` with stage `planner` (item 3) | A test sees planner events |
+| I4 | Backup-writer review stage names are best effort (`reviewer_b` until a READY, then `reviewer_a`) | Record the real slot in `_review` / the events (item 3) | A test of a backup review shows the correct stage |
+| I5 | Lease leak (fixed in #36) not yet confirmed in a real run | Check the `ah-run` leases: each job's own client lease is `released: true` | Confirmed from the evidence |
+| I6 | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
+| I7 | `npm ci` reports 5 moderate vulnerabilities | Run `npm audit`; fix the runtime ones; record the dev-only ones (item 5) | Audit result recorded, runtime clean |
+| I8 | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
+| I9 | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
+| I10 | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
+| I11 | Replies from the PC agents to this session fail ("not found") | Known platform limit; git branches are the report channel | Documented (no fix possible here) |
+| I12 | The p2-api commits are only in this container's local worktree | Merge onto the pushed working branch as soon as the API agent reports (item 3) | On GitHub |
+| I13 | The cloud suite has one root-only failure (`test_plan_job.py::…_read_only`) | Environmental; must pass on Windows (item 7) | Passes in the Windows suite run |
+| I14 | Production `reviewer_b` is North, which doesn't work | Owner decision (section C) | — |
+
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
 - Production `reviewer_b`, the paid production run, and the December re-check of free models.
