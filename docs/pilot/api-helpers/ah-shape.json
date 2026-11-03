@@ -1,0 +1,47 @@
+{
+ "name": "ah-shape",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/api-helpers/API_SHAPE_SPEC.md",
+ "files": [
+  "scripts/source/api_shape.py",
+  "pieces/test_api_shape.py"
+ ],
+ "tests": [
+  "pieces/test_api_shape.py"
+ ],
+ "acceptance_tests": [
+  "tests/acceptance/ah_shape_acceptance.py"
+ ],
+ "negative_controls": [
+  {
+   "name": "always-match",
+   "replace": {
+    "scripts/source/api_shape.py": "tests/controls/ah_shape_always_match.py"
+   },
+   "must_fail": [
+    "tests/acceptance/ah_shape_acceptance.py::test_list_items_and_paths",
+    "tests/acceptance/ah_shape_acceptance.py::test_missing_and_extra_keys",
+    "tests/acceptance/ah_shape_acceptance.py::test_type_mismatches"
+   ]
+  }
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/ah_shape_acceptance.py::test_same_shape_is_empty",
+  "tests/acceptance/ah_shape_acceptance.py::test_missing_and_extra_keys",
+  "tests/acceptance/ah_shape_acceptance.py::test_type_mismatches",
+  "tests/acceptance/ah_shape_acceptance.py::test_null_matches_anything",
+  "tests/acceptance/ah_shape_acceptance.py::test_list_items_and_paths"
+ ],
+ "fixers": [
+  "writer_a",
+  "writer_b"
+ ],
+ "reviewers": "by_lineage",
+ "budget": {
+  "free_requests": 40,
+  "review_usd": 0,
+  "paid_usd": 0
+ },
+ "deadline_min": 60
+}
