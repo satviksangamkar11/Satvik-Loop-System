@@ -1,0 +1,106 @@
+{
+  "job_id": "tl-index-20261103-2220-94a5",
+  "name": "tl-index",
+  "derived_state": "merged",
+  "end_state": "passed",
+  "merge_state": "merged",
+  "active_stage": null,
+  "active_model": null,
+  "waiting": null,
+  "heartbeat_age_s": null,
+  "started": "2026-11-03T17:39:10Z",
+  "finished": "2026-11-03T17:43:02Z",
+  "free_requests_used": 3,
+  "review_usd_spent": 0.0,
+  "profile": "test",
+  "spec": "docs/pilot/four-loop/FL_TOP_SPEC.md",
+  "files": [
+    "scripts/source/fl_top.py",
+    "pieces/test_fl_top.py"
+  ],
+  "stage_snapshot": {
+    "sha256": "9b1c\u2026",
+    "revision": 1
+  },
+  "lease": {
+    "held": false,
+    "pid": 4120,
+    "pid_alive": false,
+    "heartbeat": "2026-11-03T17:41:00Z",
+    "generation": 3
+  },
+  "budget": {
+    "free_requests_used": 3,
+    "free_requests": 40,
+    "review_usd_spent": 0.0,
+    "review_usd": 0,
+    "repair_calls": 0
+  },
+  "archive": {
+    "available": true,
+    "archive_failed": false
+  },
+  "reason": "READY from: nvidia/nemotron-3.5-super-vl:free, nvidia/nemotron-3-ultra-550b-a55b:free",
+  "tests_passed": true,
+  "failing_tests": [],
+  "review_verdict": "READY",
+  "findings": [],
+  "stages": [
+    {
+      "stage": "writer_a_write",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "writer_a_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_write",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "specialist_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_b",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "reviewer_a",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "reviewer_reask",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "review_fix_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    }
+  ],
+  "hashes": {
+    "tested": "43d1\u2026",
+    "reviewed": "43d1\u2026",
+    "delivered": "43d1\u2026"
+  },
+  "merge": {
+    "merge_state": "merged",
+    "head": "2b80095",
+    "attempts": 2,
+    "note": "main moved during the first suite run; re-tested and merged on attempt 2"
+  }
+}

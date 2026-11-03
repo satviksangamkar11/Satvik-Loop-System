@@ -1,0 +1,115 @@
+{
+  "profile": "test",
+  "revision": 4,
+  "stages": [
+    {
+      "stage": "planner",
+      "model": "fake",
+      "via": null,
+      "model_selectable": true,
+      "effort": null,
+      "settings": {},
+      "source": "role:planner",
+      "note": "planning refused under test"
+    },
+    {
+      "stage": "writer_a_write",
+      "model": "dots-studio/dots-3-note-preview:free",
+      "via": "openrouter",
+      "model_selectable": true,
+      "effort": "high",
+      "settings": {
+        "temperature": 0.1,
+        "max_tokens": 40000,
+        "reasoning": {
+          "max_tokens": 8000
+        }
+      },
+      "source": "role:writer_a"
+    },
+    {
+      "stage": "writer_a_repair",
+      "model": "dots-studio/dots-3-note-preview:free",
+      "via": "openrouter",
+      "model_selectable": true,
+      "effort": "low",
+      "settings": {
+        "max_tokens": 10000
+      },
+      "source": "role:writer_a"
+    },
+    {
+      "stage": "writer_b_write",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "via": "openrouter",
+      "model_selectable": true,
+      "effort": "high",
+      "settings": {
+        "temperature": 0.1,
+        "max_tokens": 40000
+      },
+      "source": "role:writer_b",
+      "note": "also the settings Reviewer B uses when it writes as fallback"
+    },
+    {
+      "stage": "writer_b_repair",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "via": "openrouter",
+      "model_selectable": true,
+      "effort": "low",
+      "settings": {
+        "max_tokens": 10000
+      },
+      "source": "role:writer_b"
+    },
+    {
+      "stage": "reviewer_b",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "via": "openrouter",
+      "model_selectable": true,
+      "effort": "low",
+      "settings": {
+        "max_tokens": 16000
+      },
+      "source": "role:reviewer_b"
+    },
+    {
+      "stage": "reviewer_a",
+      "model": null,
+      "via": null,
+      "model_selectable": false,
+      "inherits": "non-author writer",
+      "effort": "low",
+      "settings": {},
+      "source": "role:reviewer_a"
+    },
+    {
+      "stage": "reviewer_reask",
+      "model": null,
+      "via": null,
+      "model_selectable": false,
+      "inherits": "triggering reviewer",
+      "effort": "low",
+      "settings": {}
+    },
+    {
+      "stage": "specialist_repair",
+      "model": "off",
+      "via": null,
+      "model_selectable": true,
+      "effort": null,
+      "settings": {},
+      "source": "role:repair",
+      "note": "off under test"
+    },
+    {
+      "stage": "review_fix_repair",
+      "model": null,
+      "via": null,
+      "model_selectable": false,
+      "inherits": "current writer (lineage)",
+      "effort": "low",
+      "settings": {}
+    }
+  ]
+}

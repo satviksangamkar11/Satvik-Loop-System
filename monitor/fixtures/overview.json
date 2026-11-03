@@ -1,0 +1,27 @@
+{
+  "loops_running": 2,
+  "queue_depth": 1,
+  "jobs_waiting": 1,
+  "active_errors": 0,
+  "stop": false,
+  "free_today": {
+    "used": 87,
+    "cap": 1000,
+    "cap_source": "live"
+  },
+  "pace": {
+    "sent_last_60s": 4,
+    "limit": 15
+  },
+  "review_usd_today": {
+    "spent": 0.0,
+    "cap": 0.5
+  },
+  "pending_reviews": 1,
+  "sandbox_slots": {
+    "used": 2,
+    "total": 4
+  },
+  "updated": "2026-11-03T17:45:00Z",
+  "index_ok": true
+}

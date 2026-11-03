@@ -1,0 +1,100 @@
+{
+  "models": [
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "capabilities": {
+        "reasoning_on_off": true,
+        "efforts": [
+          "off",
+          "low",
+          "medium",
+          "high"
+        ],
+        "token_budget": true,
+        "temperature": {
+          "min": 0,
+          "max": 2
+        },
+        "structured_outputs": null,
+        "contracts": {
+          "writer_file_blocks": true,
+          "repair_edit_blocks": null,
+          "reviewer_verdict": true
+        }
+      },
+      "verified_at": "2026-11-03T16:00:00Z",
+      "metadata_at": "2026-11-03T15:00:00Z"
+    },
+    {
+      "model_id": "z-ai/glm-5.3-flash",
+      "via": "openrouter",
+      "hosting_provider": "Z.AI",
+      "paid": true,
+      "price_in_usd_per_mtok": 0.15,
+      "price_out_usd_per_mtok": 0.5,
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "capabilities": {
+        "reasoning_on_off": true,
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "token_budget": false,
+        "temperature": {
+          "min": 0,
+          "max": 1
+        },
+        "structured_outputs": true,
+        "contracts": {
+          "writer_file_blocks": null,
+          "repair_edit_blocks": null,
+          "reviewer_verdict": null
+        }
+      },
+      "verified_at": null,
+      "metadata_at": "2026-11-03T15:00:00Z",
+      "note": "paid: reviewer-only, production only"
+    },
+    {
+      "model_id": "haiku",
+      "via": "claude_code",
+      "hosting_provider": "anthropic",
+      "paid": null,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": 32000,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "writer_file_blocks": null,
+          "repair_edit_blocks": null,
+          "reviewer_verdict": null
+        }
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "note": "subscription: no USD; test profile allows only effort high"
+    }
+  ],
+  "index_ok": true
+}

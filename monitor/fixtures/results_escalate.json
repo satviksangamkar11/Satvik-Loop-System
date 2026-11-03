@@ -1,0 +1,26 @@
+{
+  "job_id": "fl-top-20261103-2248-2ed3",
+  "end_state": "escalate",
+  "merge_state": "none",
+  "tests": {
+    "passed": false,
+    "failing": [
+      {
+        "id": "tests/acceptance/fl_top_acceptance.py::test_counts_come_from_fl_wordcount",
+        "message": "assert [('anything', 1)] == [('q', 9)]",
+        "file": "tests/acceptance/fl_top_acceptance.py",
+        "line": 41
+      }
+    ]
+  },
+  "reviews": [],
+  "diff_available": true,
+  "artifacts": [
+    "fl-top/status.json",
+    "fl-top/lineage.json",
+    "fl-top/ESCALATE.md",
+    "fl-top/history/call_01.json"
+  ],
+  "branch": "job/fl-top-20261103-2248-2ed3",
+  "merge": null
+}

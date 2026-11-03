@@ -1,0 +1,64 @@
+{
+  "examples": [
+    {
+      "status": 400,
+      "error": {
+        "code": "invalid-job",
+        "message": "job file refused",
+        "details": {
+          "problems": [
+            "files[0]: path escapes repo root: ../x.py"
+          ]
+        }
+      }
+    },
+    {
+      "status": 409,
+      "error": {
+        "code": "duplicate-pending",
+        "message": "the same job is already queued",
+        "details": {
+          "job": "00017\u2026-fl-top.json"
+        }
+      }
+    },
+    {
+      "status": 409,
+      "error": {
+        "code": "stage-started",
+        "message": "reviewer_b has started for this job; only stages that have not started can change",
+        "details": {
+          "stage": "reviewer_b"
+        }
+      }
+    },
+    {
+      "status": 422,
+      "error": {
+        "code": "already-completed",
+        "message": "this job already passed; send rerun=true to run it again",
+        "details": {
+          "job": "fl-top-\u2026"
+        }
+      }
+    },
+    {
+      "status": 422,
+      "error": {
+        "code": "paid-in-test",
+        "message": "test profile: free only",
+        "details": {
+          "stage": "reviewer_a"
+        }
+      }
+    },
+    {
+      "status": 503,
+      "error": {
+        "code": "engine-unavailable",
+        "message": "SATVIK_HOME is not set",
+        "details": {}
+      }
+    }
+  ]
+}
