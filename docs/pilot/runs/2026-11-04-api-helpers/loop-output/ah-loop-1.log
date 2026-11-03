@@ -1,0 +1,13 @@
+﻿ah-budget: passed
+ah-budget passed None
+merge [('ah-budget-20261104-0344-1119', 'merged')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:escalate = 1
+finished:merged = 9
+finished:passed = 13
+finished:tests-failed = 2
+queue-wait = 14
+started = 14

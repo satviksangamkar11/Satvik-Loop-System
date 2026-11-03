@@ -1,0 +1,8 @@
+﻿999668e index: ah-shape-20261104-0344-61c6
+518fac8 change doc: ah-shape-20261104-0344-61c6 (passed)
+526bd5a index: ah-idempotency-20261104-0344-978b
+c5a9267 change doc: ah-idempotency-20261104-0344-978b (passed)
+9173c9d index: ah-budget-20261104-0344-1119
+c85ebe0 change doc: ah-budget-20261104-0344-1119 (passed)
+8a1fe46 Merge PR #38: P1 backend, API contract, UI baseline, API helper loop jobs
+d72d84d Loop jobs for three API helpers: worst-case budget, idempotency store, shape comparer
