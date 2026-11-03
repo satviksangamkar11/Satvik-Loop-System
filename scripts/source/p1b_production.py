@@ -210,7 +210,7 @@ def client_for(root, job, keys=None):
     budget = job["budget"]
     client = oc.OpenRouter(oc.load_keys() if keys is None else keys, Path(root) / "_loop" / "openrouter",
                            budget=oc.JobBudget(free_requests=budget["free_requests"], review_usd=budget["review_usd"]))
-    client.set_job(*oc.shared_job(job.get("name") or "production-client", Path(root) / "_loop"))     # launched or --solo: every call counts on the shared ledger (Track L)
+    client.own_job(job.get("name") or "production-client", Path(root) / "_loop")     # launched or --solo: every call counts on the shared ledger (Track L); run() releases the lease
     return client
 
 
@@ -540,6 +540,9 @@ class Production:
         self._seen_attempts = len(client.failed_attempts)   # the adapter's failed attempts before this job's calls belong to nobody here
         self._seen_requests = len(client.requests)          # the adapter's requests before this job's calls belong to nobody here
         self.calls_written = 0          # history/call_NN.json files so far: one per model call, failed or not
+        self.waiting = None             # {why, since, model} while the job waits (model slot, account pace, 429 or retry backoff); None otherwise
+        if hasattr(client, "on_wait"):
+            client.on_wait = self._set_waiting      # this object owns the field: only its own _heartbeat writes it, so no other write erases it
 
     # ---------------------------------------------------------------- model calls
 
@@ -920,6 +923,11 @@ class Production:
         self.steps.append({"model": model, "mode": mode, "note": note})
         self._heartbeat()
 
+    def _set_waiting(self, waiting):
+        """The client's wait hook: the wait that began ({why, since, model}) or None when it ended. Written at once, so status.json shows it."""
+        self.waiting = dict(waiting) if waiting else None
+        self._heartbeat()
+
     def _heartbeat(self):
         """R1: status.json is rewritten after every step and failed call, so a running job shows its progress instead of a stale time. The
         fields are the end-of-job status's, with state running; the end-of-job write replaces this file."""
@@ -932,7 +940,8 @@ class Production:
             elif step["mode"] in ("review", "review-reask"):
                 reviewer_calls[step["model"]] = reviewer_calls.get(step["model"], 0) + 1
         status = {"name": self.job["name"], "schema_version": 1, "state": "running", "profile": "production", "steps": self.steps,
-                  "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "updated": _now()}
+                  "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "waiting": getattr(self, "waiting", None),
+                  "updated": _now()}
         (self.job_dir / "status.json").write_text(json.dumps(_scrubbed_obj(status, self.scrub_keys), indent=2), encoding="utf-8")
 
 
@@ -969,6 +978,19 @@ def _spec_line(spec_text, test_id, message):
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
+    """Runs the production unit (_run), then releases the lease the job's client took for itself (client.release_job), whatever the outcome."""
+    try:
+        return _run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
+                    evidence=evidence, client=client, parse_files=parse_files, check_path=check_path, content_problem=content_problem,
+                    scrub_keys=scrub_keys, repair_ask=repair_ask, claude_ask=claude_ask)
+    finally:
+        release = getattr(client, "release_job", None)
+        if release is not None:
+            release()
+
+
+def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
+         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""

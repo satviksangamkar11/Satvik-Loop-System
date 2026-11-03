@@ -15,6 +15,7 @@ sent here: resolve() refuses it, and it is not on the shared ledger. The test pr
 refused while the roster loads.
 
 Importing this module calls no model. `main()` with `probe` makes one call per writer and reviewer role, by hand."""
+import contextlib
 import http.client
 import importlib.util
 import json
@@ -583,6 +584,8 @@ class OpenRouter:
         self.deadline_at = None             # the unit deadline on this client's clock; no retry may start after it (set_job_deadline)
         self.shared = None                  # (job_id, generation) once set_job puts this client on the account ledger (package E)
         self.shared_home = None             # the loop home that job lives in (None: SATVIK_HOME)
+        self.owned_lease = False            # True when this client took its own lease (own_job): release_job releases it
+        self.on_wait = None                 # the job's execution owner's hook: called with {why, since, model} when a wait begins, None when it ends
 
     def set_job_deadline(self, seconds):
         """The unit deadline, `seconds` from now. p1b_production sets it just before the unit's walk starts."""
@@ -593,6 +596,33 @@ class OpenRouter:
         slot are taken there. Without it the client keeps its own ledger (the probe and the older tests use that)."""
         self.shared = (job_id, gen)
         self.shared_home = home
+
+    def own_job(self, name, fallback):
+        """Takes a job and its own lease on the loop home (shared_job) and puts the client on it. release_job releases that lease again, so a
+        finished job leaves no live lease behind (found in the 2-loop and 4-loop tests: one unreleased lease per job)."""
+        job_id, gen, home = shared_job(name, fallback)
+        self.set_job(job_id, gen, home)
+        self.owned_lease = True
+
+    def release_job(self):
+        """Releases the lease own_job took (a lease the launcher owns is left alone). Safe to call more than once."""
+        if not self.owned_lease or self.shared is None:
+            return False
+        self.owned_lease = False
+        return _loop_home().Lease(self.shared_home).release(*self.shared)
+
+    @contextlib.contextmanager
+    def waiting(self, why, model):
+        """A real wait, reported to the job's owner (on_wait): set when the wait begins, cleared when it ends, on errors too. why: model-slot,
+        account-pace, 429-backoff or retry-backoff. It explains a wait; whether a process is alive is still the lease's job."""
+        hook = self.on_wait
+        if hook is not None:
+            hook({"why": why, "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "model": model})
+        try:
+            yield
+        finally:
+            if hook is not None:
+                hook(None)
 
     def _deadline_left(self):
         return None if self.deadline_at is None else self.deadline_at - self.clock()
@@ -629,7 +659,8 @@ class OpenRouter:
             raise self._err(ProviderUnavailable, f"{model}: the next retry would start after the unit deadline; last 429: {message[:300]}")
         self._check_retry_fits(model, message)
         self._log_retry(model, attempt, seconds, message)
-        self.sleep(seconds)
+        with self.waiting("429-backoff", model):
+            self.sleep(seconds)
 
     def _keep_request(self, model, status, seconds, data=None):
         """Keeps one request the client sent, failed or not: its raw HTTP status (None for a network error), its seconds, and reply_facts."""
@@ -733,7 +764,7 @@ class OpenRouter:
         """Writes the day's free cap to the shared ledger: `live` (the account's allowance) or None for the fallback. A client with no job yet
         takes one first, as its first free call does, so the cap lands on the loop home. Returns {"cap", "cap_source"} for what now applies."""
         if self.shared is None:
-            self.set_job(*shared_job("openrouter-client", self.ledger_dir))
+            self.own_job("openrouter-client", self.ledger_dir)
         recorded = _shared_limits().record_free_cap(live, home_dir=self.shared_home)
         return {"cap": recorded["cap"], "cap_source": recorded["source"]}
 
@@ -853,7 +884,7 @@ class OpenRouter:
         """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
         Paid: the endpoint estimate."""
         if slot == "free" and self.shared is None:      # solo, probe and tests: a job on the loop home, so the call counts on the shared ledger
-            self.set_job(*shared_job("openrouter-client", self.ledger_dir))
+            self.own_job("openrouter-client", self.ledger_dir)
         if self.shared is not None:
             return self._reserve_shared(model, slot, system, user, tokens)
         if slot == "paid":
@@ -880,7 +911,8 @@ class OpenRouter:
                 self.budget.settle_review(estimate, 0.0)
                 raise self._err(ReviewBudgetExceeded, str(exc))
             try:
-                sl.pace(timeout_s=self._deadline_left(), home_dir=home)
+                with self.waiting("account-pace", model):
+                    sl.pace(timeout_s=self._deadline_left(), home_dir=home)
             except TimeoutError as exc:
                 sl.settle_review(job_id, gen, estimate, 0.0, home_dir=home)
                 self.budget.settle_review(estimate, 0.0)
@@ -897,7 +929,8 @@ class OpenRouter:
                 left = self._deadline_left()
                 if left is not None and left <= 0:
                     raise self._err(ProviderUnavailable, f"{model}: the account minute window stayed full until the unit deadline")
-                self.sleep(1.0 if left is None else min(1.0, left))
+                with self.waiting("account-pace", model):
+                    self.sleep(1.0 if left is None else min(1.0, left))
         self.budget.free_used += 1
         return 0.0
 
@@ -917,7 +950,8 @@ class OpenRouter:
             raise self._err(ProviderUnavailable, f"{model}: the unit deadline passed before a slot was free")
         slot_cm = sl.model_slot(model, gen, timeout_s if left is None else left, home_dir=self.shared_home)
         try:
-            slot_cm.__enter__()
+            with self.waiting("model-slot", model):           # cleared the moment the slot is acquired, before the request is sent
+                slot_cm.__enter__()
         except TimeoutError as exc:
             raise self._err(ProviderUnavailable, f"{model}: no free model slot before the unit deadline ({exc})")
         try:
@@ -971,7 +1005,8 @@ class OpenRouter:
         if seconds > MAX_WAIT_S:
             raise self._err(ProviderUnavailable, f"{model}: {why}; asked to wait {seconds:.0f} s, which is longer than {MAX_WAIT_S:.0f} s")
         self._log_retry(model, attempt, seconds, why)
-        self.sleep(seconds)
+        with self.waiting("429-backoff" if "429" in str(why) or "rate limited" in str(why) else "retry-backoff", model):
+            self.sleep(seconds)
 
     def _info(self, model, data, spent, attempts, tokens, started):
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}

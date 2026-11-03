@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import loop_home
-from launch import git
+from launch import git, record_merge
 
 MERGE_KEY = "merge"
 INDEX_END = "<!-- change-index:end -->"
@@ -90,22 +90,29 @@ class MergeQueue:
             base = self._fetch_main()
             if git(["rebase", base], wt, check=False).returncode != 0:
                 git(["rebase", "--abort"], wt, check=False)
-                return self.launcher.finish(job_id, gen, "merge-conflict", base)
+                return self._finish(job_id, gen, "merge-conflict", base)
             if add_index_line(wt, job_id):                     # the index line goes in during the merge, before the suite
                 git(["add", "README.md"], wt)
                 git(["commit", "-q", "-m", f"index: {job_id}"], wt)
             ok, text = self.run_suite(wt)
             if not ok:
-                return self.launcher.finish(job_id, gen, "tests-failed", base, {"tail": text[-2000:]})
+                return self._finish(job_id, gen, "tests-failed", base, {"tail": text[-2000:]})
             if self._fetch_main() != base:                     # main moved while the suite ran: test again from the new main
                 continue
             if git(["push", "origin", "HEAD:refs/heads/main"], wt, check=False).returncode != 0:
                 if self._fetch_main() == base:                 # rejected with main unmoved: not a race, do not loop on it
-                    return self.launcher.finish(job_id, gen, "push-failed", base)
+                    return self._finish(job_id, gen, "push-failed", base)
                 continue                                       # main moved during the push: test again
             head = git(["rev-parse", "HEAD"], wt).stdout.strip()
-            return self.launcher.finish(job_id, gen, "merged", base, {"head": head, "attempts": attempt + 1})   # finish removes the worktree
-        return self.launcher.finish(job_id, gen, "main-moved", base)
+            return self._finish(job_id, gen, "merged", base, {"head": head, "attempts": attempt + 1})   # finish removes the worktree
+        return self._finish(job_id, gen, "main-moved", base)
+
+    def _finish(self, job_id, gen, state, base, result=None):
+        """The launcher's finish, then the merge outcome as results/<job_id>/merge.json (launch.record_merge). The execution evidence
+        archived at the job's own finish is never overwritten."""
+        out = self.launcher.finish(job_id, gen, state, base, result)
+        record_merge(self.api.home, job_id, state, base, result)
+        return out
 
     def _fetch_main(self):
         git(["fetch", "-q", "origin", "main"], self.repo)
