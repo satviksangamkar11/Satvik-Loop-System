@@ -14,6 +14,9 @@ Any role may instead be called through Claude Code (2026-11-03): its roster entr
 sent here: resolve() refuses it, and it is not on the shared ledger. The test profile allows a Claude Code role only as claude_code.TEST_ONLY,
 refused while the roster loads.
 
+The model catalog (config/models.json, model_catalog.py, 2026-11-03) widens the exact IDs: its free models are allowed too, and under the
+production profile so is a paid catalog model with a pinned provider and prices (reviewer-only, on the paid budget, as a paid role).
+
 Importing this module calls no model. `main()` with `probe` makes one call per writer and reviewer role, by hand."""
 import contextlib
 import http.client
@@ -279,7 +282,8 @@ def roster_state(profile=None):
     """The tables for a profile (default: the active one): ROLE_SPECS, ROLES, VIA, PAID, ALLOWED, PINS, PRICING, SETTINGS, PROFILE. Loaded
     inside this function and cached by profile name, so each profile's roster is checked once and a test can switch profiles with the
     environment. The OpenRouter tables hold the OpenRouter roles only (no sentinel, no Claude Code role); a model on two roles keeps the
-    entries of the first in ladder order (writers, reviewers, then repair and planner)."""
+    entries of the first in ladder order (writers, reviewers, then repair and planner). ALLOWED and PAID also hold the catalog's models
+    (config/models.json, _catalog_tables); CATALOG_PAID names the paid ones, which resolve() takes by exact ID."""
     name = profile or active_profile()
     if name not in _ROSTER_STATE:
         specs = load_profile(name)
@@ -292,13 +296,35 @@ def roster_state(profile=None):
             if specs[r]["paid"]:
                 pins.setdefault(roles[r], specs[r]["provider"])                     # paid model -> {name, slug}
                 pricing.setdefault(roles[r], specs[r]["pricing"])                   # paid model -> USD per token
+        catalog = _catalog_tables(name, set(roles.values()))
+        for model, model_settings in catalog["free"].items():
+            settings.setdefault(model, model_settings)
+        for model, (pin, prices, model_settings) in catalog["paid"].items():
+            pins.setdefault(model, pin)
+            pricing.setdefault(model, prices)
+            settings.setdefault(model, model_settings)
         _ROSTER_STATE[name] = {
             "PROFILE": name, "ROLE_SPECS": specs, "ROLES": roles, "VIA": {role: via_of(spec) for role, spec in specs.items()},
-            "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]),
-            "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]),
+            "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]) | frozenset(catalog["paid"]),
+            "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]) | frozenset(catalog["free"]),
+            "CATALOG_PAID": frozenset(catalog["paid"]),
             "PINS": pins, "PRICING": pricing, "SETTINGS": settings,
         }
     return _ROSTER_STATE[name]
+
+
+def _catalog_tables(profile, roster_models):
+    """What config/models.json adds to the allow-list (model_catalog.allow_tables): its free models, and under production its paid models
+    that have a pinned provider and prices (reviewer-only, as a paid roster role). A model on the roster keeps its roster entries. A catalog
+    that does not validate is refused like a bad roster."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import model_catalog
+    try:
+        return model_catalog.allow_tables(profile, roster_models)
+    except model_catalog.CatalogError as exc:
+        raise RosterRefused(f"config/models.json: {exc}") from exc
 
 
 _ROSTER_NAMES = frozenset({"PROFILE", "ROLE_SPECS", "ROLES", "VIA", "PAID", "ALLOWED", "PINS", "PRICING", "SETTINGS"})
@@ -324,8 +350,9 @@ def utc_day(now):
 
 
 def resolve(name):
-    """The roster model for a role name whose role is called through OpenRouter, or an exact free roster ID. Anything else (a list, a comma
-    list, an alias, a bare paid ID, a sentinel such as non_author_writer, a Claude Code role) is refused before a request is built."""
+    """The roster model for a role name whose role is called through OpenRouter, an exact free roster or catalog ID, or the exact ID of a
+    pinned and priced paid catalog model (production only; reviewer-only in call()). Anything else (a list, a comma list, an alias, a bare
+    paid roster ID, an unpinned paid ID, a sentinel such as non_author_writer, a Claude Code role) is refused before a request is built."""
     if isinstance(name, str) and name in ROLE_NAMES:
         state = roster_state()
         roles = state["ROLES"]
@@ -334,9 +361,9 @@ def resolve(name):
         if state["VIA"][name] != "openrouter":
             raise ModelRefused(f"{name} is a {state['VIA'][name]} role in the {active_profile()} profile: it is not called through OpenRouter")
         return roles[name]
-    if isinstance(name, str) and name in roster_state()["ALLOWED"]:
+    if isinstance(name, str) and (name in roster_state()["ALLOWED"] or name in roster_state()["CATALOG_PAID"]):
         return name
-    raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster IDs only; no fallback lists)")
+    raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster or catalog IDs only; no fallback lists)")
 
 
 def parse_response(status, raw):
