@@ -335,8 +335,8 @@ def stages_view(profile=None):
             row["inherits"] = "non-author writer"
             if name == "test":
                 row["note"] = "fixed to the non-author writer in the test profile only"
-        if model == "fake":
-            row["note"] = "planning refused under test"
+        if model == "fake":                             # the test profile's planner: no model, no via
+            row["via"], row["note"] = None, "planning refused under test"
         if model == "off":
             row["note"] = "off under test" if name == "test" else "off"
         if stage == "writer_b_write":
