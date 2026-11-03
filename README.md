@@ -395,4 +395,5 @@ Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge
 
 <!-- change-index:start -->
 - docs/changes/tl-roman-20261103-2214-6a93.md
+- docs/changes/tl-slug-20261103-2214-bc59.md
 <!-- change-index:end -->
