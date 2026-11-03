@@ -551,7 +551,7 @@ def test_every_model_call_writes_call_NN_failed_or_not(tmp_path):
     history = root / "_loop" / "calc" / "history"
     first = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
     assert first == {"model": DOTS, "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
-                     "reasoning_tokens": None, "finish_reason": None, "seconds": 0.0}
+                     "reasoning_tokens": None, "finish_reason": None, "seconds": 0.0, "reply_file": None, "reasoning_file": None}
     second = json.loads((history / "call_02.json").read_text(encoding="utf-8"))
     assert second["model"] == XING and second["mode"] == "write" and second["status"] == 200 and second["failed"] is False
     assert second["prompt_tokens"] == 100 and second["completion_tokens"] == 40 and second["reasoning_tokens"] == 8

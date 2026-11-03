@@ -3,7 +3,7 @@ pass. Every test uses fakes (the scripted OpenRouter transport, scripted models,
 
 Covers: North reviews first and GLM only after North says READY; the GLM request (reasoning effort high and excluded, temperature 0.2,
 max_tokens 16000, no reasoning cap, no truncation retry above 16000) and the free requests unchanged; the reviewer prompt (at most 5 one-line
-findings, one example, verdict line last); the repair input (failing tests only, identical failures merged, 3,000 characters); the Opus call
+findings, one example, verdict line last); the repair input (failing tests only, identical failures merged, 6,000 characters); the Opus call
 (repair-only system prompt, no session persistence, 32000 output tokens, 900 s, 15 minutes needed, switch on only after the probe); the
 planner budget."""
 import re
@@ -170,11 +170,11 @@ def test_identical_failures_are_merged_into_one_entry():
     assert "test_sums_a" in text and "test_sums_b" in text
 
 
-def test_the_repair_input_is_capped_at_3000_characters():
+def test_the_repair_input_is_capped_at_6000_characters():
     junit = _junit(*[_case(f"test_{n}", TB_OTHER.replace("assert 1 == 3", f"assert {n} == 3")) for n in range(300)])     # 300 distinct failures
     text = pp.failing_summary(junit)
-    assert len(text) <= 3000
-    assert len(text) > 2000                                       # the cap is what cut it, not an empty result
+    assert len(text) <= 6000
+    assert len(text) > 5000                                       # the cap is what cut it, not an empty result
 
 
 def test_the_repair_input_has_no_pytest_output_or_passing_tests():

@@ -159,7 +159,7 @@ def test_satvik_profile_production_loads_todays_roster_unchanged():
     assert roles["writer_a"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
                                              "sampling": None, "retry_max_tokens": 72000, "retry_timeout_s": 1800,
                                              "max_tokens_cap": 72000}
-    assert roles["writer_b"]["settings"] == {"temperature": 0.8, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
+    assert roles["writer_b"]["settings"] == {"temperature": 0.2, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
                                              "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800,
                                              "max_tokens_cap": 72000}
     assert roles["reviewer_b"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": None,
