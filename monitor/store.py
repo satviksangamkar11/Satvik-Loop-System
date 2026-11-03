@@ -1,5 +1,5 @@
 """Shared plumbing for the API: the engine's import path, the repo and SATVIK_HOME folders, the error envelope, atomic JSON files, and the
-Idempotency-Key wrapper (the store itself is api_idempotency on main). Stdlib only; the engine modules are imported from scripts/source/."""
+Idempotency-Key wrapper over the loop's api_idempotency store. Stdlib only; the engine modules are imported from scripts/source/."""
 import json
 import os
 import sys
@@ -13,6 +13,7 @@ if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
 import loop_home  # noqa: E402  (after the path is set)
+from api_idempotency import IdempotencyStore  # noqa: E402
 
 
 class ApiError(Exception):
@@ -71,12 +72,7 @@ _MUTATION_LOCK = threading.RLock()     # one mutation at a time in this process:
 
 
 def _store(home_dir):
-    """The loop's idempotency store (api_idempotency, on main as scripts/source/api_idempotency.py). Not shipped here: when it is missing
-    on this checkout, a request that carries an Idempotency-Key gets 503, and requests without one are unaffected."""
-    try:
-        from api_idempotency import IdempotencyStore
-    except ImportError:
-        raise ApiError(503, "engine-unavailable", "the idempotency store (api_idempotency) is not on this checkout")
+    """The loop's idempotency store (scripts/source/api_idempotency.py): one file per key under SATVIK_HOME/api/idempotency/."""
     return IdempotencyStore(Path(home_dir) / "api" / "idempotency")
 
 

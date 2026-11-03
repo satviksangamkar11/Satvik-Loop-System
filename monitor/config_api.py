@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import job_history
+from api_budget import worst_case_usd
 import limits_config
 import model_catalog as mc
 import openrouter_call as oc
@@ -446,11 +447,7 @@ def _paid_stages(name, stages):
 
 
 def _worst_case(name, stages):
-    """(worst_case_usd or None, problems, the table) for a stage change under the active profile. Uses api_budget (on main with the loop)."""
-    try:
-        from api_budget import worst_case_usd
-    except ImportError:
-        raise ApiError(503, "engine-unavailable", "the budget helper (api_budget) is not on this checkout")
+    """(worst_case_usd or None, problems, the table) for a stage change under the active profile. Uses api_budget.worst_case_usd."""
     data = _roster_stages_now(name)
     table = sc._table(dict(data, stages=sc._merge(sc._stages_block(data), stages)))
     catalog_entries = {e["model_id"]: e for e in mc.load_catalog()["openrouter"]}

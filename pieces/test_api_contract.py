@@ -3,15 +3,13 @@ temp copy of config/. No network, no model call: the OpenRouter listing, the ver
 
 Shapes: every monitor/fixtures file is compared with the response that builds the same scenario (shape_diff: fixture keys present with
 the same JSON types; null on either side is unknown and matches anything; no unexpected keys except the optional ones named below).
-api_shape, api_budget and api_idempotency are the loop's helpers; when one is not on this checkout the test uses a local stub with the
-same interface, so the tests run either way."""
+api_shape, api_budget and api_idempotency are the loop's helpers (scripts/source/), used as they are."""
 import io
 import json
 import os
 import shutil
 import sys
 import time
-import types
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,50 +35,15 @@ OPTIONAL_KEYS = {"note", "merge"}        # documented extras: a fixture may omit
 FREEFORM_KEYS = {"settings"}             # a stage's settings: free-form per model, compared by type only
 
 
-# ---------------------------------------------------------------- shape comparison (api_shape when it is on main, else a local stub)
+# ---------------------------------------------------------------- shape comparison (the loop's api_shape)
 
-def _local_shape_diff(expected, actual, path="$"):
-    out = []
-    if expected is None or actual is None:
-        return out
-    if isinstance(expected, dict):
-        if not isinstance(actual, dict):
-            return [f"{path}: expected an object"]
-        for key in expected:
-            if key in actual:
-                out += _local_shape_diff(expected[key], actual[key], f"{path}.{key}")
-            else:
-                out.append(f"{path}.{key}: missing")
-        for key in actual:
-            if key not in expected and key not in OPTIONAL_KEYS and key not in FREEFORM_KEYS:
-                out.append(f"{path}.{key}: unexpected key")
-        return out
-    if isinstance(expected, list):
-        if not isinstance(actual, list):
-            return [f"{path}: expected a list"]
-        for i, item in enumerate(actual if not expected else actual):
-            out += _local_shape_diff(expected[0] if expected else None, item, f"{path}[{i}]")
-        return out
-    if isinstance(expected, bool):
-        return [] if isinstance(actual, bool) else [f"{path}: expected a boolean"]
-    if isinstance(expected, (int, float)):
-        return [] if isinstance(actual, (int, float)) and not isinstance(actual, bool) else [f"{path}: expected a number"]
-    if isinstance(expected, str):
-        return [] if isinstance(actual, str) else [f"{path}: expected a string"]
-    return out
-
-
-try:
-    from api_shape import shape_diff as _real_shape_diff
-except ImportError:
-    _real_shape_diff = None
+from api_shape import shape_diff as _api_shape_diff  # noqa: E402
 
 
 def shape_diff(expected, actual):
-    """The loop's shape_diff when it is on this checkout (with the same free-form and optional keys), else the local stub."""
-    if _real_shape_diff is not None:
-        return _real_shape_diff(_strip(expected), _strip(actual))
-    return _local_shape_diff(_strip(expected), _strip(actual))
+    """api_shape.shape_diff with the optional and free-form keys removed from both sides (a fixture or a response may omit an optional
+    key; a stage's settings are free-form per model). [] when the shapes match."""
+    return _api_shape_diff(_strip(expected), _strip(actual))
 
 
 def _strip(value):
@@ -96,69 +59,8 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-# ---------------------------------------------------------------- the world: temp repo config, temp SATVIK_HOME, the app
-
 @pytest.fixture
-def helpers(monkeypatch):
-    """api_budget / api_idempotency: the loop's modules when on this checkout, else same-interface stubs (test-only)."""
-    try:
-        import api_budget  # noqa: F401
-    except ImportError:
-        budget = types.ModuleType("api_budget")
-
-        def worst_case_usd(stages, catalog):
-            per, problems, total = {}, [], 0.0
-            for stage, call in stages.items():
-                entry = catalog.get(call["model"])
-                if entry is None:
-                    problems.append({"code": "unknown-model", "stage": stage})
-                    per[stage] = None
-                    continue
-                if not entry["paid"]:
-                    per[stage] = 0.0
-                    continue
-                pin, pout = entry["price_in_usd_per_mtok"], entry["price_out_usd_per_mtok"]
-                if pin is None or pout is None:
-                    problems.append({"code": "unknown-price", "stage": stage})
-                    per[stage] = None
-                    continue
-                per[stage] = (call["prompt_tokens"] * pin + call["max_tokens"] * pout) / 1e6
-                total += per[stage]
-            return {"worst_case_usd": None if problems else total, "per_stage": per, "problems": problems}
-        budget.worst_case_usd = worst_case_usd
-        monkeypatch.setitem(sys.modules, "api_budget", budget)
-    try:
-        import api_idempotency  # noqa: F401
-    except ImportError:
-        idem = types.ModuleType("api_idempotency")
-        import hashlib
-        import re
-
-        class IdempotencyStore:
-            def __init__(self, folder, ttl_s=86400, clock=time.time):
-                self.folder = Path(folder)
-
-            def _path(self, key):
-                if not isinstance(key, str) or not re.match(r"^[A-Za-z0-9._-]{8,128}$", key):
-                    raise ValueError("bad idempotency key")
-                return self.folder / (hashlib.sha256(key.encode()).hexdigest() + ".json")
-
-            def get(self, key):
-                path = self._path(key)
-                return json.loads(path.read_text()) if path.is_file() else None
-
-            def put(self, key, response):
-                path = self._path(key)
-                self.folder.mkdir(parents=True, exist_ok=True)
-                if not path.is_file():
-                    path.write_text(json.dumps(response))
-                return json.loads(path.read_text())
-        idem.IdempotencyStore = IdempotencyStore
-        monkeypatch.setitem(sys.modules, "api_idempotency", idem)
-
-
-@pytest.fixture
-def world(tmp_path, monkeypatch, helpers):
+def world(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / "config").mkdir(parents=True)
     for name in ("roster.json", "models.json", "limits.json"):
