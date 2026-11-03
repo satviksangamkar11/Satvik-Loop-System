@@ -9,6 +9,11 @@ per-job ceiling that is reserved before each call. The test profile refuses any 
 Every reply is checked before it counts. Errors are named exceptions; nothing falls back to another model or key. Private code is refused
 unless a route is approved in APPROVED_PRIVATE, which is empty: no approved non-training route exists yet.
 
+Any role may instead be called through Claude Code (2026-11-03): its roster entry says "via": "claude_code" with a model and an effort
+(claude_code.py holds the names the CLI takes and runs the call). A role with no "via" is an OpenRouter role. A Claude Code role is never
+sent here: resolve() refuses it, and it is not on the shared ledger. The test profile allows a Claude Code role only as claude_code.TEST_ONLY,
+refused while the roster loads.
+
 Importing this module calls no model. `main()` with `probe` makes one call per writer and reviewer role, by hand."""
 import http.client
 import importlib.util
@@ -33,6 +38,7 @@ ROLE_NAMES = ("writer_a", "writer_b", "reviewer_a", "reviewer_b", "repair", "pla
 SETTING_KEYS = ("temperature", "reasoning", "max_tokens", "timeout_s", "sampling", "max_tokens_cap")   # every role's numbers live in config/roster.json
 NON_AUTHOR_WRITER = "non_author_writer"  # reviewer_a under the test profile: the free writer that did not write the code
 SENTINELS = frozenset({NON_AUTHOR_WRITER, "off", "fake"})   # roster values that are not model IDs
+VIAS = ("openrouter", "claude_code")    # how a role is called: its roster "via" (openrouter when the key is absent)
 APPROVED_PRIVATE = frozenset()      # owner decision 2026-11-02: no approved non-training route yet, so private jobs are blocked
 JOB_FREE_REQUESTS = 40
 JOB_REVIEW_USD_BY_PROFILE = {"test": 0.0, "production": 0.05}   # owner 2026-11-02: the paid-review ceiling per job is exactly 0 under test, exactly 0.05 in production
@@ -61,6 +67,20 @@ def _shared_limits():
         sys.path.insert(0, source)
     import shared_limits
     return shared_limits
+
+
+def _claude_code():
+    """scripts/source/claude_code.py (the Claude Code runner and its names), imported on first use (the same path rule as _shared_limits)."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import claude_code
+    return claude_code
+
+
+def via_of(spec):
+    """How a roster role is called: its "via", openrouter when it has none."""
+    return spec.get("via", "openrouter")
 
 
 def _loop_home():
@@ -151,8 +171,8 @@ class _Mismatch(OpenRouterError):
 
 
 class RosterRefused(ValueError):
-    """config/roster.json is malformed, names an unknown profile, or the test profile names a paid role. Raised while the roster loads: no
-    client exists and no request is sent."""
+    """config/roster.json is malformed, names an unknown profile, or the test profile names a paid role or a Claude Code role other than
+    claude_code.TEST_ONLY. Raised while the roster loads: no client exists and no request or call is made."""
 
 
 def _check_role(profile, role, spec):
@@ -167,7 +187,18 @@ def _check_role(profile, role, spec):
         raise RosterRefused(f"{where}: paid must be true or false")
     if not isinstance(spec["settings"], dict) or any(key not in spec["settings"] for key in SETTING_KEYS):
         raise RosterRefused(f"{where}: settings must hold {', '.join(SETTING_KEYS)}")
-    if spec["paid"] and role in WRITER_ROLES + REVIEWER_ROLES and (spec["provider"] is None or spec["pricing"] is None):
+    if via_of(spec) not in VIAS:
+        raise RosterRefused(f"{where}: via must be {' or '.join(VIAS)} (openrouter when absent)")
+    if via_of(spec) == "claude_code":
+        if spec["model"] in SENTINELS:
+            raise RosterRefused(f"{where}: {spec['model']!r} is not a model, so it has no via")
+        problem = _claude_code().check_role(where, spec)
+        if problem:
+            raise RosterRefused(problem)
+        return
+    if "effort" in spec:
+        raise RosterRefused(f"{where}: effort belongs to a claude_code role (an OpenRouter role takes its effort from effort_by_mode)")
+    if spec["paid"] and spec["model"] not in SENTINELS and (spec["provider"] is None or spec["pricing"] is None):
         raise RosterRefused(f"{where}: a paid OpenRouter role needs a pinned provider and prices")
 
 
@@ -197,6 +228,10 @@ def load_roster_file(path=None):
             raise RosterRefused(f"profile {name}: effort_by_mode must hold exactly {', '.join(EFFORT_MODES)}, each null, off, low, medium or high")
         for role, spec in roles.items():
             _check_role(name, role, spec)
+            if name == "test" and via_of(spec) == "claude_code":         # owner 2026-11-03: one Claude Code model and effort only under test
+                problem = _claude_code().test_profile_problem(f"{name}/{role}", spec)
+                if problem:
+                    raise RosterRefused(problem)
     return profiles
 
 
@@ -240,25 +275,32 @@ def active_profile():
 
 
 def roster_state(profile=None):
-    """The tables for a profile (default: the active one): ROLE_SPECS, ROLES, PAID, ALLOWED, PINS, PRICING, SETTINGS, PROFILE. Loaded inside
-    this function and cached by profile name, so each profile's roster is checked once and a test can switch profiles with the environment."""
+    """The tables for a profile (default: the active one): ROLE_SPECS, ROLES, VIA, PAID, ALLOWED, PINS, PRICING, SETTINGS, PROFILE. Loaded
+    inside this function and cached by profile name, so each profile's roster is checked once and a test can switch profiles with the
+    environment. The OpenRouter tables hold the OpenRouter roles only (no sentinel, no Claude Code role); a model on two roles keeps the
+    entries of the first in ladder order (writers, reviewers, then repair and planner)."""
     name = profile or active_profile()
     if name not in _ROSTER_STATE:
         specs = load_profile(name)
         roles = {role: spec["model"] for role, spec in specs.items()}
-        api = [role for role in WRITER_ROLES + REVIEWER_ROLES if roles[role] not in SENTINELS]
+        api = [role for role in WRITER_ROLES + REVIEWER_ROLES + ("repair", "planner")
+               if roles[role] not in SENTINELS and via_of(specs[role]) == "openrouter"]
+        pins, pricing, settings = {}, {}, {}
+        for r in api:
+            settings.setdefault(roles[r], specs[r]["settings"])                     # model -> its role's settings
+            if specs[r]["paid"]:
+                pins.setdefault(roles[r], specs[r]["provider"])                     # paid model -> {name, slug}
+                pricing.setdefault(roles[r], specs[r]["pricing"])                   # paid model -> USD per token
         _ROSTER_STATE[name] = {
-            "PROFILE": name, "ROLE_SPECS": specs, "ROLES": roles,
+            "PROFILE": name, "ROLE_SPECS": specs, "ROLES": roles, "VIA": {role: via_of(spec) for role, spec in specs.items()},
             "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]),
             "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]),
-            "PINS": {roles[r]: specs[r]["provider"] for r in api if specs[r]["paid"]},       # paid model -> {name, slug}
-            "PRICING": {roles[r]: specs[r]["pricing"] for r in api if specs[r]["paid"]},     # paid model -> USD per token
-            "SETTINGS": {roles[r]: specs[r]["settings"] for r in api},                       # model -> its role's settings
+            "PINS": pins, "PRICING": pricing, "SETTINGS": settings,
         }
     return _ROSTER_STATE[name]
 
 
-_ROSTER_NAMES = frozenset({"PROFILE", "ROLE_SPECS", "ROLES", "PAID", "ALLOWED", "PINS", "PRICING", "SETTINGS"})
+_ROSTER_NAMES = frozenset({"PROFILE", "ROLE_SPECS", "ROLES", "VIA", "PAID", "ALLOWED", "PINS", "PRICING", "SETTINGS"})
 
 
 def __getattr__(name):
@@ -281,12 +323,15 @@ def utc_day(now):
 
 
 def resolve(name):
-    """The roster model for a writer or reviewer role name, or an exact free roster ID. Anything else (a list, a comma list, an alias, a
-    bare paid ID, the repair or planner role, a sentinel such as non_author_writer) is refused before a request is built."""
-    if isinstance(name, str) and name in WRITER_ROLES + REVIEWER_ROLES:
-        roles = roster_state()["ROLES"]
+    """The roster model for a role name whose role is called through OpenRouter, or an exact free roster ID. Anything else (a list, a comma
+    list, an alias, a bare paid ID, a sentinel such as non_author_writer, a Claude Code role) is refused before a request is built."""
+    if isinstance(name, str) and name in ROLE_NAMES:
+        state = roster_state()
+        roles = state["ROLES"]
         if roles[name] in SENTINELS:
             raise ModelRefused(f"{name} is {roles[name]!r} in the {active_profile()} profile, not a model: nothing is called")
+        if state["VIA"][name] != "openrouter":
+            raise ModelRefused(f"{name} is a {state['VIA'][name]} role in the {active_profile()} profile: it is not called through OpenRouter")
         return roles[name]
     if isinstance(name, str) and name in roster_state()["ALLOWED"]:
         return name
@@ -944,10 +989,11 @@ PROBE_USER = "Reply with the single word OK."
 
 
 def probe_roles() -> list[str]:
-    """The probe names, from the active roster profile (read per call): every writer and reviewer role whose model is a real free model (no
-    sentinel, no paid role). The paid reviewer (GLM in production) is never probed, so the probe spends nothing."""
+    """The probe names, from the active roster profile (read per call): every writer and reviewer role whose model is a real free OpenRouter
+    model (no sentinel, no paid role, no Claude Code role). The paid reviewer (GLM in production) is never probed, so the probe spends nothing."""
     state = roster_state()
-    return [r for r in WRITER_ROLES + REVIEWER_ROLES if state["ROLES"][r] not in SENTINELS and not state["ROLE_SPECS"][r]["paid"]]
+    return [r for r in WRITER_ROLES + REVIEWER_ROLES
+            if state["ROLES"][r] not in SENTINELS and not state["ROLE_SPECS"][r]["paid"] and state["VIA"][r] == "openrouter"]
 
 
 def probe(client, out_path=None, names=None):

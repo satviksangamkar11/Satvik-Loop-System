@@ -463,7 +463,7 @@ def _repair_only_production(tmp_path):
 def test_a_repair_whose_claude_process_exits_non_zero_records_that_exit_code(tmp_path, monkeypatch):
     models, history = _repair_only_production(tmp_path)
     monkeypatch.setattr(opus, "OPUS_ENABLED", True)
-    monkeypatch.setattr(opus, "run_claude", lambda prompt, cwd, claude_cmd, timeout_s, env, system_prompt=None: (2, "", "usage limit"))
+    monkeypatch.setattr(opus, "run_claude", lambda prompt, cwd, claude_cmd, timeout_s, env, **kwargs: (2, "", "usage limit"))
     with pytest.raises(p1b.ModelFailed):
         models.call(ANTHROPIC, "repair", ["pieces/calc.py"])
     record = json.loads((history / "failed_call_01.json").read_text(encoding="utf-8"))
@@ -588,7 +588,7 @@ def test_every_model_call_writes_call_NN_failed_or_not(tmp_path):
     wp_h_run(root, client, FakeSandbox({ACC_ID: "assert 0 == 50"}))
     history = root / "_loop" / "calc" / "history"
     first = json.loads((history / "call_01.json").read_text(encoding="utf-8"))
-    assert first == {"model": DOTS, "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
+    assert first == {"model": DOTS, "via": "openrouter", "mode": "write", "status": 503, "failed": True, "prompt_tokens": None, "completion_tokens": None,
                      "reasoning_tokens": None, "finish_reason": None, "seconds": 0.0, "reply_file": None, "reasoning_file": None}
     second = json.loads((history / "call_02.json").read_text(encoding="utf-8"))
     assert second["model"] == XING and second["mode"] == "write" and second["status"] == 200 and second["failed"] is False

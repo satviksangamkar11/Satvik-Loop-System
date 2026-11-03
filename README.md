@@ -368,6 +368,27 @@ Every change below has a failing-first test (`pieces/test_p6_token_settings.py` 
 - **Switch.** `OPUS_ENABLED` stays `False`; the owner decides the production switch. The "Reply OK" check ran on Haiku 5.5 at high effort (`--model haiku --effort high`), not on Opus, once with and once without `--system-prompt` (`input_tokens` 2 in both). `pieces/conftest.py` keeps the switch off during tests, so no test starts the real CLI.
 - **Planner budget.** The `plan_job.py` prompt asks for `{free_requests: 40, review_usd: 0.05, paid_usd: 0}`.
 
+## Any model on any role (2026-11-03)
+
+`config/roster.json` is the one place a role's model is chosen. A role says how it is called with `"via"`: `"openrouter"` (the default when
+the key is absent) or `"claude_code"`, which also needs `"effort"`. Example: `"repair": {"via": "claude_code", "model": "sonnet", "effort": "high",
+"provider": null, "paid": true, "pricing": null, "settings": {...}}`.
+
+- **Claude Code names.** `model` is one of opus, sonnet, haiku, fable; `effort` is one of low, medium, high, xhigh, max
+  (`scripts/source/claude_code.py` holds this vocabulary; no role's model is written in code).
+- **Test profile.** A Claude Code role is allowed only as haiku at effort high; anything else is refused while the roster loads
+  (`RosterRefused`). No paid role and `review_usd` 0, as before.
+- **Production.** Any OpenRouter model or any Claude Code model and effort. `opus_repair.OPUS_ENABLED` (off) still gates opus for the
+  writers, reviewers and the repair step; the planner is not gated, as before.
+- **One runner.** `claude_code.run`: `claude -p`, JSON output, no tools, an empty MCP config with `--strict-mcp-config`, no session saved, an
+  empty temporary folder, the `ANTHROPIC_*` and `OPENROUTER*` variables removed, the prompt on stdin. The repair step and the planner use it too.
+  Under pytest or with `SATVIK_NO_OPUS=1` no real claude process starts.
+- **Same checks and records.** A Claude Code writer or reviewer passes `openrouter_call.check_reply` (FILE blocks; a final verdict line) and is
+  one `history/call_NN.json` with `"via": "claude_code"`. It is never on the OpenRouter ledger. The panel still never includes the author's model.
+- **Repair or planner on OpenRouter.** A repair role on OpenRouter is one adapter repair call; a planner on OpenRouter is one checked text call
+  kept in the claude envelope shape. A paid OpenRouter role still takes reviewer calls only.
+- **Limit.** A new OpenRouter model also needs a gate in `shared_limits.SLOTS` (an unknown model has no slot and is refused before a request).
+
 ## Change index (close-1 step 7)
 
 Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge queue adds one line per merged job between the markers below.

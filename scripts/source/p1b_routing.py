@@ -248,6 +248,13 @@ def panel_for(origin, unavailable=(), specs=None):
     return panel
 
 
+def _paid_reviewers():
+    """The models of the reviewer roles marked paid, however they are called (OpenRouter or Claude Code): panel_for never replaces such a slot,
+    so a failure there has no substitute either."""
+    specs = oc.ROLE_SPECS
+    return {specs[role]["model"] for role in oc.REVIEWER_ROLES if specs[role]["paid"] and specs[role]["model"] not in oc.SENTINELS}
+
+
 def _origin(lineage, files):
     rows = []
     for path in files:
@@ -350,7 +357,7 @@ def _review(files, models, lineage, down):
             if kind == "UNSUPPORTED":
                 return Outcome("review-fix", f"{slot}: FIX FIRST without valid evidence (file:line and SPEC n or CHECK n): {text.strip()}")
             errors[slot] = error
-            if slot in oc.PAID:                         # the paid reviewer must answer READY: there is no substitute for it
+            if slot in _paid_reviewers():               # the paid reviewer must answer READY: there is no substitute for it
                 return Outcome("provider-unavailable", f"paid review did not return READY ({_why(errors, slot)})")
             try:
                 backup = backup_writer(origin, used)

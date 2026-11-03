@@ -3,6 +3,10 @@ openrouter_call by role (writer_a, writer_b, reviewer_a for GLM, reviewer_b for 
 off by default), made at most twice per job and checked like any writer reply. The sandbox runs the job's tests and the locked acceptance tests, and those
 decide. This module writes and restores the job files and records the evidence. It names no legacy model family (a static test checks it).
 
+Any role may be a Claude Code model instead (2026-11-03, the roster's "via"): a writer or reviewer on Claude Code is one isolated call
+(claude_code.ask_role) with the same reply check, the same history records (each call_NN.json says how it was called) and nothing reserved
+on the OpenRouter ledger; a repair role on OpenRouter is called through the adapter like a writer's repair.
+
 Pre-pilot review (2026-11-02): a fresh writer never receives a previous attempt's pytest output (the output goes to the job history instead);
 every result that is not PASS puts the originals back and keeps the authorized candidate for inspection; the job is marked `running` before its
 first write, so a killed worker is restored by the next launch (fix_loop._prepare_job_folder).
@@ -20,6 +24,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import claude_code as cc
 import openrouter_call as oc
 import opus_repair
 import p0_gates as gates
@@ -508,7 +513,7 @@ class Production:
     """The models object walk() drives: calls through openrouter_call, writes and restores the job files, runs the sandbox."""
 
     def __init__(self, job, root, client, sandbox, *, protected, acceptance_lock, originals, parse_files, check_path, content_problem,
-                 history=None, scrub_keys=(), repair_ask=None, job_dir=None):
+                 history=None, scrub_keys=(), repair_ask=None, job_dir=None, claude_ask=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
         self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
         self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
@@ -516,6 +521,7 @@ class Production:
         self.parse_files, self.check_path, self.content_problem = parse_files, check_path, content_problem
         self.history, self.scrub_keys = history, tuple(scrub_keys)
         self.repair_ask, self.repair_calls = repair_ask, 0     # repair_ask(prompt, raw_sink) -> reply text; the default is opus_repair.ask
+        self.claude_ask = claude_ask    # claude_ask(role, system, user, kind, raw_sink) -> checked reply text; the default is claude_code.ask_role
         self.test_targets = sorted(set(job["tests"]) | set(job["acceptance_tests"]) | set(job.get("regression") or []))
         self.spec = (self.root / job["spec"]).read_text(encoding="utf-8")
         self.review_text = ""           # the production review prompt is built in: a job's review_prompt is never read (the legacy docs/REVIEW_PROMPT.md is never used)
@@ -609,9 +615,12 @@ class Production:
         except p1b.BadReply as exc:
             return None, str(exc)
 
-    def _ask(self, model, system, user, kind, mode):
+    def _ask(self, model, system, user, kind, mode, role=None):
+        role = role or role_by_model()[model]
+        if oc.roster_state()["VIA"][role] == "claude_code":
+            return self._ask_claude(model, role, system, user, kind, mode)
         try:
-            text, _info = self.client.call(role_by_model()[model], system, user, kind=kind, effort=oc.effort_for_mode(mode))
+            text, _info = self.client.call(role, system, user, kind=kind, effort=oc.effort_for_mode(mode))
         except oc.OpenRouterError as exc:
             self._record_history(model, mode)
             if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
@@ -620,6 +629,26 @@ class Production:
                 raise p1b.QuotaStop(str(exc)) from exc
             raise p1b.ModelFailed(str(exc)) from exc         # refused, dropped, quota, budget, account: this model is down for this job
         self._record_history(model, mode)
+        return text
+
+    def _ask_claude(self, model, role, system, user, kind, mode):
+        """A role on Claude Code: one isolated call (claude_code.ask_role) with the role's model and effort from the roster, checked as an
+        OpenRouter reply is (a FILE block for a writer or repair, a final Verdict line for a reviewer). It is one history/call_NN.json with via
+        claude_code and no HTTP status, and nothing is reserved on the OpenRouter ledger. A failed or unusable call is a failed call and the
+        model is down for this job, as an OpenRouter failure is."""
+        raw = []
+        ask = self.claude_ask or cc.ask_role
+        started, text = time.monotonic(), None
+        try:
+            text = ask(role, system, user, kind, raw_sink=raw.append)
+        except (cc.ClaudeFailed, cc.ClaudeBadReply) as exc:
+            self._failure(model, mode, None, exc, facts={"exit_code": exc.exit_code})
+            raise p1b.ModelFailed(str(exc)) from exc
+        finally:
+            facts = cc.envelope_facts(raw[-1] if raw else None)
+            self._write_call({"model": model, "via": "claude_code", "status": None, "failed": text is None,
+                              "seconds": round(time.monotonic() - started, 3), "usage": facts["usage"],
+                              "reply_text": facts["reply_text"] if facts["reply_text"] is not None else text}, mode)
         return text
 
     def _record_history(self, model, mode):
@@ -634,12 +663,13 @@ class Production:
         """One model call on the record: model, mode, the tokens its reply's usage reports (null when there is no reply), finish_reason, seconds.
         The reply's text and its reasoning text are kept too, scrubbed: a writer or repair reply in history/reply_NN.txt, a reviewer reply (review
         or review-reask, kept even when it has no verdict line) in history/review_NN.txt, and the reasoning in history/reasoning_NN.txt. The record
-        links them as reply_file and reasoning_file (null when there is none)."""
+        links them as reply_file and reasoning_file (null when there is none). `via` says how the call was made: openrouter or claude_code."""
         self.calls_written += 1
         if self.history is not None:
             n = self.calls_written
             usage = request.get("usage") or {}
-            record = {"model": request.get("model"), "mode": mode, "status": request.get("status"), "failed": bool(request.get("failed")),
+            record = {"model": request.get("model"), "via": request.get("via") or "openrouter", "mode": mode, "status": request.get("status"),
+                      "failed": bool(request.get("failed")),
                       "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
                       "reasoning_tokens": request.get("reasoning_tokens"), "finish_reason": request.get("finish_reason"), "seconds": request.get("seconds"),
                       "reply_file": None, "reasoning_file": None}
@@ -692,9 +722,13 @@ class Production:
 
     def _repair_step(self):
         """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
-        reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model."""
+        reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model.
+        A repair role on OpenRouter (the roster's "via") is one checked repair call through the adapter instead, recorded like a writer's."""
         self.repair_calls += 1
         number = self.repair_calls
+        spec = oc.roster_state()["ROLE_SPECS"]["repair"]
+        if self.repair_ask is None and oc.via_of(spec) == "openrouter" and spec["model"] not in oc.SENTINELS:
+            return self._repair_openrouter(spec["model"])
         prompt = WRITER_SYSTEM + "\n\n" + self._writer_user("repair")
 
         def keep_raw(raw):
@@ -715,8 +749,20 @@ class Production:
             self._step(p1b.ANTHROPIC, "repair", f"bad reply: {exc}")
             raise p1b.BadReply(str(exc)) from exc
         finally:
-            self._write_call({"model": p1b.ANTHROPIC, "status": None, "failed": reply is None, "seconds": round(time.monotonic() - started, 3),
-                              "reply_text": text}, "repair")
+            self._write_call({"model": p1b.ANTHROPIC, "via": "claude_code", "status": None, "failed": reply is None,
+                              "seconds": round(time.monotonic() - started, 3), "reply_text": text}, "repair")
+        self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
+        return reply
+
+    def _repair_openrouter(self, model):
+        """The repair step on an OpenRouter model: the writer's whole-file repair request, one checked repair call through the adapter (its
+        records are the adapter's requests), parsed like a writer's reply. An unavailable call carries the fixed escalation reason."""
+        try:
+            text = self._ask(model, WRITER_SYSTEM, self._writer_user("repair"), kind="repair", mode="repair", role="repair")
+        except p1b.ModelFailed as exc:
+            self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
+            raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
+        reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply
 
@@ -922,7 +968,7 @@ def _spec_line(spec_text, test_id, message):
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-        content_problem, scrub_keys=(), repair_ask=None):
+        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""
@@ -938,7 +984,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys,
-                       repair_ask=repair_ask, job_dir=status_dir_job)
+                       repair_ask=repair_ask, job_dir=status_dir_job, claude_ask=claude_ask)
     lineage = p1b.Lineage()
     try:
         client.set_job_deadline(job["deadline_min"] * 60)     # the unit deadline: no retry (openrouter_call) starts after it

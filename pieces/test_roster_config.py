@@ -30,10 +30,11 @@ MODEL_ID_EXCEPTIONS = {
     "scripts/source/nemotron_code.py": "remove in follow-up: the nemotron-3-ultra ID is still a literal",
     "scripts/source/review_run.py": "remove in follow-up: the two nemotron IDs are still literals",
     "scripts/source/fix_loop.py": "remove in follow-up: the legacy loop (outside the job schema) still has literal IDs; openai/v1 is a URL path",
-    "scripts/source/opus_repair.py": "remove in follow-up: MODEL is the literal \"opus\" and should read the roster's repair role",
     "scripts/source/shared_limits.py": "remove in follow-up: the gate table names the Opus slot as the literal \"opus\" (a gate name, not a model ID)",
-    "scripts/source/plan_job.py": "remove in follow-up: the planner is the literal \"opus\" and should read the roster's planner role",
 }
+# 2026-11-03: opus_repair.py and plan_job.py read the repair and planner roles from the roster now. claude_code.py holds the names the claude
+# CLI takes (its --model vocabulary) and the test profile's one allowance: those bare names may appear there, and nowhere else in scripts/source.
+CLAUDE_CODE_VOCABULARY = "scripts/source/claude_code.py"
 # Model IDs written out in any family's own form: a vendor path, or a family name with a version or a tier.
 FAMILY_ID = re.compile(
     r"\b(?:nvidia|openai|openrouter|anthropic|z-ai|google|cohere|dots-studio|xingchen-agi|deepseek-ai|minimax|moonshotai|qwen|meta-llama)/[\w.:\-]+"
@@ -87,6 +88,9 @@ def test_the_roster_file_is_valid_for_both_profiles():
 def test_no_model_id_string_appears_in_scripts_source_outside_the_roster():
     ids = {spec["model"] for profile in PROFILES for spec in roles_of(profile).values()} - SENTINELS
     needles = [m if re.search(r"[/\-:.]", m) else f'"{m}"' for m in sorted(ids)]   # a bare word such as opus only as a quoted string
+    import claude_code
+    vocabulary = {f'"{m}"' for m in claude_code.MODELS}
+    needles = sorted(set(needles) | vocabulary)                  # a Claude Code name not on today's roster is still not written in the code
     offenders = []
     for path in sorted(SRC.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts:
@@ -95,7 +99,8 @@ def test_no_model_id_string_appears_in_scripts_source_outside_the_roster():
         rel = path.relative_to(REPO).as_posix()
         if rel in MODEL_ID_EXCEPTIONS:
             continue
-        offenders += [f"{rel}: {needle}" for needle in needles if needle in text]
+        allowed = vocabulary if rel == CLAUDE_CODE_VOCABULARY else set()
+        offenders += [f"{rel}: {needle}" for needle in needles if needle in text and needle not in allowed]
         offenders += [f"{rel}: {m.group(0)}" for m in FAMILY_ID.finditer(text)]
     assert not offenders, "model ID strings in scripts/source outside config/roster.json:\n" + "\n".join(offenders)
 
