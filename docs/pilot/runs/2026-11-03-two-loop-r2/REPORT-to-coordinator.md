@@ -23,5 +23,5 @@ Branch two-loop-run-2026-11-03-r2, commit 1e42324, folder docs/pilot/runs/2026-1
 - Removed 22 wt-* worktrees.
 - Skipped: wt-B-pilot and wt-B-pilot2 (uncommitted changes); wt-pilot-r5 (two untracked delivered files, already on loop-status-pilot).
 - Not done: `git push origin --delete r72-token-budget` was denied by the permission classifier. Still needs the owner's decision.
-- Not done: docs/pilot... no, pilot-loop-status.solo.json in loop_p0 is still there (untracked); deletion awaits owner's decision.
+- Not done: pilot-loop-status.solo.json in loop_p0 is still there (untracked); deletion awaits owner's decision.
 - No satvik-p0-* containers were found.
