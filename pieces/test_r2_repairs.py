@@ -211,10 +211,11 @@ def test_both_profiles_carry_the_repair_cap_and_writer_b_at_temperature_0_2():
 
 # ---------------------------------------------------------------- 6. writer prompt example when reasoning is off
 
-def test_with_reasoning_off_the_writer_prompt_ends_with_the_four_line_example(tmp_path, monkeypatch):
+def test_every_writer_and_repair_prompt_ends_with_its_format_example(tmp_path):
     root = wp_h_root(tmp_path)
     models, _ = production(root, FakeClient([]))
-    assert not models._writer_user("write").endswith(pm.WRITER_EXAMPLE)
-    monkeypatch.setattr(oc, "effort_for_mode", lambda mode, profile=None: "off")
     assert models._writer_user("write").endswith(pm.WRITER_EXAMPLE)
+    assert models._writer_user("repair").endswith(pm.WRITER_EXAMPLE)
+    assert models._writer_user("repair", form="edit").endswith(pm.EDIT_EXAMPLE)
+    assert models._writer_user("repair", form="edit-reask", note="x").endswith(pm.EDIT_EXAMPLE)
     assert len(pm.WRITER_EXAMPLE.splitlines()) == 4

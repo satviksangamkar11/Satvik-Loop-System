@@ -736,7 +736,7 @@ class Production:
         """The writer's request. A fresh write shows every job file. A repair shows only the files it needs: the files the FIX FIRST findings
         name, or, after a red test run, the failing test files and the code (the failing-test digest goes with them). Every job file is shown
         when no failing test file can be named. form: whole (complete files), edit (SEARCH/REPLACE blocks), or edit-reask (edit, after a refusal
-        named by `note`, ending with the example). When reasoning is off for the mode, a whole-file request ends with the 4-line example."""
+        named by `note`). Every request ends with its format example: the 4-line whole-file example, or the SEARCH/REPLACE example for an edit form."""
         shown = self._repair_files() if mode == "repair" else list(self.files)
         parts = [f"SPEC:\n{self.spec}", "EXPECTED FILES:"]
         for rel in shown:
@@ -750,11 +750,11 @@ class Production:
             parts.append("Fix exactly the problems shown above. Change nothing else.")
         if shown != list(self.files):
             parts.append("The job files not shown above are unchanged by this repair.")
-        if form == "edit-reask":
-            parts.append(f"Your edits were refused ({note}). Copy each SEARCH text exactly from the file as shown. Format example:\n{EDIT_EXAMPLE}")
-        elif form == "edit":
-            parts.append("Reply with SEARCH/REPLACE blocks for the files you change, as the system prompt says.")
-        elif oc.effort_for_mode(mode) == "off":
+        if form in ("edit", "edit-reask"):
+            if form == "edit-reask":
+                parts.append(f"Your edits were refused ({note}). Copy each SEARCH text exactly from the file as shown.")
+            parts.append("Reply with SEARCH/REPLACE blocks for the files you change. Format example:\n" + EDIT_EXAMPLE)
+        else:
             parts.append("Reply in exactly this format (an example, one file):\n" + WRITER_EXAMPLE)
         return "\n\n".join(parts)
 
