@@ -14,12 +14,12 @@
                        "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "writer_b": {
-          "model": "xingchen-agi/xing4.0-29b-a4b:free",
+          "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "provider": null,
           "paid": false,
           "pricing": null,
-          "settings": {"temperature": 0.2, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
-                       "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
+          "settings": {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200, "sampling": null,
+                       "retry_max_tokens": 72000, "retry_timeout_s": 1800, "max_tokens_cap": 72000}
         },
         "reviewer_a": {
           "model": "non_author_writer",
@@ -29,7 +29,7 @@
           "settings": {"temperature": null, "reasoning": null, "max_tokens": null, "timeout_s": null, "sampling": null, "max_tokens_cap": null}
         },
         "reviewer_b": {
-          "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "model": "nvidia/nemotron-3.5-super-vl:free",
           "provider": null,
           "paid": false,
           "pricing": null,

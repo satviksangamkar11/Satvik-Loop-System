@@ -175,9 +175,9 @@ def test_without_satvik_profile_the_test_profile_loads_with_every_role_free():
     roles = loaded["roles"]
     assert {r: roles[r]["model"] for r in ROLE_NAMES} == {
         "writer_a": "dots-studio/dots-3-note-preview:free",
-        "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
+        "writer_b": "nvidia/nemotron-3-ultra-550b-a55b:free",     # owner 2026-11-03: Nemotron Ultra replaces Xing (HTTP 429 from the shared pool on every call)
         "reviewer_a": "non_author_writer",                        # owner 2026-11-03: the free writer that did not write the code
-        "reviewer_b": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner 2026-11-03: Nemotron Ultra replaces North (no verdict in 16K tokens, twice)
+        "reviewer_b": "nvidia/nemotron-3.5-super-vl:free",        # owner 2026-11-03: replaces North (no verdict in 16K tokens, twice); not a writer, so the panel stays independent
         "repair": "off",
         "planner": "fake",
     }
