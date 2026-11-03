@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import event_log
+import job_history
 import loop_home
 from launch import git, record_merge
 
@@ -109,9 +111,13 @@ class MergeQueue:
 
     def _finish(self, job_id, gen, state, base, result=None):
         """The launcher's finish, then the merge outcome as results/<job_id>/merge.json (launch.record_merge). The execution evidence
-        archived at the job's own finish is never overwritten."""
+        archived at the job's own finish is never overwritten. The merge event goes in first (into the archived events once there are
+        any), and the job is indexed into history.db last."""
+        extra = {k: (result or {})[k] for k in ("head", "attempts") if k in (result or {})}
+        event_log.emit(event_log.job_dir_for(self.api.home, job_id), "merge", job_id=job_id, state=state, base=base, **extra)
         out = self.launcher.finish(job_id, gen, state, base, result)
         record_merge(self.api.home, job_id, state, base, result)
+        job_history.safe_index(self.api.home, job_id)
         return out
 
     def _fetch_main(self):

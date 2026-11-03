@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import event_log
+import job_history
 import loop_home
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
@@ -147,6 +149,9 @@ class Launcher:
     def start(self, name, rel_paths=(), key=None):
         res = self._start(name, rel_paths, key)
         self.api.registry.bump("started" if res["ok"] else "refused:" + res["reason"])
+        if res["ok"]:                                      # the job's first event, in the folder its run writes (_loop/<name>)
+            event_log.emit(Path(res["worktree"]) / "_loop" / name, "job-start", job_id=res["job_id"], name=name, base=res["base"],
+                           branch=res["branch"], gen=res["gen"], key=key or res["job_id"])
         return res
 
     def _start(self, name, rel_paths=(), key=None):
@@ -200,8 +205,12 @@ class Launcher:
         """Archive the job's evidence (archive_job), release the sandbox slot, the claims and the lease, and record the state. The registry
         row is written before the lease goes. The worktree is removed unless the state keeps it (KEEP_WORKTREE) or the archive failed: then
         the worktree stays so the evidence is not lost, everything else is still released, and the row says archive_failed. The state is
-        never changed by the archive."""
+        never changed by the archive. The finish event goes in before the archive (a merge state has its own merge event instead), and
+        the job is indexed into history.db after it."""
+        if state not in event_log.MERGE_STATES:
+            self._finish_event(job_id, state, result)
         archive = archive_job(self.api.home, job_id)
+        job_history.safe_index(self.api.home, job_id)
         result = dict(result or {}, archive=archive)
         if archive.startswith("failed"):
             result["archive_failed"] = True
@@ -215,6 +224,24 @@ class Launcher:
             git(["worktree", "remove", "--force", str(self.api.home / "wt" / job_id)], self.repo, check=False)
         self.api.registry.bump("finished:" + state)
         return state
+
+    def _finish_event(self, job_id, state, result):
+        """The finish event, unless the run already wrote one with this state (p1b _finish). The reason is the result's, else the
+        status.json reason when that file ends in the same state."""
+        folder = event_log.job_dir_for(self.api.home, job_id)
+        if folder is None:
+            return
+        events = event_log.read_events(folder / event_log.FILE)
+        if events and events[-1].get("type") == "finish" and events[-1].get("state") == state:
+            return
+        reason = (result or {}).get("reason")
+        if reason is None:
+            try:
+                status = json.loads((folder / "status.json").read_text(encoding="utf-8"))
+                reason = status.get("reason") if status.get("state") == state else None
+            except (OSError, ValueError, AttributeError):
+                pass
+        event_log.emit(folder, "finish", job_id=job_id, state=state, reason=reason)
 
     def _running(self):
         """Jobs whose latest registry row says running and whose lease is not stale (a crashed job stops counting once its heartbeat is stale)."""
