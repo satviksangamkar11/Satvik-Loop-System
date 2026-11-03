@@ -1547,7 +1547,9 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
 
 
 def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
-    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it."""
+    """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it. A passed job's own files (job
+    "files": the code and its tests) go into the same commit: they are what the merge delivers. A job that did not pass commits the doc only
+    (its files were restored to the originals)."""
     doc = Path(wt) / "docs" / "changes" / f"{job_id}.md"
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text("\n".join([
@@ -1562,6 +1564,11 @@ def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) 
     ]), encoding="utf-8")
     git = _sibling_module("launch").git
     git(["add", doc.relative_to(wt).as_posix()], wt)
+    if result.get("state") == "passed":                      # the delivered code: new, changed or deleted job files
+        tracked = set(git(["ls-files", "--", *job["files"]], wt).stdout.split())
+        paths = [rel for rel in job["files"] if (Path(wt) / rel).exists() or rel in tracked]
+        if paths:
+            git(["add", "-A", "--", *paths], wt)
     git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
     return doc
 

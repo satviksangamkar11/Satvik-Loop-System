@@ -277,6 +277,35 @@ def test_step7_a_kept_worktree_carries_its_change_doc_committed_on_the_job_branc
     assert git(wt, "status", "--porcelain") == ""
 
 
+
+def test_step7_a_passed_job_commits_its_own_files_with_the_change_doc(tmp_path):
+    """A passed job's code is what the merge delivers: the job's files are in the job branch commit, not left uncommitted in the worktree."""
+    env = env_for(tmp_path)
+
+    def writes_code(job, wt, **kwargs):
+        for rel in job["files"]:
+            (Path(wt) / rel).parent.mkdir(parents=True, exist_ok=True)
+            (Path(wt) / rel).write_text(f"# written by the job: {rel}\n", encoding="utf-8")
+        return {"name": job["name"], "state": "passed", "round": 1}
+
+    res = fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=writes_code)
+    wt = env.home / "wt" / res["job_id"]
+    committed = git(wt, "show", "--name-only", "--format=", "HEAD").splitlines()
+    assert set(JOB["files"]) <= set(committed) and f"docs/changes/{res['job_id']}.md" in committed
+    assert git(wt, "status", "--porcelain") == ""
+
+
+def test_step7_a_job_that_did_not_pass_commits_the_change_doc_only(tmp_path):
+    import subprocess
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@example.com"], ["config", "user.name", "t"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", *args], cwd=wt, check=True, capture_output=True)
+    (wt / "base.txt").write_text("# a failed attempt\n", encoding="utf-8")
+    fl.write_change_doc(wt, "pilot-1", JOB, {"state": "escalate", "round": 1}, "base")
+    assert git(wt, "show", "--name-only", "--format=", "HEAD").splitlines() == ["docs/changes/pilot-1.md"]
+    assert git(wt, "status", "--porcelain") == "?? base.txt"
+
 def test_step7_the_index_line_goes_above_the_end_marker_once(tmp_path):
     import merge_queue as mq
     wt = tmp_path / "wt"
