@@ -24,13 +24,18 @@
         },
         "structured_outputs": null,
         "contracts": {
-          "writer_file_blocks": true,
-          "repair_edit_blocks": null,
-          "reviewer_verdict": true
-        }
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "verified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "verified",
+          "reviewer_verdict": "verified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "optional"
       },
       "verified_at": "2026-11-03T16:00:00Z",
-      "metadata_at": "2026-11-03T15:00:00Z"
+      "metadata_at": "2026-11-03T15:00:00Z",
+      "endpoint": null
     },
     {
       "model_id": "z-ai/glm-5.3-flash",
@@ -55,14 +60,19 @@
         },
         "structured_outputs": true,
         "contracts": {
-          "writer_file_blocks": null,
-          "repair_edit_blocks": null,
-          "reviewer_verdict": null
-        }
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "verified",
+          "native_structured_output": "verified"
+        },
+        "reasoning_mode": "optional"
       },
       "verified_at": null,
       "metadata_at": "2026-11-03T15:00:00Z",
-      "note": "paid: reviewer-only, production only"
+      "note": "paid: reviewer-only, production only",
+      "endpoint": "z-ai"
     },
     {
       "model_id": "haiku",
@@ -86,14 +96,20 @@
         "temperature": null,
         "structured_outputs": null,
         "contracts": {
-          "writer_file_blocks": null,
-          "repair_edit_blocks": null,
-          "reviewer_verdict": null
-        }
+          "planner_json": "verified",
+          "writer_file_blocks": "verified",
+          "repair_edit_blocks": "verified",
+          "repair_whole_file": "verified",
+          "reviewer_verdict": "verified",
+          "native_structured_output": "not-applicable"
+        },
+        "reasoning_mode": "unknown",
+        "text_validated": true
       },
       "verified_at": null,
       "metadata_at": null,
-      "note": "subscription: no USD; test profile allows only effort high"
+      "note": "subscription: no USD; test profile allows only effort high",
+      "endpoint": null
     }
   ],
   "index_ok": true

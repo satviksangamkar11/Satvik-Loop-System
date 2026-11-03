@@ -40,7 +40,10 @@ these shapes do not without a version bump. The engine facts behind each field a
 - `via`: `openrouter`, `claude_code`.
 - `effort` (OpenRouter): `off`, `low`, `medium`, `high`. `effort` (Claude Code): `low`, `medium`, `high`, `xhigh`, `max`. **Show only the
   efforts a model's `capabilities` list.**
-- `contract`: `writer_file_blocks`, `repair_edit_blocks`, `reviewer_verdict`.
+- `contract`: `planner_json`, `writer_file_blocks`, `repair_edit_blocks`, `repair_whole_file`, `reviewer_verdict`, `native_structured_output`.
+- `contract_state`: `verified`, `failed`, `unverified`, `not-applicable`. A model is eligible for a stage only when that stage's contract is `verified`.
+  - Claude Code models use `text_validated` instead: the reply is checked with the same text parsers, and there is never `native_structured_output`.
+- `reasoning_mode`: `optional` (on/off verified), `mandatory` (it cannot be turned off), `unsupported`, `unknown`. Show only the switch states the mode allows.
 - `start_refusal`: `stop-file`, `provider-unavailable`, `free-requests`, `review-spend`, `request-running`, `no-sandbox-slot`, `claim-conflict`,
   `no-budget-snapshot`.
 
@@ -66,7 +69,7 @@ JobDetail is a JobSummary plus these fields:
  "hashes": {"tested": "43d1…", "reviewed": "43d1…", "delivered": "43d1…"},
  "archive": {"available": true, "archive_failed": false}}
 ```
-`stages[].status` is one of `ran`, `running`, `not-triggered`, `pending`.
+`stages[].status` is one of `ran`, `running`, `not-triggered`, `pending`. **All ten stages are always listed**: a planner that was never requested is `not-triggered`.
 
 ### Attempt event (`GET /loops/{id}/events`)
 ```json
@@ -97,6 +100,7 @@ JobDetail is a JobSummary plus these fields:
 ```
 
 ### Model (`GET /models`)
+Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> = contract_state`, and `reasoning_mode`. A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
 ```json
 {"model_id": "nvidia/nemotron-3-ultra-550b-a55b:free", "via": "openrouter", "hosting_provider": null, "paid": false,
  "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": 262144, "max_output_tokens": 32768,
@@ -143,11 +147,17 @@ JobDetail is a JobSummary plus these fields:
 | UI action | Route | Request | Success | Errors | Allowed when | Side effects | Status |
 |---|---|---|---|---|---|---|---|
 | Validate job | `POST /jobs/validate` | `{"job": {...}}` or `{"job_path": "..."}` | `{"valid": true, "problems": []}` | 400 `invalid-job` (`details.problems[]`) | always | none | v1 |
-| Queue job | `POST /jobs` | `{"job_path": "...", "rerun": false}` | 201 `{"queued": true, "queue_file": "..."}` | 409 `duplicate-pending` / `duplicate-running`, 422 `already-completed` (offer "Run again" → `rerun: true`) | not STOP | file in queue | v1 |
+| Queue job | `POST /jobs` | `{"job_path": "...", "rerun": false, "stages": {"<stage>": {"model", "effort", "settings"}}?, "stage_revision": n, "paid_budget_usd": 0}`. The backend validates the stages, then **freezes** the resolved snapshot atomically with the queued job. That snapshot is used at start, never the defaults read at that later time. Response: `stage_snapshot {sha256, revision}` | 201 `{"queued": true, "queue_file": "..."}` | 409 `duplicate-pending` / `duplicate-running`, 422 `already-completed` (offer "Run again" → `rerun: true`) | not STOP | file in queue | v1 |
 | Start loops | `POST /loops/start` | `{"loops": 1-4}` | 202 `{"started": n}` | 409 `stop-on`, 422 a `start_refusal` code | queue not empty | background loop processes | v1 |
 | Plan | `POST /plans` | `{"name", "request", "files": [≤30]}` | 202 `{"plan_id", "state": "planning"}`, later `GET /plans/{id}` → `{"state": "planned", "assumed": [...], "job_sha256"}` | 422 `planner-refused-in-test`, 409 `planner-uncertain` | production profile | **1 Opus call (paid)** | v1 (blocked under test) |
 | Approve plan | `POST /plans/{id}/approve` | `{"job_sha256", "approve_assumed": true}` | 202 `{"job_id"}` | 409 `plan-changed`, 422 `assumed-not-approved` | planned | **approval also starts the job** | v1 |
 | Edit future stage | `PATCH /loops/{id}/stages` | `{"stage", "change": {...}, "revision"}` | `{"ok": true, "revision": n}` | 409 `stage-started` / `stale-revision`, 422 a validation code, `model-not-selectable` | the stage hasn't started | a new snapshot revision for that job only | v1 (after P1) |
+| Search the OpenRouter catalog | `GET /models/search?q=` | — | `{"results": [Model…]}` (not yet in the pool) | 503 | key present | 1 GET | v1 |
+| Add a model to the pool | `POST /models` | `{"model_id"}` | 201 Model (contracts `unverified`) | 409 `already-in-pool`, 422 `pool-full` (max 20), `paid-without-pin` | always | edits `config/models.json` | v1 |
+| Remove a model | `DELETE /models/{id}` | — | 204 | 409 `model-in-use` (`details.stages[]`), 422 `pool-min` (min 10) | not used by any stage | edits `config/models.json` | v1 |
+| Test reasoning | `POST /models/verify-reasoning` | `{"model_id", "efforts": [...]}` | `{"reasoning_mode", "efforts_verified": [...]}` | 503 | key present | ≤1 free call per effort | v1 |
+| Validate paid budget | `POST /budget/validate` | `{"stages": {...}, "paid_budget_usd"}` | `{"valid", "worst_case_usd", "problems": []}` | 400 `budget-over-cap`, 422 `paid-in-test` | always | none | v1 |
+| Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range` | no job running for slots | edits config; applies to new starts only | v1 |
 | Validate stage settings | `POST /stages/validate` | `{"profile", "changes": [...]}` | `{"valid": true, "problems": []}` | 400 with `problems[{code, stage, message}]` | always | none | v1 |
 | Save stage settings | `PUT /stages` | `{"profile", "revision", "changes": [...]}` | `{"revision": n+1}` | 409 `stale-revision`, 400 validation | always | affects **future jobs only**; running jobs keep their snapshot | v1 |
 | Verify model | `POST /models/verify` | `{"model_id", "contract"}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, 503 provider | key present | 1 free call | v1 |
@@ -158,6 +168,7 @@ JobDetail is a JobSummary plus these fields:
 | Change an in-flight model, Cancel one job, Resume a failed job, Manual merge | — | — | — | — | **never** | — | **not offered: no button** |
 
 ## 4. UI rules that come from the engine
+0. **`model_selectable` is profile-specific.** It comes from the response, never hard-coded: Reviewer A is a fixed sentinel only in the test profile, and Re-ask and Review-fix always inherit their model.
 1. **Global STOP is soft.** A running model call finishes. Show "stopping after the current step".
 2. **Approving a plan starts the job.** Say so on the button.
 3. **The merge is automatic** after a pass. Show `merge_state`; there is no Merge button.

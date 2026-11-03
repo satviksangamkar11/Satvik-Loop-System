@@ -49,6 +49,11 @@
   ],
   "stages": [
     {
+      "stage": "planner",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
       "stage": "writer_a_write",
       "status": "ran",
       "attempts": 1

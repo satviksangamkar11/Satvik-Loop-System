@@ -51,6 +51,11 @@
   "findings": [],
   "stages": [
     {
+      "stage": "planner",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
       "stage": "writer_a_write",
       "status": "ran",
       "attempts": 1
@@ -110,7 +115,7 @@
       },
       {
         "seq": 2,
-        "ts": "2026-11-03T17:39:18Z",
+        "ts": "2026-11-03T17:39:20Z",
         "type": "attempt-start",
         "attempt_id": "a1",
         "stage": "writer_a_write",
@@ -129,7 +134,7 @@
       },
       {
         "seq": 3,
-        "ts": "2026-11-03T17:39:27Z",
+        "ts": "2026-11-03T17:40:55Z",
         "type": "attempt-end",
         "attempt_id": "a1",
         "stage": "writer_a_write",
@@ -148,14 +153,14 @@
       },
       {
         "seq": 4,
-        "ts": "2026-11-03T17:39:36Z",
+        "ts": "2026-11-03T17:41:00Z",
         "type": "tests",
         "green": true,
         "failing": []
       },
       {
         "seq": 5,
-        "ts": "2026-11-03T17:39:45Z",
+        "ts": "2026-11-03T17:41:02Z",
         "type": "wait-start",
         "why": "model-slot",
         "model": "nvidia/nemotron-3.5-super-vl:free"
