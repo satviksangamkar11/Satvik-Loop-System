@@ -8,7 +8,7 @@ The three jobs are `tl-slug`, `tl-roman` and `tl-index`. Their specs, locked tes
 
 ## 0. Read first: blocker and what the command line can do
 
-**Blocker (found while preparing this runbook).** A passed job's new files are never committed. `run_job` writes the candidate files into the job worktree, and the only commit is the change doc (`fix_loop.write_change_doc`). `merge_queue` then pushes a commit that holds only `docs/changes/<job>.md`, so the three jobs would report `merged` with no code on `main`. Section 8 item 2 checks for this. Do not run sections 3 to 7 until the fix is merged (a follow-up task is queued for it).
+**Blocker found while preparing this runbook: fixed (commit 9160bdf).** A passed job's new files used to stay uncommitted: the only commit was the change doc (`fix_loop.write_change_doc`), so `merge_queue` pushed no code. Now a passed job's own files go into the same commit as its change doc (`pieces/test_fix_loop_wiring.py::test_step7_a_passed_job_commits_its_own_files_with_the_change_doc`). Section 8 item 2 checks it on the real run.
 
 **Command-line surface, checked against the code (no flag below is invented):**
 
@@ -203,7 +203,7 @@ Get-Content "$env:SATVIK_HOME\ledger\limits.json"               # review_spent m
 Done when all of these hold:
 
 1. The three jobs are `merged` in the registry, and `tl-slug` merged before `tl-index`.
-2. `origin/main` contains `scripts/source/tl_slug.py`, `scripts/source/tl_roman.py` and `scripts/source/tl_index.py`. **Today this check fails** (the blocker in section 0): only the change docs reach main.
+2. `origin/main` contains `scripts/source/tl_slug.py`, `scripts/source/tl_roman.py` and `scripts/source/tl_index.py`. (This failed before commit 9160bdf; it must pass now.)
 3. `review_spent` is 0. The test roster has no paid role (`load_profile` refuses one under the test profile).
 4. No Opus call. The test roster has none: `repair` is `off` and `planner` is `fake`, so the `"opus"` matches in `config\roster.json` must all be in the `production` block. The per-call history lives in each worktree, and a worktree is removed when its job merges. To keep that evidence, copy `wt\<job id>\_loop` while the job is `passed`, before its merge.
 
@@ -211,7 +211,7 @@ The owner's "$0, 0 Opus calls" check is items 3 and 4.
 
 ## 9. Known gaps and limits
 
-1. **Blocker:** candidate files are not committed (section 0). Section 8 item 2 fails until the fix is merged.
+1. **Fixed:** candidate files were not committed (section 0); fixed in 9160bdf.
 2. No command line for the launcher, queue, merge queue or counters. The here-strings call the real functions. A follow-up task is queued to add a small command line, with tests.
 3. `tl-index` depends on `tl-slug` on main. The launcher claims only writes, not the `reference` read, so the order is enforced by this runbook, not by claims.
 4. Merges are in-memory per process (`MergeQueue.pending`). If a loop process dies after a job passes and before its merge, the job stays `passed` in the registry and no command re-submits it. Re-run the job from its queue file (copy it back from `queue\taken`).
