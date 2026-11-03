@@ -270,6 +270,24 @@ def test_step7_a_kept_worktree_carries_its_change_doc_committed_on_the_job_branc
     assert git(wt, "status", "--porcelain") == ""
 
 
+def test_step7_a_passed_job_commits_its_own_files_with_the_change_doc(tmp_path):
+    env = env_for(tmp_path)
+    job = {"name": "pilot", "files": ["base.txt", "new.txt", "never.txt"]}     # changed, new, and one the run never wrote
+
+    def run(job_, wt, **kwargs):
+        (Path(wt) / "base.txt").write_text("changed by the job\n", encoding="utf-8")
+        (Path(wt) / "new.txt").write_text("new\n", encoding="utf-8")
+        return {"name": job_["name"], "state": "passed", "round": 1}
+
+    res = fl.run_launched(job, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=run)
+    wt = env.home / "wt" / res["job_id"]
+    assert git(wt, "status", "--porcelain") == ""                           # nothing left for the merge's rebase to refuse
+    assert git(wt, "show", "HEAD:base.txt") == "changed by the job"
+    assert git(wt, "show", "HEAD:new.txt") == "new"
+    assert sorted(git(wt, "show", "--name-only", "--format=", "HEAD").split()) == sorted(
+        ["base.txt", "new.txt", f"docs/changes/{res['job_id']}.md"])
+
+
 def test_step7_the_index_line_goes_above_the_end_marker_once(tmp_path):
     import merge_queue as mq
     wt = tmp_path / "wt"
