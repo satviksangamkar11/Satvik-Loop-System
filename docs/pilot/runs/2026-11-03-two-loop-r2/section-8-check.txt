@@ -1,0 +1,17 @@
+﻿section 8 check (RUNBOOK 8), origin/main 2b80095b23b23a503822d42a6ddef518ebcb77a4
+1. registry, job-id rows:
+   tl-index-20261103-2220-94a5: merged
+   tl-roman-20261103-2214-6a93: merged
+   tl-slug-20261103-2214-bc59: merged
+   name rows (still show the last job-finish state, see NOTES.md):
+   tl-slug: passed
+   tl-roman: passed
+   tl-index: passed
+2. tl_ files on origin/main scripts/source/:
+   scripts/source/tl_index.py
+   scripts/source/tl_roman.py
+   scripts/source/tl_slug.py
+3. review_spent: 0
+4. config/roster.json opus entries (production block starts at line 54):
+   line 90: "model": "opus",
+   line 99: "model": "opus",

@@ -1,0 +1,17 @@
+STOP present: False
+tl-index: passed
+tl-index passed None
+copied evidence for tl-index from D:\aai work\satvik_loop_home\wt\tl-index-20261103-2220-94a5\_loop
+merge [('tl-index-20261103-2220-94a5', 'merged')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:merged = 3
+finished:passed = 5
+finished:tests-failed = 2
+queue-wait = 3
+started = 5
+loop exit: 0
+
+[exited with code 0]

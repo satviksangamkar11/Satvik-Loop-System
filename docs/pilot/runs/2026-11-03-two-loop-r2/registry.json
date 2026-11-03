@@ -1,0 +1,125 @@
+{
+  "counter:429:google/gemma-4-26b-a4b-it:free": {
+    "count": 2
+  },
+  "counter:429:google/gemma-4-31b-it:free": {
+    "count": 3
+  },
+  "counter:429:xingchen-agi/xing4.0-29b-a4b:free": {
+    "count": 16
+  },
+  "counter:finished:merged": {
+    "count": 3
+  },
+  "counter:finished:passed": {
+    "count": 5
+  },
+  "counter:finished:tests-failed": {
+    "count": 2
+  },
+  "counter:queue-wait": {
+    "count": 3
+  },
+  "counter:started": {
+    "count": 5
+  },
+  "tl-index": {
+    "base": "890018ad63785ce5a610200a8c60f6f7f03a1f75",
+    "finished": 1793724701.8981967,
+    "gen": 1,
+    "job": "tl-index-20261103-2220-94a5",
+    "result": {
+      "round": 4
+    },
+    "seq": 14,
+    "started": 1793724626.9131415,
+    "state": "passed"
+  },
+  "tl-index-20261103-2220-94a5": {
+    "base": "890018ad63785ce5a610200a8c60f6f7f03a1f75",
+    "finished": 1793724847.5118854,
+    "gen": 1,
+    "job": "tl-index-20261103-2220-94a5",
+    "result": {
+      "attempts": 1,
+      "head": "2b80095b23b23a503822d42a6ddef518ebcb77a4"
+    },
+    "seq": 15,
+    "started": 1793724847.5118854,
+    "state": "merged"
+  },
+  "tl-roman": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724296.4223444,
+    "gen": 1,
+    "job": "tl-roman-20261103-2214-6a93",
+    "result": {
+      "round": 4
+    },
+    "seq": 9,
+    "started": 1793713483.364584,
+    "state": "passed"
+  },
+  "tl-roman-20261103-1914-7123": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713548.4574945,
+    "gen": 1,
+    "job": "tl-roman-20261103-1914-7123",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.98s\n"
+    },
+    "seq": 4,
+    "started": 1793713548.4574945,
+    "state": "tests-failed"
+  },
+  "tl-roman-20261103-2214-6a93": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724441.5730658,
+    "gen": 1,
+    "job": "tl-roman-20261103-2214-6a93",
+    "result": {
+      "attempts": 1,
+      "head": "da825fb100295bb3adbcfd59d438ccd801e7c471"
+    },
+    "seq": 11,
+    "started": 1793724441.5730658,
+    "state": "merged"
+  },
+  "tl-slug": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724322.440096,
+    "gen": 1,
+    "job": "tl-slug-20261103-2214-bc59",
+    "result": {
+      "round": 4
+    },
+    "seq": 10,
+    "started": 1793713482.8207755,
+    "state": "passed"
+  },
+  "tl-slug-20261103-1914-809d": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713629.8257406,
+    "gen": 1,
+    "job": "tl-slug-20261103-1914-809d",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.81s\n"
+    },
+    "seq": 6,
+    "started": 1793713629.8257406,
+    "state": "tests-failed"
+  },
+  "tl-slug-20261103-2214-bc59": {
+    "base": "da825fb100295bb3adbcfd59d438ccd801e7c471",
+    "finished": 1793724588.8868165,
+    "gen": 1,
+    "job": "tl-slug-20261103-2214-bc59",
+    "result": {
+      "attempts": 1,
+      "head": "890018ad63785ce5a610200a8c60f6f7f03a1f75"
+    },
+    "seq": 12,
+    "started": 1793724588.8868165,
+    "state": "merged"
+  }
+}

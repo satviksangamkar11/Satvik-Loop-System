@@ -1,0 +1,16 @@
+tl-slug: passed
+tl-slug passed None
+copied evidence for tl-slug from D:\aai work\satvik_loop_home\wt\tl-slug-20261103-2214-bc59\_loop
+merge [('tl-slug-20261103-2214-bc59', 'merged')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:merged = 2
+finished:passed = 4
+finished:tests-failed = 2
+queue-wait = 3
+started = 4
+loop exit: 0
+
+[exited with code 0]

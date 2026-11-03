@@ -1,0 +1,8 @@
+﻿2b80095 index: tl-index-20261103-2220-94a5
+cfe0e2e change doc: tl-index-20261103-2220-94a5 (passed)
+890018a index: tl-slug-20261103-2214-bc59
+c9d18bb change doc: tl-slug-20261103-2214-bc59 (passed)
+da825fb index: tl-roman-20261103-2214-6a93
+7cd5010 change doc: tl-roman-20261103-2214-6a93 (passed)
+3705c89 Merge PR #34: any roster model callable; merge check runs in the sandbox
+54fb1df Merge check runs in the sandbox: image has the loop's test deps, copy has config, tests, docs

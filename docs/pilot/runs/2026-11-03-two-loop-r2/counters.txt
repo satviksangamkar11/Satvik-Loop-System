@@ -1,0 +1,8 @@
+﻿counter:429:google/gemma-4-26b-a4b-it:free = 2
+counter:429:google/gemma-4-31b-it:free = 3
+counter:429:xingchen-agi/xing4.0-29b-a4b:free = 16
+counter:finished:merged = 3
+counter:finished:passed = 5
+counter:finished:tests-failed = 2
+counter:queue-wait = 3
+counter:started = 5
