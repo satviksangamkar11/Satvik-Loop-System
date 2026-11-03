@@ -1,0 +1,17 @@
+﻿section 8 check (RUNBOOK 8), origin/main 4fdf7ca495dbbbe5bd005faeffd5416d4b92ea2b
+1. registry, job-id rows:
+   fl-chunk-20261103-2236-adce: merged
+   fl-clamp-20261103-2236-aaea: merged
+   fl-dedupe-20261103-2236-cc8c: merged
+   fl-wordcount-20261103-2236-977a: merged
+   fl-top name row state: escalate (job fl-top-20261103-2248-2ed3, round 7)
+2. fl_ modules on origin/main scripts/source/:
+   scripts/source/fl_chunk.py
+   scripts/source/fl_clamp.py
+   scripts/source/fl_dedupe.py
+   scripts/source/fl_wordcount.py
+   fl_top.py: NOT on main (fl-top escalated)
+3. review_spent: 0
+4. config/roster.json opus entries (production block starts at line 54):
+   line 90: "model": "opus",
+   line 99: "model": "opus",

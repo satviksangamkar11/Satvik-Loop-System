@@ -1,0 +1,14 @@
+﻿started fl-chunk
+fl-chunk: passed
+fl-chunk passed None
+copied evidence for fl-chunk
+merge [('fl-chunk-20261103-2236-adce', 'merged')]
+queue empty
+429:google/gemma-4-26b-a4b-it:free = 2
+429:google/gemma-4-31b-it:free = 3
+429:xingchen-agi/xing4.0-29b-a4b:free = 16
+finished:merged = 6
+finished:passed = 9
+finished:tests-failed = 2
+queue-wait = 9
+started = 9

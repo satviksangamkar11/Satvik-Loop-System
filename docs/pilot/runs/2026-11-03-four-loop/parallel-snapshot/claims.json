@@ -1,0 +1,53 @@
+{
+  "claims": {
+    "pieces/test_fl_chunk.py": [
+      {
+        "gen": 1,
+        "job": "fl-chunk-20261103-2236-adce",
+        "mode": "w",
+        "path": "pieces/test_fl_chunk.py"
+      }
+    ],
+    "pieces/test_fl_clamp.py": [
+      {
+        "gen": 1,
+        "job": "fl-clamp-20261103-2236-aaea",
+        "mode": "w",
+        "path": "pieces/test_fl_clamp.py"
+      }
+    ],
+    "pieces/test_fl_dedupe.py": [
+      {
+        "gen": 1,
+        "job": "fl-dedupe-20261103-2236-cc8c",
+        "mode": "w",
+        "path": "pieces/test_fl_dedupe.py"
+      }
+    ],
+    "scripts/source/fl_chunk.py": [
+      {
+        "gen": 1,
+        "job": "fl-chunk-20261103-2236-adce",
+        "mode": "w",
+        "path": "scripts/source/fl_chunk.py"
+      }
+    ],
+    "scripts/source/fl_clamp.py": [
+      {
+        "gen": 1,
+        "job": "fl-clamp-20261103-2236-aaea",
+        "mode": "w",
+        "path": "scripts/source/fl_clamp.py"
+      }
+    ],
+    "scripts/source/fl_dedupe.py": [
+      {
+        "gen": 1,
+        "job": "fl-dedupe-20261103-2236-cc8c",
+        "mode": "w",
+        "path": "scripts/source/fl_dedupe.py"
+      }
+    ]
+  },
+  "version": 1
+}

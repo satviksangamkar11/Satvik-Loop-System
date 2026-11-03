@@ -1,0 +1,14 @@
+﻿4fdf7ca index: fl-wordcount-20261103-2236-977a
+5be2456 change doc: fl-wordcount-20261103-2236-977a (passed)
+d7efbf3 index: fl-chunk-20261103-2236-adce
+9fa794d change doc: fl-chunk-20261103-2236-adce (passed)
+0f45eb1 index: fl-dedupe-20261103-2236-cc8c
+8aeea84 change doc: fl-dedupe-20261103-2236-cc8c (passed)
+1e09eff index: fl-clamp-20261103-2236-aaea
+3915a8c change doc: fl-clamp-20261103-2236-aaea (passed)
+9625f24 Merge PR #35: four-loop test prep
+f5e2ee3 Four-loop test prep: 5 jobs, locked tests, controls, runbook
+2b80095 index: tl-index-20261103-2220-94a5
+cfe0e2e change doc: tl-index-20261103-2220-94a5 (passed)
+890018a index: tl-slug-20261103-2214-bc59
+c9d18bb change doc: tl-slug-20261103-2214-bc59 (passed)

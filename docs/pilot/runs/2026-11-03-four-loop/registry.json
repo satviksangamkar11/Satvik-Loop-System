@@ -1,0 +1,240 @@
+{
+  "counter:429:google/gemma-4-26b-a4b-it:free": {
+    "count": 2
+  },
+  "counter:429:google/gemma-4-31b-it:free": {
+    "count": 3
+  },
+  "counter:429:xingchen-agi/xing4.0-29b-a4b:free": {
+    "count": 16
+  },
+  "counter:finished:escalate": {
+    "count": 1
+  },
+  "counter:finished:merged": {
+    "count": 7
+  },
+  "counter:finished:passed": {
+    "count": 9
+  },
+  "counter:finished:tests-failed": {
+    "count": 2
+  },
+  "counter:queue-wait": {
+    "count": 9
+  },
+  "counter:started": {
+    "count": 10
+  },
+  "fl-chunk": {
+    "base": "9625f24d0b11e97fe0e9e65e2a43067886b71e60",
+    "finished": 1793725730.82818,
+    "gen": 1,
+    "job": "fl-chunk-20261103-2236-adce",
+    "result": {
+      "round": 4
+    },
+    "seq": 23,
+    "started": 1793725614.3816826,
+    "state": "passed"
+  },
+  "fl-chunk-20261103-2236-adce": {
+    "base": "0f45eb1d3ec05b4a5ddaae5d85bbe74cb49959be",
+    "finished": 1793726131.219338,
+    "gen": 1,
+    "job": "fl-chunk-20261103-2236-adce",
+    "result": {
+      "attempts": 1,
+      "head": "d7efbf39a6df7f99044cd2af6451281a57f5a80c"
+    },
+    "seq": 26,
+    "started": 1793726131.219338,
+    "state": "merged"
+  },
+  "fl-clamp": {
+    "base": "9625f24d0b11e97fe0e9e65e2a43067886b71e60",
+    "finished": 1793725663.015172,
+    "gen": 1,
+    "job": "fl-clamp-20261103-2236-aaea",
+    "result": {
+      "round": 4
+    },
+    "seq": 20,
+    "started": 1793725613.4479477,
+    "state": "passed"
+  },
+  "fl-clamp-20261103-2236-aaea": {
+    "base": "9625f24d0b11e97fe0e9e65e2a43067886b71e60",
+    "finished": 1793725814.6479628,
+    "gen": 1,
+    "job": "fl-clamp-20261103-2236-aaea",
+    "result": {
+      "attempts": 1,
+      "head": "1e09eff0a268602b2b5fd8c266a652d5203f02e0"
+    },
+    "seq": 24,
+    "started": 1793725814.6479628,
+    "state": "merged"
+  },
+  "fl-dedupe": {
+    "base": "9625f24d0b11e97fe0e9e65e2a43067886b71e60",
+    "finished": 1793725707.4942071,
+    "gen": 1,
+    "job": "fl-dedupe-20261103-2236-cc8c",
+    "result": {
+      "round": 4
+    },
+    "seq": 22,
+    "started": 1793725615.2433324,
+    "state": "passed"
+  },
+  "fl-dedupe-20261103-2236-cc8c": {
+    "base": "1e09eff0a268602b2b5fd8c266a652d5203f02e0",
+    "finished": 1793725965.1728725,
+    "gen": 1,
+    "job": "fl-dedupe-20261103-2236-cc8c",
+    "result": {
+      "attempts": 1,
+      "head": "0f45eb1d3ec05b4a5ddaae5d85bbe74cb49959be"
+    },
+    "seq": 25,
+    "started": 1793725965.1728725,
+    "state": "merged"
+  },
+  "fl-top": {
+    "base": "4fdf7ca495dbbbe5bd005faeffd5416d4b92ea2b",
+    "finished": 1793726606.931319,
+    "gen": 1,
+    "job": "fl-top-20261103-2248-2ed3",
+    "result": {
+      "round": 7
+    },
+    "seq": 29,
+    "started": 1793726316.8697274,
+    "state": "escalate"
+  },
+  "fl-wordcount": {
+    "base": "9625f24d0b11e97fe0e9e65e2a43067886b71e60",
+    "finished": 1793725683.6721685,
+    "gen": 1,
+    "job": "fl-wordcount-20261103-2236-977a",
+    "result": {
+      "round": 4
+    },
+    "seq": 21,
+    "started": 1793725615.6850646,
+    "state": "passed"
+  },
+  "fl-wordcount-20261103-2236-977a": {
+    "base": "d7efbf39a6df7f99044cd2af6451281a57f5a80c",
+    "finished": 1793726286.613757,
+    "gen": 1,
+    "job": "fl-wordcount-20261103-2236-977a",
+    "result": {
+      "attempts": 1,
+      "head": "4fdf7ca495dbbbe5bd005faeffd5416d4b92ea2b"
+    },
+    "seq": 27,
+    "started": 1793726286.613757,
+    "state": "merged"
+  },
+  "tl-index": {
+    "base": "890018ad63785ce5a610200a8c60f6f7f03a1f75",
+    "finished": 1793724701.8981967,
+    "gen": 1,
+    "job": "tl-index-20261103-2220-94a5",
+    "result": {
+      "round": 4
+    },
+    "seq": 14,
+    "started": 1793724626.9131415,
+    "state": "passed"
+  },
+  "tl-index-20261103-2220-94a5": {
+    "base": "890018ad63785ce5a610200a8c60f6f7f03a1f75",
+    "finished": 1793724847.5118854,
+    "gen": 1,
+    "job": "tl-index-20261103-2220-94a5",
+    "result": {
+      "attempts": 1,
+      "head": "2b80095b23b23a503822d42a6ddef518ebcb77a4"
+    },
+    "seq": 15,
+    "started": 1793724847.5118854,
+    "state": "merged"
+  },
+  "tl-roman": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724296.4223444,
+    "gen": 1,
+    "job": "tl-roman-20261103-2214-6a93",
+    "result": {
+      "round": 4
+    },
+    "seq": 9,
+    "started": 1793713483.364584,
+    "state": "passed"
+  },
+  "tl-roman-20261103-1914-7123": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713548.4574945,
+    "gen": 1,
+    "job": "tl-roman-20261103-1914-7123",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.98s\n"
+    },
+    "seq": 4,
+    "started": 1793713548.4574945,
+    "state": "tests-failed"
+  },
+  "tl-roman-20261103-2214-6a93": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724441.5730658,
+    "gen": 1,
+    "job": "tl-roman-20261103-2214-6a93",
+    "result": {
+      "attempts": 1,
+      "head": "da825fb100295bb3adbcfd59d438ccd801e7c471"
+    },
+    "seq": 11,
+    "started": 1793724441.5730658,
+    "state": "merged"
+  },
+  "tl-slug": {
+    "base": "3705c891a5e4dc39c06472221393849ee0795a35",
+    "finished": 1793724322.440096,
+    "gen": 1,
+    "job": "tl-slug-20261103-2214-bc59",
+    "result": {
+      "round": 4
+    },
+    "seq": 10,
+    "started": 1793713482.8207755,
+    "state": "passed"
+  },
+  "tl-slug-20261103-1914-809d": {
+    "base": "5de3b0c62b7debbd00689f8e30577ba79c4b5003",
+    "finished": 1793713629.8257406,
+    "gen": 1,
+    "job": "tl-slug-20261103-1914-809d",
+    "result": {
+      "tail": "\n==================================== ERRORS ====================================\n_______________ ERROR collecting pieces/test_loop_acceptance.py ________________\nImportError while importing test module '/work/pieces/test_loop_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_loop_acceptance.py:14: in <module>\n    from test_fix_loop_review import FENCE, FILE_MARK, fl, make_root\npieces/test_fix_loop_review.py:11: in <module>\n    import fix_loop as fl\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n________________ ERROR collecting pieces/test_p0_acceptance.py _________________\nImportError while importing test module '/work/pieces/test_p0_acceptance.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/local/lib/python3.13/importlib/__init__.py:88: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npieces/test_p0_acceptance.py:21: in <module>\n    import fix_loop as fl  # noqa: E402\n    ^^^^^^^^^^^^^^^^^^^^^\nscripts/source/fix_loop.py:15: in <module>\n    import yaml\nE   ModuleNotFoundError: No module named 'yaml'\n=========================== short test summary info ============================\nERROR pieces/test_loop_acceptance.py\nERROR pieces/test_p0_acceptance.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.81s\n"
+    },
+    "seq": 6,
+    "started": 1793713629.8257406,
+    "state": "tests-failed"
+  },
+  "tl-slug-20261103-2214-bc59": {
+    "base": "da825fb100295bb3adbcfd59d438ccd801e7c471",
+    "finished": 1793724588.8868165,
+    "gen": 1,
+    "job": "tl-slug-20261103-2214-bc59",
+    "result": {
+      "attempts": 1,
+      "head": "890018ad63785ce5a610200a8c60f6f7f03a1f75"
+    },
+    "seq": 12,
+    "started": 1793724588.8868165,
+    "state": "merged"
+  }
+}
