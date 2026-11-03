@@ -124,6 +124,38 @@ def test_a_non_zero_exit_is_a_failed_call(fake):
         opus.ask("p", enabled=True, runner=runner)
 
 
+# ---- 3b. the process exit code rides on the error (None when no process ended)
+
+def test_a_non_zero_exit_carries_its_exit_code(fake):
+    def runner(prompt, cwd, claude_cmd, timeout_s, env):
+        return 3, "", "boom"
+    with pytest.raises(opus.RepairFailed) as caught:
+        opus.ask("p", enabled=True, runner=runner)
+    assert caught.value.exit_code == 3
+
+
+def test_an_error_flag_or_a_bad_reply_on_a_clean_exit_carries_exit_code_zero(fake):
+    fake.reply(envelope("something went wrong", is_error=True))
+    with pytest.raises(opus.RepairFailed) as failed:
+        opus.ask("p", enabled=True)
+    assert failed.value.exit_code == 0
+    fake.reply(envelope("I would rather not write files."))
+    with pytest.raises(opus.RepairBadReply) as bad:
+        opus.ask("p", enabled=True)
+    assert bad.value.exit_code == 0
+
+
+def test_a_timeout_and_a_switch_off_carry_no_exit_code(monkeypatch):
+    def timed_out(prompt, cwd, claude_cmd, timeout_s, env):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout_s)
+    with pytest.raises(opus.RepairFailed) as timeout:
+        opus.ask("p", enabled=True, runner=timed_out)
+    assert timeout.value.exit_code is None
+    with pytest.raises(opus.RepairFailed) as off:
+        opus.ask("p", enabled=False, runner=timed_out)
+    assert off.value.exit_code is None
+
+
 def test_a_reply_with_no_file_blocks_is_a_bad_reply(fake):
     fake.reply(envelope("I would rather not write files."))
     with pytest.raises(opus.RepairBadReply, match="no FILE blocks"):

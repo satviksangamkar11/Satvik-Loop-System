@@ -47,7 +47,7 @@ TRUNCATION_RETRIES = 1              # one retry: a cut-off reply with no text go
 EFFORT_MODES = ("write", "repair", "review", "review-reask")   # the call modes that take a reasoning effort from the roster (R1: effort_by_mode)
 EFFORT_VALUES = (None, "off", "low", "medium", "high")
 KEY_FILES = {"free": ("OPENROUTER_FREE_KEY", "openrouter_free_key.txt"), "paid": ("OPENROUTER_PAID_KEY", "openrouter_paid_key.txt")}
-KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit")
+KEY_FIELDS = ("limit", "limit_remaining", "usage", "is_free_tier", "rate_limit", "free_model_daily_requests")
 FILE_BLOCK = re.compile(r"^(?:#{1,6}[ \t]*)?(?:\*\*FILE:\*\*|FILE:)[ \t]*(\S+)", re.M)   # a file header: FILE: p, ### FILE: p or **FILE:** p (p is group 1)
 VERDICT_LINE = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 SECRET_SHAPES = re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|(?i:authorization)[\"']?\s*[:=]\s*[^\r\n,}\"']+")
@@ -502,6 +502,21 @@ def load_keys(secrets_dir=None, environ=None):
     return keys
 
 
+def live_free_cap(payload):
+    """The account's daily free allowance from a GET /api/v1/key payload: free_model_daily_requests.limit, when it is a positive whole number.
+    None when the field or its limit is missing or unusable, so the fallback cap applies. The key's own top-level limit is not this allowance."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    quota = data.get("free_model_daily_requests") if isinstance(data, dict) else None
+    limit = quota.get("limit") if isinstance(quota, dict) else None
+    return limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else None
+
+
+def _save_snapshot(folder, slot, stamp, payload):
+    """One key's full GET /api/v1/key JSON, kept as evidence under key_snapshots/."""
+    with open(os.path.join(folder, f"key_snapshot_{slot}_{stamp}.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+
+
 class OpenRouter:
     """One job's client. `call` returns (text, info) and raises an OpenRouterError subclass for anything that does not count."""
 
@@ -548,8 +563,10 @@ class OpenRouter:
         """Before a reviewer's 429 retry: the job's free-request count and the account's daily count must leave room for one more request."""
         if self.budget.free_used >= self.budget.free_requests:
             raise self._err(ProviderUnavailable, f"{model}: the job's free requests are used up; the retry is not sent; last 429: {message[:300]}")
-        if self.shared is not None and _shared_limits().usage(self.shared_home)["free_today"] >= _shared_limits().FREE_DAILY_CAP:
-            raise self._err(QuotaExhausted, f"{model}: free requests for today are used up; the retry is not sent; last 429: {message[:300]}")
+        if self.shared is not None:
+            day = _shared_limits().usage(self.shared_home)
+            if day["free_today"] >= day["free_cap"]:
+                raise self._err(QuotaExhausted, f"{model}: free requests for today are used up; the retry is not sent; last 429: {message[:300]}")
 
     def _reviewer_window_wait(self, model, started, used, floor, message, attempt):
         """One upstream 429 on a reviewer call: wait the next step of REVIEWER_429_WAITS_S (plus jitter, or Retry-After when longer), then retry.
@@ -635,27 +652,45 @@ class OpenRouter:
         return self._key_payload(slot)["data"]
 
     def begin_job(self):
-        """Before each job: saves every loaded key's full JSON under key_snapshots/ and sets the free ledger from it. The provider's
-        free_model_daily_requests (limit, remaining) is used when present; when absent, the local cap is 1000 for a paid-tier key
-        (is_free_tier false) and 50 otherwise. Returns a summary with no key values."""
+        """Before each job: saves every loaded key's full JSON under key_snapshots/, and records the day's free cap on the shared ledger
+        (shared_limits) from the free key's free_model_daily_requests.limit (live_free_cap). A free-key read that fails, or a payload without
+        that limit, records the fallback cap (shared_limits.FREE_DAILY_CAP) and the job goes on. Returns a summary with no key values; its
+        "free" entry names the cap in force and its source ("live" or "fallback")."""
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(self.clock()))
         folder = os.path.join(self.ledger_dir, "key_snapshots")
         os.makedirs(folder, exist_ok=True)
         summary = {}
         for slot in self.keys:
-            payload = self._key_payload(slot)
-            with open(os.path.join(folder, f"key_snapshot_{slot}_{stamp}.json"), "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, sort_keys=True)
-            if slot != "free":
-                summary[slot] = {"saved": True}
+            if slot == "free":
+                summary[slot] = self._begin_free(folder, stamp)
                 continue
-            info = payload["data"]
-            quota = info.get("free_model_daily_requests")
-            if isinstance(quota, dict) and isinstance(quota.get("limit"), int) and isinstance(quota.get("remaining"), int):
-                summary[slot] = {"saved": True, "quota": "provider", "note": "free_model_daily_requests read (evidence only; not counted)"}
-            else:
-                summary[slot] = {"saved": True, "quota": "local", "note": "free_model_daily_requests absent (evidence only; not counted)"}
+            _save_snapshot(folder, slot, stamp, self._key_payload(slot))
+            summary[slot] = {"saved": True}
         return summary
+
+    def _begin_free(self, folder, stamp):
+        """The free key's part of begin_job: its snapshot and the day's cap read from it. A failed read keeps no snapshot and records the fallback."""
+        try:
+            payload = self._key_payload("free")
+        except OpenRouterError as exc:
+            cap = self._record_free_cap(None)
+            return {"saved": False, "quota": "unavailable", **cap, "note": f"key state unavailable, so the fallback cap applies: {exc}"}
+        _save_snapshot(folder, "free", stamp, payload)
+        live = live_free_cap(payload)
+        cap = self._record_free_cap(live)
+        if live is not None:
+            return {"saved": True, "quota": "provider", **cap, "note": "free_model_daily_requests.limit is the day's cap"}
+        absent = payload["data"].get("free_model_daily_requests") is None
+        reason = "free_model_daily_requests absent" if absent else "free_model_daily_requests has no usable limit"
+        return {"saved": True, "quota": "local", **cap, "note": f"{reason}: the fallback cap applies"}
+
+    def _record_free_cap(self, live):
+        """Writes the day's free cap to the shared ledger: `live` (the account's allowance) or None for the fallback. A client with no job yet
+        takes one first, as its first free call does, so the cap lands on the loop home. Returns {"cap", "cap_source"} for what now applies."""
+        if self.shared is None:
+            self.set_job(*shared_job("openrouter-client", self.ledger_dir))
+        recorded = _shared_limits().record_free_cap(live, home_dir=self.shared_home)
+        return {"cap": recorded["cap"], "cap_source": recorded["source"]}
 
     def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, effort=None):
         """One checked answer from a roster model: (text, info). kind: text, writer, repair or reviewer (see check_reply). The model's settings

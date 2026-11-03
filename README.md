@@ -293,10 +293,11 @@ Every reply is checked before it counts, and no failure falls back to another mo
 - **Limits.** Writers: `max_tokens` 40000, timeout 1200 s; a retry uses 72000 and 1800 s. Reviewer: 16000 and 600 s. Every request
   sends `reasoning.max_tokens` 8000; the provider does not enforce it, so reasoning tokens are recorded (`reasoning_tokens`), never assumed capped.
   Xing sends temperature 0.2, top_p 0.95, repetition_penalty 1.05.
-- **Free quota.** One account-wide ledger (`_loop/openrouter/openrouter_free_ledger.json`) under the same `key_ledger.lock` as the key ledger.
+- **Free quota.** One account-wide ledger (`ledger/limits.json` in the loop home, `shared_limits.py`) under the loop home lock.
   Every attempt is reserved before it is sent, failed attempts included. 15 a minute. `begin_job()` saves each key's full `GET /api/v1/key`
-  JSON under `_loop/openrouter/key_snapshots/` and uses `free_model_daily_requests` (limit, remaining) when present; when absent it records that
-  and uses the local cap of 1000 for a paid-tier key (`is_free_tier` false) or 50 otherwise. A 429 that names the day is `QuotaExhausted`; a
+  JSON under `_loop/openrouter/key_snapshots/` and sets the day's free cap from the free key's `free_model_daily_requests.limit`, the account's
+  live daily allowance. When that read fails or the field is missing, the cap is the fallback 1000 (`shared_limits.FREE_DAILY_CAP`). The
+  summary's `cap_source` says which applied. A live cap stands until the next read. A 429 that names the day is `QuotaExhausted`; a
   per-minute 429 waits `Retry-After`; any other 429 is a provider error, never a sign the day is used up.
 - **Paid reviewer (GLM).** The paid key only, reviewer role only (`reviewer_a`). Pinned to the Z.AI endpoint (`provider: {"order": ["z-ai"], "only": ["z-ai"], "allow_fallbacks": false}`); the endpoint and prices are in `docs/p1a_glm_endpoint.json`. A reply from any other provider is unavailable and its spend still counts. The job's paid ceiling is `review_usd` 0.05. Each call reserves its worst case before it is sent (`ceil(chars/3) x 0.15e-6 + max_tokens x 0.50e-6`); a call that would pass the ceiling is refused with nothing sent, and the reservation is settled to the reported cost. A missing Z.AI price or endpoint sends nothing. Nothing in this section has been run live.
 - **Replies.** The reply's `model` must equal the request. `finish_reason` must be `stop`. A writer needs a file header (`FILE: path`, `### FILE: path` or `**FILE:** path`); a reviewer needs a

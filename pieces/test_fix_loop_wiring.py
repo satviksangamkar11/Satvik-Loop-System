@@ -132,6 +132,13 @@ def test_step4_ledger_budget_reads_the_account_ledger(tmp_path, monkeypatch):
     assert budget == {"free_requests": sl.FREE_DAILY_CAP, "review_spend_usd": 0.0}      # free_requests is what is left today
 
 
+def test_step4_ledger_budget_counts_the_live_daily_allowance(tmp_path, monkeypatch):
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "shared"))
+    sl = fl._sibling_module("shared_limits")
+    sl.record_free_cap(4)                                    # the account's live allowance, as begin_job records it
+    assert fl.ledger_budget() == {"free_requests": 4, "review_spend_usd": 0.0}
+
+
 def ledger_env(tmp_path, monkeypatch):
     """A launcher whose budget is the real ledger (fix_loop.ledger_budget) under SATVIK_HOME, on temp repos. No model call."""
     home = tmp_path / "home"
