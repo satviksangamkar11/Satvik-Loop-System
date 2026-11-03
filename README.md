@@ -405,4 +405,5 @@ Each launched job writes `docs/changes/<job_id>.md` on its job branch. The merge
 - docs/changes/fl-wordcount-20261103-2236-977a.md
 - docs/changes/fl-top-20261103-2309-7d15.md
 - docs/changes/ah-budget-20261104-0344-1119.md
+- docs/changes/ah-idempotency-20261104-0344-978b.md
 <!-- change-index:end -->
