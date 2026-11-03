@@ -1,0 +1,172 @@
+{
+  "job_id": "fl-top-20261103-2309-7d15",
+  "name": "fl-top",
+  "derived_state": "waiting",
+  "end_state": null,
+  "merge_state": "none",
+  "active_stage": "reviewer_b",
+  "active_model": "nvidia/nemotron-3.5-super-vl:free",
+  "waiting": {
+    "why": "model-slot",
+    "since": "2026-11-03T17:41:02Z",
+    "model": "nvidia/nemotron-3.5-super-vl:free"
+  },
+  "heartbeat_age_s": 3,
+  "started": "2026-11-03T17:39:10Z",
+  "finished": null,
+  "free_requests_used": 2,
+  "review_usd_spent": 0.0,
+  "profile": "test",
+  "spec": "docs/pilot/four-loop/FL_TOP_SPEC.md",
+  "files": [
+    "scripts/source/fl_top.py",
+    "pieces/test_fl_top.py"
+  ],
+  "stage_snapshot": {
+    "sha256": "9b1c\u2026",
+    "revision": 1
+  },
+  "lease": {
+    "held": true,
+    "pid": 4120,
+    "pid_alive": true,
+    "heartbeat": "2026-11-03T17:41:00Z",
+    "generation": 3
+  },
+  "budget": {
+    "free_requests_used": 2,
+    "free_requests": 40,
+    "review_usd_spent": 0.0,
+    "review_usd": 0,
+    "repair_calls": 0
+  },
+  "archive": {
+    "available": false,
+    "archive_failed": false
+  },
+  "reason": null,
+  "tests_passed": true,
+  "failing_tests": [],
+  "review_verdict": null,
+  "findings": [],
+  "stages": [
+    {
+      "stage": "planner",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_a_write",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "writer_a_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_write",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "specialist_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_b",
+      "status": "running",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_a",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_reask",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "review_fix_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    }
+  ],
+  "hashes": {
+    "tested": "43d1\u2026",
+    "reviewed": null,
+    "delivered": null
+  },
+  "events": {
+    "events": [
+      {
+        "seq": 1,
+        "ts": "2026-11-03T17:39:09Z",
+        "type": "job-start"
+      },
+      {
+        "seq": 2,
+        "ts": "2026-11-03T17:39:20Z",
+        "type": "attempt-start",
+        "attempt_id": "a1",
+        "stage": "writer_a_write",
+        "role": "writer_a",
+        "mode": "write",
+        "model": "dots-studio/dots-3-note-preview:free",
+        "via": "openrouter",
+        "effort": "high",
+        "status": "running",
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "reasoning_tokens": null,
+        "finish_reason": null,
+        "seconds": null,
+        "error": null
+      },
+      {
+        "seq": 3,
+        "ts": "2026-11-03T17:40:55Z",
+        "type": "attempt-end",
+        "attempt_id": "a1",
+        "stage": "writer_a_write",
+        "role": "writer_a",
+        "mode": "write",
+        "model": "dots-studio/dots-3-note-preview:free",
+        "via": "openrouter",
+        "effort": "high",
+        "status": "ok",
+        "prompt_tokens": 1013,
+        "completion_tokens": 812,
+        "reasoning_tokens": 4100,
+        "finish_reason": "stop",
+        "seconds": 95.3,
+        "error": null
+      },
+      {
+        "seq": 4,
+        "ts": "2026-11-03T17:41:00Z",
+        "type": "tests",
+        "green": true,
+        "failing": []
+      },
+      {
+        "seq": 5,
+        "ts": "2026-11-03T17:41:02Z",
+        "type": "wait-start",
+        "why": "model-slot",
+        "model": "nvidia/nemotron-3.5-super-vl:free"
+      }
+    ],
+    "next_after": 5,
+    "index_ok": true
+  }
+}

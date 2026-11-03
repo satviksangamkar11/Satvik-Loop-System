@@ -1,0 +1,49 @@
+{
+  "health": {
+    "backend": "ok",
+    "engine_version": "b6569d8",
+    "docker": "ok",
+    "sandbox_image": "ok",
+    "satvik_home": "D:\\aai work\\satvik_loop_home",
+    "index_ok": true,
+    "keys": [
+      {
+        "alias": "free",
+        "present": true
+      },
+      {
+        "alias": "paid",
+        "present": false
+      }
+    ],
+    "stop": false
+  },
+  "limits": {
+    "leases": [
+      {
+        "job_id": "fl-top-20261103-2309-7d15",
+        "held": true,
+        "heartbeat_age_s": 4,
+        "pid_alive": true
+      }
+    ],
+    "claims": [
+      {
+        "path": "scripts/source/fl_top.py",
+        "job_id": "fl-top-20261103-2309-7d15"
+      }
+    ],
+    "gates": [
+      {
+        "gate": "nemotron",
+        "holders": 1,
+        "capacity": 1
+      }
+    ],
+    "ledger": {
+      "free_used": 87,
+      "free_cap": 1000,
+      "review_spent_usd": 0.0
+    }
+  }
+}

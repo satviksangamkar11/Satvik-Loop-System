@@ -1,0 +1,264 @@
+{
+  "pool_policy": {
+    "target_min": 10,
+    "target_max": 20,
+    "fixture_sample_count": 3,
+    "sample_notice": "3 sample OpenRouter records from handoff fixture (C-14). Toggle '20-Row Synthetic Scale Test' in UI toolbar to inspect 20-model table density without fabricating live catalog prices."
+  },
+  "openrouter_models": [
+    {
+      "model_id": "deepseek/deepseek-chat-v3-0324:free",
+      "canonical_model_id": "deepseek/deepseek-chat-v3-0324",
+      "display_name": "DeepSeek V3 0324 (Free)",
+      "provider": "DeepSeek",
+      "endpoints": [
+        "openrouter/chutes-fp8",
+        "openrouter/featherless"
+      ],
+      "active_endpoint": "openrouter/chutes-fp8",
+      "route": "openrouter",
+      "billing_type": "free",
+      "input_usd_per_1m": "0.00",
+      "output_usd_per_1m": "0.00",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "structured_outputs_claimed": true,
+      "contracts": {
+        "planner_json": "unverified",
+        "writer_file_blocks": "verified",
+        "repair_edit_blocks": "verified",
+        "repair_whole_file": "verified",
+        "reviewer_verdict": "verified",
+        "native_structured_output": "verified"
+      },
+      "reasoning": {
+        "mode": "off",
+        "supported": "unsupported",
+        "off_admissible": true,
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "token_budget_supported": false,
+        "token_budget_min": null,
+        "token_budget_max": null
+      },
+      "temperature_range": {
+        "min": 0.0,
+        "max": 1.5,
+        "default": 0.2
+      },
+      "verified_at": "2026-11-03T14:20:00Z",
+      "verified_endpoint": "openrouter/chutes-fp8",
+      "freshness": "fresh (4h ago)",
+      "availability": "available",
+      "in_use_stages": [
+        "writer_a_write",
+        "writer_a_repair"
+      ]
+    },
+    {
+      "model_id": "qwen/qwen-2.5-coder-32b-instruct:free",
+      "canonical_model_id": "qwen/qwen-2.5-coder-32b-instruct",
+      "display_name": "Qwen 2.5 Coder 32B Instruct (Free)",
+      "provider": "Qwen",
+      "endpoints": [
+        "openrouter/chutes-fp8"
+      ],
+      "active_endpoint": "openrouter/chutes-fp8",
+      "route": "openrouter",
+      "billing_type": "free",
+      "input_usd_per_1m": "0.00",
+      "output_usd_per_1m": "0.00",
+      "context_window": 65536,
+      "max_output_tokens": 32768,
+      "structured_outputs_claimed": true,
+      "contracts": {
+        "planner_json": "failed",
+        "writer_file_blocks": "verified",
+        "repair_edit_blocks": "verified",
+        "repair_whole_file": "verified",
+        "reviewer_verdict": "verified",
+        "native_structured_output": "verified"
+      },
+      "reasoning": {
+        "mode": "optional",
+        "supported": "optional",
+        "off_admissible": true,
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "token_budget_supported": true,
+        "token_budget_min": 1024,
+        "token_budget_max": 16384
+      },
+      "temperature_range": {
+        "min": 0.0,
+        "max": 1.2,
+        "default": 0.1
+      },
+      "verified_at": "2026-11-03T12:10:00Z",
+      "verified_endpoint": "openrouter/chutes-fp8",
+      "freshness": "fresh (6h ago)",
+      "availability": "available",
+      "in_use_stages": [
+        "writer_b_write",
+        "writer_b_repair",
+        "reviewer_a"
+      ]
+    },
+    {
+      "model_id": "deepseek/deepseek-r1:free",
+      "canonical_model_id": "deepseek/deepseek-r1",
+      "display_name": "DeepSeek R1 (Free)",
+      "provider": "DeepSeek",
+      "endpoints": [
+        "openrouter/targon-fp8",
+        "openrouter/chutes-fp8"
+      ],
+      "active_endpoint": "openrouter/targon-fp8",
+      "route": "openrouter",
+      "billing_type": "free",
+      "input_usd_per_1m": "0.00",
+      "output_usd_per_1m": "0.00",
+      "context_window": 131072,
+      "max_output_tokens": 32768,
+      "structured_outputs_claimed": false,
+      "contracts": {
+        "planner_json": "verified",
+        "writer_file_blocks": "verified",
+        "repair_edit_blocks": "unverified",
+        "repair_whole_file": "verified",
+        "reviewer_verdict": "verified",
+        "native_structured_output": "failed"
+      },
+      "reasoning": {
+        "mode": "mandatory",
+        "supported": "mandatory",
+        "off_admissible": false,
+        "efforts": [
+          "medium",
+          "high"
+        ],
+        "token_budget_supported": true,
+        "token_budget_min": 2048,
+        "token_budget_max": 24576
+      },
+      "temperature_range": {
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.6
+      },
+      "verified_at": "2026-11-03T15:05:00Z",
+      "verified_endpoint": "openrouter/targon-fp8",
+      "freshness": "fresh (3h ago)",
+      "availability": "available",
+      "in_use_stages": [
+        "reviewer_b"
+      ]
+    }
+  ],
+  "claude_cli_models": [
+    {
+      "model_id": "claude-code/claude-3-5-haiku",
+      "canonical_model_id": "anthropic/claude-3-5-haiku",
+      "display_name": "Claude Code CLI \u2014 Haiku 3.5",
+      "provider": "Anthropic CLI",
+      "endpoints": [
+        "local-cli/claude-code"
+      ],
+      "active_endpoint": "local-cli/claude-code",
+      "route": "claude_cli",
+      "billing_type": "subscription",
+      "input_usd_per_1m": null,
+      "output_usd_per_1m": null,
+      "context_window": 200000,
+      "max_output_tokens": 8192,
+      "validation_path": "text_validated",
+      "profile_restriction": "Allowed in test (restricted to Haiku/high) and production",
+      "contracts": {
+        "planner_json": "not-applicable",
+        "writer_file_blocks": "verified",
+        "repair_edit_blocks": "verified",
+        "repair_whole_file": "verified",
+        "reviewer_verdict": "verified",
+        "native_structured_output": "not-applicable"
+      },
+      "reasoning": {
+        "mode": "mandatory",
+        "supported": "mandatory",
+        "off_admissible": false,
+        "efforts": [
+          "high"
+        ],
+        "token_budget_supported": false,
+        "token_budget_min": null,
+        "token_budget_max": null
+      },
+      "temperature_range": {
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0
+      },
+      "verified_at": "2026-11-03T10:00:00Z",
+      "verified_endpoint": "local-cli/claude-code",
+      "freshness": "verified CLI binary",
+      "availability": "available",
+      "in_use_stages": []
+    },
+    {
+      "model_id": "claude-code/claude-opus-4",
+      "canonical_model_id": "anthropic/claude-opus-4",
+      "display_name": "Claude Code CLI \u2014 Opus 4 (Owner-Gated)",
+      "provider": "Anthropic CLI",
+      "endpoints": [
+        "local-cli/claude-code"
+      ],
+      "active_endpoint": "local-cli/claude-code",
+      "route": "claude_cli",
+      "billing_type": "subscription",
+      "input_usd_per_1m": null,
+      "output_usd_per_1m": null,
+      "context_window": 200000,
+      "max_output_tokens": 32000,
+      "validation_path": "text_validated",
+      "profile_restriction": "FORBIDDEN in test profile; Owner-gated in production (planner / specialist_repair)",
+      "contracts": {
+        "planner_json": "verified",
+        "writer_file_blocks": "verified",
+        "repair_edit_blocks": "verified",
+        "repair_whole_file": "verified",
+        "reviewer_verdict": "verified",
+        "native_structured_output": "not-applicable"
+      },
+      "reasoning": {
+        "mode": "optional",
+        "supported": "optional",
+        "off_admissible": false,
+        "efforts": [
+          "medium",
+          "high"
+        ],
+        "token_budget_supported": true,
+        "token_budget_min": 4096,
+        "token_budget_max": 32000
+      },
+      "temperature_range": {
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0
+      },
+      "verified_at": "2026-11-02T19:00:00Z",
+      "verified_endpoint": "local-cli/claude-code",
+      "freshness": "owner-gated",
+      "availability": "owner-gated",
+      "in_use_stages": [
+        "planner",
+        "specialist_repair"
+      ]
+    }
+  ]
+}

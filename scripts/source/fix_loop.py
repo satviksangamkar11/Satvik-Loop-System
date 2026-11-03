@@ -252,7 +252,7 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
                 _atomic_write(target, (orig_dir / rel).read_text(encoding="utf-8"))
             elif not had and target.exists():
                 target.unlink()
-    old = [p for p in status_dir_job.iterdir() if not p.name.startswith("prev_")]
+    old = [p for p in status_dir_job.iterdir() if not p.name.startswith("prev_") and p.name != "events.jsonl"]   # events are append-only: they stay
     if old:
         n = 1
         while (status_dir_job / f"prev_{n}").exists():

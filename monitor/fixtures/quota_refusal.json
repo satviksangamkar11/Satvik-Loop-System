@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "free-requests",
+    "message": "not enough free requests left today for another loop (need 220, have 180)",
+    "details": {
+      "start_refusal": "free-requests",
+      "free_left": 180,
+      "needed": 220
+    }
+  }
+}

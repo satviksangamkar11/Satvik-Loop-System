@@ -1,0 +1,14 @@
+{
+  "job_id": "job-fl-top-router-088",
+  "job_path": "jobs/fl_top_router.json",
+  "spec_id": "FL_TOP",
+  "normalization_note": "Normalized UI-local copy (C-13): Reconciled job_id (job-fl-top-router-088) with FL_TOP spec.",
+  "profile": "production",
+  "derived_state": "merged",
+  "end_state": "passed",
+  "test_verdict": "passed",
+  "reviewer_verdict": "READY (2/2)",
+  "merge_state": "merged",
+  "started": "2026-11-03T17:58:00Z",
+  "finished": "2026-11-03T18:10:12Z"
+}

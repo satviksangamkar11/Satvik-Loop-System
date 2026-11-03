@@ -31,11 +31,11 @@ def switched_on():
     return OPUS_ENABLED
 
 
-def repair_model(role="repair"):
-    """(model, effort) of the roster's repair role (active profile). RepairFailed when that role is not a Claude Code model: a sentinel
-    (off, fake) or an OpenRouter role makes no call here."""
+def repair_model(role="repair", spec=None):
+    """(model, effort) of the roster's repair role (active profile), or of `spec` (a stage spec from a job's frozen snapshot) when given.
+    RepairFailed when that role is not a Claude Code model: a sentinel (off, fake) or an OpenRouter role makes no call here."""
     try:
-        spec = oc.roster_state()["ROLE_SPECS"][role]
+        spec = oc.roster_state()["ROLE_SPECS"][role] if spec is None else spec
     except oc.RosterRefused as exc:
         raise RepairFailed(f"the roster is refused: {exc}") from exc
     if spec["model"] in oc.SENTINELS:
@@ -55,12 +55,12 @@ def run_claude(prompt, cwd, claude_cmd, timeout_s, env, system_prompt=REPAIR_SYS
                   max_output_tokens=MAX_OUTPUT_TOKENS)
 
 
-def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None, role="repair"):
+def ask(prompt, *, raw_sink=None, runner=None, timeout_s=TIMEOUT_S, enabled=None, role="repair", spec=None):
     """The reply text of one isolated call, checked: it must be the JSON envelope of a successful call whose result text carries FILE blocks.
-    The model and effort are the roster's `role`. `raw_sink` receives the raw output before it is parsed (the production run saves it to the
-    job's history). `runner` replaces run_claude in tests (its first five arguments). Raises RepairFailed or RepairBadReply, each with exit_code set
-    to the process's exit code (None when no process ended); nothing else is tried."""
-    model, effort = repair_model(role)
+    The model and effort are the roster's `role`, or `spec`'s (a job's stage snapshot). `raw_sink` receives the raw output before it is parsed
+    (the production run saves it to the job's history). `runner` replaces run_claude in tests (its first five arguments). Raises RepairFailed or
+    RepairBadReply, each with exit_code set to the process's exit code (None when no process ended); nothing else is tried."""
+    model, effort = repair_model(role, spec)
     if cc.switched_off(model, OPUS_ENABLED if enabled is None else enabled):
         raise RepairFailed("Opus repair is switched off: no call was made")
 

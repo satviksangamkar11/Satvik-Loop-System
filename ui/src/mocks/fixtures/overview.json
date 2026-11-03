@@ -1,0 +1,23 @@
+{
+  "stop": false,
+  "stop_active": false,
+  "stop_reason": null,
+  "loops_running": 2,
+  "loops_max": 2,
+  "queue_depth": 2,
+  "jobs_queued": 2,
+  "jobs_waiting": 1,
+  "loops_waiting": 1,
+  "free_today": 58,
+  "free_daily_limit": 200,
+  "pace": 9,
+  "pace_60s": 9,
+  "pace_limit_60s": 15,
+  "review_usd_today": 0.184,
+  "review_spend": "0.1840",
+  "review_cap_usd": 2.5,
+  "review_ceiling": "2.5000",
+  "sandbox_slots": "2/2",
+  "docker_healthy": true,
+  "updated_at": "2026-11-03T10:15:42Z"
+}

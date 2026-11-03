@@ -1,0 +1,107 @@
+{
+  "job_id": "calc-20261103-1414-2ed8",
+  "name": "pilot-loop-status",
+  "derived_state": "finished",
+  "end_state": "review-open",
+  "merge_state": "none",
+  "active_stage": null,
+  "active_model": null,
+  "waiting": null,
+  "heartbeat_age_s": null,
+  "started": "2026-11-03T17:39:10Z",
+  "finished": "2026-11-03T14:31:00Z",
+  "free_requests_used": 5,
+  "review_usd_spent": 0.0,
+  "profile": "test",
+  "spec": "docs/pilot/four-loop/FL_TOP_SPEC.md",
+  "files": [
+    "scripts/source/fl_top.py",
+    "pieces/test_fl_top.py"
+  ],
+  "stage_snapshot": {
+    "sha256": "9b1c\u2026",
+    "revision": 1
+  },
+  "lease": {
+    "held": false,
+    "pid": 4120,
+    "pid_alive": false,
+    "heartbeat": "2026-11-03T17:41:00Z",
+    "generation": 3
+  },
+  "budget": {
+    "free_requests_used": 2,
+    "free_requests": 40,
+    "review_usd_spent": 0.0,
+    "review_usd": 0,
+    "repair_calls": 0
+  },
+  "archive": {
+    "available": true,
+    "archive_failed": false
+  },
+  "reason": "FIX FIRST repair round 1 by dots left the tests red (tests/acceptance/test_loop_status_acceptance.py::test_main_output); the last green code is kept; \u2026",
+  "tests_passed": true,
+  "failing_tests": [],
+  "review_verdict": "FIX FIRST",
+  "findings": [
+    "scripts/source/loop_status.py:79 | SPEC 9: main(argv) takes an optional loop folder \u2026 | default _loop is never used"
+  ],
+  "stages": [
+    {
+      "stage": "planner",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_a_write",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "writer_a_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_write",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "writer_b_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "specialist_repair",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_b",
+      "status": "ran",
+      "attempts": 1
+    },
+    {
+      "stage": "reviewer_a",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "reviewer_reask",
+      "status": "not-triggered",
+      "attempts": 0
+    },
+    {
+      "stage": "review_fix_repair",
+      "status": "ran",
+      "attempts": 1
+    }
+  ],
+  "hashes": {
+    "tested": "51aa\u2026",
+    "reviewed": "51aa\u2026",
+    "delivered": null
+  }
+}

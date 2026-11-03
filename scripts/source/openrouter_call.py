@@ -14,6 +14,9 @@ Any role may instead be called through Claude Code (2026-11-03): its roster entr
 sent here: resolve() refuses it, and it is not on the shared ledger. The test profile allows a Claude Code role only as claude_code.TEST_ONLY,
 refused while the roster loads.
 
+The model catalog (config/models.json, model_catalog.py, 2026-11-03) widens the exact IDs: its free models are allowed too, and under the
+production profile so is a paid catalog model with a pinned provider and prices (reviewer-only, on the paid budget, as a paid role).
+
 Importing this module calls no model. `main()` with `probe` makes one call per writer and reviewer role, by hand."""
 import contextlib
 import http.client
@@ -173,7 +176,12 @@ class _Mismatch(OpenRouterError):
 
 class RosterRefused(ValueError):
     """config/roster.json is malformed, names an unknown profile, or the test profile names a paid role or a Claude Code role other than
-    claude_code.TEST_ONLY. Raised while the roster loads: no client exists and no request or call is made."""
+    claude_code.TEST_ONLY. Raised while the roster loads: no client exists and no request or call is made. `code` is a stable name for the
+    rule that refused it (stage_config uses its own codes; the roster load keeps "roster-refused")."""
+
+    def __init__(self, message="", code="roster-refused"):
+        super().__init__(message)
+        self.code = code
 
 
 def _check_role(profile, role, spec):
@@ -205,12 +213,21 @@ def _check_role(profile, role, spec):
 
 def load_roster_file(path=None):
     """The profiles in config/roster.json, every role checked. Raises RosterRefused for anything malformed."""
+    return load_roster_data(path)["profiles"]
+
+
+def load_roster_data(path=None):
+    """The whole of config/roster.json (schema_version, revision, profiles), read once and checked as load_roster_file checks it. The stage
+    blocks are checked by stage_config, not here."""
     try:
         data = json.loads(Path(path or ROSTER_PATH).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RosterRefused(f"config/roster.json cannot be read: {exc}") from exc
     if not isinstance(data, dict) or data.get("schema_version") != 1:
         raise RosterRefused("config/roster.json: schema_version must be 1")
+    revision = data.get("revision", 0)
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        raise RosterRefused("config/roster.json: revision must be a whole number", code="bad-revision")
     profiles = data.get("profiles")
     if not isinstance(profiles, dict) or set(profiles) != {"test", "production"}:
         raise RosterRefused("config/roster.json: profiles must be exactly test and production")
@@ -233,7 +250,7 @@ def load_roster_file(path=None):
                 problem = _claude_code().test_profile_problem(f"{name}/{role}", spec)
                 if problem:
                     raise RosterRefused(problem)
-    return profiles
+    return data
 
 
 def probe_max_tokens(profile=None):
@@ -279,7 +296,8 @@ def roster_state(profile=None):
     """The tables for a profile (default: the active one): ROLE_SPECS, ROLES, VIA, PAID, ALLOWED, PINS, PRICING, SETTINGS, PROFILE. Loaded
     inside this function and cached by profile name, so each profile's roster is checked once and a test can switch profiles with the
     environment. The OpenRouter tables hold the OpenRouter roles only (no sentinel, no Claude Code role); a model on two roles keeps the
-    entries of the first in ladder order (writers, reviewers, then repair and planner)."""
+    entries of the first in ladder order (writers, reviewers, then repair and planner). ALLOWED and PAID also hold the catalog's models
+    (config/models.json, _catalog_tables); CATALOG_PAID names the paid ones, which resolve() takes by exact ID."""
     name = profile or active_profile()
     if name not in _ROSTER_STATE:
         specs = load_profile(name)
@@ -292,13 +310,35 @@ def roster_state(profile=None):
             if specs[r]["paid"]:
                 pins.setdefault(roles[r], specs[r]["provider"])                     # paid model -> {name, slug}
                 pricing.setdefault(roles[r], specs[r]["pricing"])                   # paid model -> USD per token
+        catalog = _catalog_tables(name, set(roles.values()))
+        for model, model_settings in catalog["free"].items():
+            settings.setdefault(model, model_settings)
+        for model, (pin, prices, model_settings) in catalog["paid"].items():
+            pins.setdefault(model, pin)
+            pricing.setdefault(model, prices)
+            settings.setdefault(model, model_settings)
         _ROSTER_STATE[name] = {
             "PROFILE": name, "ROLE_SPECS": specs, "ROLES": roles, "VIA": {role: via_of(spec) for role, spec in specs.items()},
-            "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]),
-            "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]),
+            "PAID": frozenset(roles[r] for r in api if specs[r]["paid"]) | frozenset(catalog["paid"]),
+            "ALLOWED": frozenset(roles[r] for r in api if not specs[r]["paid"]) | frozenset(catalog["free"]),
+            "CATALOG_PAID": frozenset(catalog["paid"]),
             "PINS": pins, "PRICING": pricing, "SETTINGS": settings,
         }
     return _ROSTER_STATE[name]
+
+
+def _catalog_tables(profile, roster_models):
+    """What config/models.json adds to the allow-list (model_catalog.allow_tables): its free models, and under production its paid models
+    that have a pinned provider and prices (reviewer-only, as a paid roster role). A model on the roster keeps its roster entries. A catalog
+    that does not validate is refused like a bad roster."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import model_catalog
+    try:
+        return model_catalog.allow_tables(profile, roster_models)
+    except model_catalog.CatalogError as exc:
+        raise RosterRefused(f"config/models.json: {exc}") from exc
 
 
 _ROSTER_NAMES = frozenset({"PROFILE", "ROLE_SPECS", "ROLES", "VIA", "PAID", "ALLOWED", "PINS", "PRICING", "SETTINGS"})
@@ -324,8 +364,9 @@ def utc_day(now):
 
 
 def resolve(name):
-    """The roster model for a role name whose role is called through OpenRouter, or an exact free roster ID. Anything else (a list, a comma
-    list, an alias, a bare paid ID, a sentinel such as non_author_writer, a Claude Code role) is refused before a request is built."""
+    """The roster model for a role name whose role is called through OpenRouter, an exact free roster or catalog ID, or the exact ID of a
+    pinned and priced paid catalog model (production only; reviewer-only in call()). Anything else (a list, a comma list, an alias, a bare
+    paid roster ID, an unpinned paid ID, a sentinel such as non_author_writer, a Claude Code role) is refused before a request is built."""
     if isinstance(name, str) and name in ROLE_NAMES:
         state = roster_state()
         roles = state["ROLES"]
@@ -334,9 +375,9 @@ def resolve(name):
         if state["VIA"][name] != "openrouter":
             raise ModelRefused(f"{name} is a {state['VIA'][name]} role in the {active_profile()} profile: it is not called through OpenRouter")
         return roles[name]
-    if isinstance(name, str) and name in roster_state()["ALLOWED"]:
+    if isinstance(name, str) and (name in roster_state()["ALLOWED"] or name in roster_state()["CATALOG_PAID"]):
         return name
-    raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster IDs only; no fallback lists)")
+    raise ModelRefused(f"not on the roster: {name!r} (writer or reviewer roles, or exact free roster or catalog IDs only; no fallback lists)")
 
 
 def parse_response(status, raw):
@@ -368,10 +409,11 @@ def _reasoning_cap(model):
         return None
 
 
-def reply_facts(data, secrets=()):
+def reply_facts(data, secrets=(), settings=None):
     """What a reply says about itself, never its text: finish_reason, the integer usage fields and the reasoning tokens. A reply with no
     message text (choices[0].message.content is not a string) also keeps the keys of that message (redacted) and the lengths of its reasoning
-    and reasoning_content fields. {} when there is no reply object."""
+    and reasoning_content fields. {} when there is no reply object. `settings` is the call's own settings (a job's stage snapshot); without
+    them the roster's settings for the reply's model give the reasoning cap."""
     if not isinstance(data, dict):
         return {}
     choices = data.get("choices")
@@ -381,7 +423,11 @@ def reply_facts(data, secrets=()):
     details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
     facts = {"finish_reason": choice.get("finish_reason"), "usage": {k: v for k, v in usage.items() if isinstance(v, int)},
              "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details.get("reasoning_tokens"), int) else None}
-    cap = _reasoning_cap(data.get("model"))
+    if settings is None:
+        cap = _reasoning_cap(data.get("model"))
+    else:
+        reasoning = settings.get("reasoning")
+        cap = reasoning.get("max_tokens") if isinstance(reasoning, dict) else None
     facts["reasoning_over_cap"] = None if facts["reasoning_tokens"] is None or cap is None else facts["reasoning_tokens"] > cap   # R1: which models ignore the cap
     if not isinstance(message.get("content"), str):
         facts["message_keys"] = sorted(redact(str(k), secrets) for k in message)
@@ -586,6 +632,23 @@ class OpenRouter:
         self.shared_home = None             # the loop home that job lives in (None: SATVIK_HOME)
         self.owned_lease = False            # True when this client took its own lease (own_job): release_job releases it
         self.on_wait = None                 # the job's execution owner's hook: called with {why, since, model} when a wait begins, None when it ends
+        self._stage = None                  # the stage spec of the call in progress (call(stage=...)), None for a roster call
+
+    def _settings_of(self, model):
+        """The settings of the call in progress: its stage spec's when it has one, else the roster's for the model."""
+        if self._stage is not None and self._stage["model"] == model:
+            return self._stage["settings"]
+        return roster_state()["SETTINGS"][model]
+
+    def _pin_of(self, model):
+        if self._stage is not None and self._stage["model"] == model:
+            return self._stage.get("provider") if self._stage.get("paid") else None
+        return roster_state()["PINS"].get(model)
+
+    def _pricing_of(self, model):
+        if self._stage is not None and self._stage["model"] == model:
+            return self._stage["pricing"]
+        return roster_state()["PRICING"][model]
 
     def set_job_deadline(self, seconds):
         """The unit deadline, `seconds` from now. p1b_production sets it just before the unit's walk starts."""
@@ -647,7 +710,7 @@ class OpenRouter:
         """One upstream 429 on a reviewer call: wait the next step of REVIEWER_429_WAITS_S (plus jitter, or Retry-After when longer), then retry.
         The window is used up after its last step, or when the next wait would pass the model's roster timeout_s from the call's start; the model
         is then dropped for the job. A stop for the unit deadline, or for the job's free-request or daily count, raises without dropping the model."""
-        review_timeout = roster_state()["SETTINGS"][model]["timeout_s"]
+        review_timeout = self._settings_of(model)["timeout_s"]
         if used >= len(REVIEWER_429_WAITS_S):
             self.breaker.drop(model)
             raise self._err(ProviderUnavailable, f"{model}: still rate-limited upstream (429) after {used} retries; the window is used up; last 429: {message[:300]}")
@@ -664,13 +727,17 @@ class OpenRouter:
 
     def _keep_request(self, model, status, seconds, data=None):
         """Keeps one request the client sent, failed or not: its raw HTTP status (None for a network error), its seconds, and reply_facts."""
-        self.requests.append({"model": model, "status": status, "failed": False, "seconds": round(float(seconds), 3), **reply_facts(data, self._secrets)})
+        self.requests.append({"model": model, "status": status, "failed": False, "seconds": round(float(seconds), 3), **self._facts(model, data)})
+
+    def _facts(self, model, data):
+        stage = self._stage if self._stage is not None and self._stage["model"] == model else None
+        return reply_facts(data, self._secrets, stage["settings"] if stage else None)
 
     def _note(self, model, status, message, data=None, request=True):
         """Keeps one failed attempt: its raw HTTP status (None for a network error), its message (redacted, cut to FAILURE_CHARS) and reply_facts.
         A chat attempt comes right after its request (_keep_request), which it marks failed; the endpoint price read is no chat request (request=False)."""
         self.failed_attempts.append({"model": model, "status": status, "message": redact(str(message), self._secrets)[:FAILURE_CHARS],
-                                     "facts": reply_facts(data, self._secrets)})
+                                     "facts": self._facts(model, data)})
         if request:
             self.requests[-1]["failed"] = True
 
@@ -688,7 +755,7 @@ class OpenRouter:
         A reply from any other provider is refused in call()."""
         if model in self._endpoints:
             return self._endpoints[model]
-        pin = roster_state()["PINS"].get(model)
+        pin = self._pin_of(model)
         if pin is None:
             raise self._err(ModelRefused, f"{model} has no pinned provider in the roster; nothing is sent")
         status, _, raw = self.transport("GET", f"{API}/models/{model}/endpoints", {}, None, 60)
@@ -768,24 +835,50 @@ class OpenRouter:
         recorded = _shared_limits().record_free_cap(live, home_dir=self.shared_home)
         return {"cap": recorded["cap"], "cap_source": recorded["source"]}
 
-    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, effort=None):
+    def call(self, name, system, user, kind="text", private=False, max_tokens=None, timeout_s=None, effort=None, stage=None):
         """One checked answer from a roster model: (text, info). kind: text, writer, repair or reviewer (see check_reply). The model's settings
         come from its roster role; the retry values apply to writer calls only. A repair call uses the roster's repair_max_tokens and never retries at a bigger size. effort: a reasoning effort for a free call (None keeps the
-        role's setting, 'off' sends none); a cut-off reply with no text is retried with reasoning off at the same size (R1)."""
+        role's setting, 'off' sends none); a cut-off reply with no text is retried with reasoning off at the same size (R1).
+
+        stage: a resolved stage spec from the job's frozen snapshot (stage_config.call_spec): {model, via, settings, paid, provider, pricing}.
+        With it the model, settings, pin and prices come from the spec, not from the roster read now, so a roster edit during the job changes
+        nothing here; a repair spec already holds the repair output cap as its max_tokens. Without it the call is the roster call above."""
         if kind not in ("text", "writer", "reviewer", "repair"):
             raise ValueError(f"unknown reply kind {kind!r}")
-        model = resolve(name)
+        if stage is None:
+            return self._call(name, system, user, kind, private, max_tokens, timeout_s, effort)
+        if stage.get("model") in SENTINELS or not isinstance(stage.get("model"), str):
+            raise ModelRefused(f"{name} is {stage.get('model')!r} in the job's stage snapshot, not a model: nothing is called")
+        if stage.get("via", "openrouter") != "openrouter":
+            raise ModelRefused(f"{name} is a {stage.get('via')} stage in the job's snapshot: it is not called through OpenRouter")
+        self._stage = stage
+        try:
+            return self._call(name, system, user, kind, private, max_tokens, timeout_s, effort)
+        finally:
+            self._stage = None
+
+    def _call(self, name, system, user, kind, private, max_tokens, timeout_s, effort):
+        stage = self._stage
+        model = resolve(name) if stage is None else stage["model"]
         if private and model not in self.approved_private:
             raise self._err(ModelRefused, f"private code is blocked: no approved non-training route for {model}")
-        slot = "paid" if model in roster_state()["PAID"] else "free"
+        if stage is None:
+            slot = "paid" if model in roster_state()["PAID"] else "free"
+        else:
+            slot = "paid" if stage.get("paid") else "free"
         if slot == "paid" and kind != "reviewer":
             raise self._err(ModelRefused, f"{model} is the GLM reviewer: it takes reviewer calls only, so this {kind} call is refused before any request")
         if slot not in self.keys:
             raise self._err(ModelRefused, f"no {slot} key loaded, so {model} is not called")
-        settings = roster_state()["SETTINGS"][model]
+        settings = self._settings_of(model)
         retry = settings if kind == "writer" else {}           # retry values belong to writer calls only
         started = self.clock()
-        tokens = max_tokens if max_tokens is not None else (repair_max_tokens() if kind == "repair" else settings["max_tokens"])
+        if max_tokens is not None:
+            tokens = max_tokens
+        elif kind == "repair" and stage is None:
+            tokens = repair_max_tokens()
+        else:
+            tokens = settings["max_tokens"]
         timeout = timeout_s if timeout_s is not None else settings["timeout_s"]
         attempts, retries, truncations, window = 0, 0, 0, 0     # window: upstream 429 retries a reviewer call has used (REVIEWER_429_WAITS_S)
         while True:
@@ -817,7 +910,7 @@ class OpenRouter:
                 if data is None:
                     self._note(model, 200, f"malformed reply: not a JSON object: {message}")
                     raise self._err(ReplyRejected, f"{model}: malformed reply (not a JSON object)")
-                pin_name = roster_state()["PINS"][model]["name"] if slot == "paid" else None
+                pin_name = self._pin_of(model)["name"] if slot == "paid" else None
                 if slot == "paid" and data.get("provider") != pin_name:
                     self._note(model, 200, f"reply came from provider {data.get('provider')!r}", data)
                     self.breaker.failed(model)
@@ -888,7 +981,7 @@ class OpenRouter:
         if self.shared is not None:
             return self._reserve_shared(model, slot, system, user, tokens)
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
+            estimate = review_reservation(system, user, tokens, self._pricing_of(model))
             self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
             self.endpoint(model)
             self.budget.reserve_review(estimate)
@@ -901,7 +994,7 @@ class OpenRouter:
         job_id, gen = self.shared
         home = self.shared_home
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, roster_state()["PRICING"][model])
+            estimate = review_reservation(system, user, tokens, self._pricing_of(model))
             self.budget.check_review(estimate)
             self.endpoint(model)
             self.budget.reserve_review(estimate)
@@ -964,7 +1057,7 @@ class OpenRouter:
         reply costs; with no reply, the whole reservation is kept as spent."""
         if slot == "free":
             return _reported_cost(data) or 0.0
-        spent = review_cost(data, roster_state()["PRICING"][model]) if data is not None else None
+        spent = review_cost(data, self._pricing_of(model)) if data is not None else None
         if spent is None:
             spent = reserved
         self.budget.settle_review(reserved, spent)
@@ -974,7 +1067,7 @@ class OpenRouter:
         return spent
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s, effort=None):
-        settings = roster_state()["SETTINGS"][model]
+        settings = self._settings_of(model)
         body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "max_tokens": tokens, "temperature": settings["temperature"]}
         if settings["reasoning"] is not None:

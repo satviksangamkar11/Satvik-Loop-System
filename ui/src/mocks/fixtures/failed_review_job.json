@@ -1,0 +1,19 @@
+{
+  "job_id": "job-schema-guard-039",
+  "job_path": "jobs/schema_guard_v2.json",
+  "spec_id": "SCHEMA_GUARD_02",
+  "normalization_note": "Normalized UI-local copy (C-13): Corrected finished (18:22:40Z > started 18:11:05Z), reconciled free_requests_used=4, and unified spec_id to SCHEMA_GUARD_02.",
+  "profile": "test",
+  "config_revision": "rev-stages-20261103-06",
+  "derived_state": "finished",
+  "end_state": "review-open",
+  "test_verdict": "passed (restored-green)",
+  "reviewer_verdict": "FIX FIRST",
+  "merge_state": "none",
+  "restored_green": true,
+  "started": "2026-11-03T18:11:05Z",
+  "finished": "2026-11-03T18:22:40Z",
+  "duration_sec": 695,
+  "free_requests_used": 4,
+  "total_cost_usd": "0.0000"
+}

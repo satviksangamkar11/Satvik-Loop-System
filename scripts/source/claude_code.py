@@ -186,12 +186,16 @@ def role_spec(role, profile=None):
     return spec
 
 
-def ask_role(role, system, user, kind, *, raw_sink=None, runner=None, claude_cmd=None, enabled=None, profile=None):
+def ask_role(role, system, user, kind, *, raw_sink=None, runner=None, claude_cmd=None, enabled=None, profile=None, spec=None):
     """The checked reply of one isolated call for a writer or reviewer role on Claude Code: the role's model and effort from the roster,
     `system` as the system prompt, `user` on stdin, the role's roster timeout_s (TIMEOUT_S when it has none). kind: writer, repair or
     reviewer (openrouter_call.check_reply). `raw_sink` receives the raw output before it is parsed. `runner` replaces run in tests, with
-    run's first five arguments. Raises ClaudeFailed or ClaudeBadReply; nothing else is tried."""
-    spec = role_spec(role, profile)
+    run's first five arguments. Raises ClaudeFailed or ClaudeBadReply; nothing else is tried. `spec` is the stage spec from a job's frozen
+    snapshot (stage_config.call_spec): its model, effort and settings are used instead of the roster read now."""
+    if spec is None:
+        spec = role_spec(role, profile)
+    elif spec.get("via") != "claude_code":
+        raise ClaudeFailed(f"{role} is not a claude_code stage in the job's snapshot (model {spec.get('model')!r})")
     model, effort = spec["model"], spec["effort"]
     if switched_off(model, enabled):
         raise ClaudeFailed(f"{role} is {model}, which the owner's switch keeps off: no call was made")
