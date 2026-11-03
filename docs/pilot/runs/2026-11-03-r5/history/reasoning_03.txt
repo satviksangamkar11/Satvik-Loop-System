@@ -1,0 +1,83 @@
+Let me review the code against the specs and checks carefully.
+
+First, let me check each SPEC against the implementation:
+
+SPEC 1: Module is scripts/source/loop_status.py and uses only Python standard library. ✓ (uses json, os)
+
+SPEC 2: collect(loop_dir) reads only files matching loop_dir/*/status.json (exactly one folder level; deeper files are ignored). ✓ The code iterates os.listdir(loop_dir), checks if subdir is a directory, then looks for status.json directly in it. The test_ignores_deep_files confirms this works.
+
+SPEC 3: collect returns (rows, bad). rows is a list of dicts with exactly the keys name, state, reason, coder_calls, updated. ✓ The code creates dicts with exactly these keys.
+
+SPEC 4: name, state, reason and updated come from the status file; a missing text field becomes "" and a missing coder_calls becomes 0. ✓ Uses data.get('name', ''), data.get('state', ''), data.get('reason', ''), data.get('coder_calls', 0), data.get('updated', '')
+
+SPEC 5: reason is cut to its first 80 characters. ✓ reason = reason[:80]
+
+SPEC 6: rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z. Let me check the sorting code:
+```python
+rows.sort(key=lambda r: r['name'])
+rows.sort(key=lambda r: r['updated'], reverse=True)
+```
+This sorts by name first, then by updated (reverse). Since Python's sort is stable, this should work correctly - the secondary sort (by name) will be preserved for equal updated values. Wait, actually the order is wrong! The code sorts by name FIRST, then by updated. But we want primary sort by updated (newest first), secondary by name (A to Z). With stable sort, you need to sort by secondary key FIRST, then primary key. So sorting by name first, then by updated reverse is correct! Let me verify: if we have items with same updated, they'll maintain their relative order from the name sort. Yes, this is correct.
+
+SPEC 7: a status.json that cannot be read, is not valid JSON, or is not a JSON object is skipped, and its folder name is added to bad; bad is sorted A to Z. ✓ The try/except catches exceptions, checks isinstance(data, dict), bad.sort()
+
+SPEC 8: if loop_dir does not exist, collect returns ([], []). ✓ Checks os.path.isdir(loop_dir) at start.
+
+SPEC 9: main(argv) takes argument list WITHOUT program name: argv is [] (loop folder "_loop") or [loop_folder], so argv[0] is the loop folder when given; main prints one line per row as "name | state | coder_calls | reason", then, only if bad is not empty, one line "unreadable: " followed by the bad names joined by ", ", and returns 0. ✓ The code matches this exactly.
+
+SPEC 10: the module is read-only: it never creates, changes or deletes any file or folder. ✓ Only reads files.
+
+Now let me check the CHECKS:
+
+CHECK 1: every spec clause (SPEC n) has code and a test. Looking at the tests, there are tests for all specs. The acceptance tests also cover all specs.
+
+CHECK 2: no code special-cases test values. The code doesn't have any hardcoded test values.
+
+CHECK 3: edge cases are handled. Tests cover nonexistent dir, empty dir, missing fields, invalid JSON, non-object JSON, deep files, non-dir entries, sorting ties, bad sorting.
+
+CHECK 4: nothing changed outside the spec. The implementation only does what the spec says.
+
+CHECK 5: no security or data-loss risk. The code only reads files, no writes, no eval, no shell commands.
+
+Wait, let me double-check the sorting logic more carefully. The spec says "rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z."
+
+The code does:
+```python
+rows.sort(key=lambda r: r['name'])
+rows.sort(key=lambda r: r['updated'], reverse=True)
+```
+
+Since Python's sort is stable, this means:
+1. First sort by name (A to Z)
+2. Then sort by updated (newest first, i.e., reverse=True)
+
+For items with the same updated value, their relative order from step 1 (sorted by name) is preserved. So this correctly implements: primary key = updated (descending), secondary key = name (ascending).
+
+But wait - the updated field is a string. The sorting is lexicographic on the string. The spec doesn't specify the format of updated, but the tests use ISO format timestamps like "2024-01-01" and "2026-11-02T10:00:00Z". Lexicographic sorting works correctly for ISO 8601 timestamps. So this should be fine.
+
+Actually, let me check the acceptance test more carefully:
+```python
+def test_rows_order_and_fields(tmp_path):
+    rows, bad = load().collect(make_data(tmp_path))
+    assert [r["name"] for r in rows] == ["b", "a"]
+```
+
+In make_data:
+- a has updated: "2026-11-02T10:00:00Z"
+- b has updated: "2026-11-02T11:00:00Z"
+
+So b is newer, should come first. The test expects ["b", "a"]. This matches.
+
+And test_tie_sorted_by_name:
+- zeta and alpha both have updated: "2026-11-02T12:00:00Z"
+- Expects ["alpha", "zeta"] (A to Z)
+
+This also matches.
+
+So the sorting is correct.
+
+Everything looks good. The implementation matches all specs, all tests pass (both unit and acceptance), and there are no issues.
+
+Let me verify the test file is not considered part of the "package" for the verdict - the verdict should only name files in the package (scripts/source/loop_status.py). The test file is in pieces/test_loop_status.py which is a test file, not the main package.
+
+Since everything is correct, the verdict should be READY.

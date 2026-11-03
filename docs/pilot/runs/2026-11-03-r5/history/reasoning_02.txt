@@ -1,0 +1,83 @@
+The user wants me to review the files against the spec and checks. I need to reply with at most 5 findings, each on ONE line, in exactly this form:
+- file:line [SPEC n|CHECK n]: <what breaks, under 25 words>
+
+Then end with exactly one line: `## Verdict: READY` or `## Verdict: FIX FIRST`.
+
+Let me analyze the code against the spec.
+
+SPEC 1: module uses only Python standard library. Yes, json and os. OK.
+SPEC 2: collect reads only files matching loop_dir/*/status.json (exactly one folder level; deeper files ignored). Code iterates entries in loop_dir, checks isdir, then status_file = subdir/status.json. Deeper files ignored. OK.
+SPEC 3: collect returns (rows, bad). rows is list of dicts with exactly keys name, state, reason, coder_calls, updated. Code does that. OK.
+SPEC 4: name, state, reason and updated come from status file; missing text field becomes "" and missing coder_calls becomes 0. Code uses .get with defaults. OK.
+SPEC 5: reason is cut to first 80 characters. Code: reason = reason[:80]. OK.
+SPEC 6: rows sorted by updated, newest first; equal updated sorted by name A to Z. Code does rows.sort(key=name) then rows.sort(key=updated, reverse=True). Python sort is stable, so this works: primary by updated desc, secondary by name asc. OK.
+SPEC 7: status.json that cannot be read, not valid JSON, or not JSON object is skipped, folder name added to bad; bad sorted A to Z. Code catches Exception, appends entry. OK.
+SPEC 8: if loop_dir does not exist, collect returns ([], []). Code checks os.path.isdir. OK.
+SPEC 9: main(argv) takes argument list without program name. argv is [] (loop folder "_loop") or [loop_folder]. Prints one line per row as "name | state | coder_calls | reason", then only if bad not empty, one line "unreadable: " followed by bad names joined by ", ", returns 0. Code does this. OK.
+SPEC 10: module is read-only. Code only reads. OK.
+
+Now checks:
+CHECK 1: every spec clause has code and a test. Let's see. SPEC 1 - code uses stdlib, test? There's no explicit test for stdlib only, but it's a property. SPEC 2 - test_ignores_deep_files. SPEC 3 - tests check keys. SPEC 4 - test_missing_fields. SPEC 5 - test_reason_truncation. SPEC 6 - test_sorting, test_sorting_equal_updated. SPEC 7 - test_invalid_json, test_non_object_json, test_bad_sorted. SPEC 8 - test_nonexistent_dir. SPEC 9 - TestMain tests. SPEC 10 - test_read_only. Seems covered.
+
+CHECK 2: no code special-cases test values. OK.
+CHECK 3: edge cases handled. OK.
+CHECK 4: nothing changed outside spec. OK.
+CHECK 5: no security or data-loss risk. OK.
+
+Wait, let me look more carefully. Is there any issue?
+
+One potential issue: SPEC 6 says "rows are sorted by updated, newest first; equal updated values are sorted by name, A to Z." The code does:
+```
+rows.sort(key=lambda r: r['name'])
+rows.sort(key=lambda r: r['updated'], reverse=True)
+```
+This is stable sort, so for equal updated, name order is preserved (A to Z). This is correct.
+
+But wait, what if updated is missing? It defaults to "". That's fine, sorts as string.
+
+Another potential issue: SPEC 4 says "a missing text field becomes "" and a missing coder_calls becomes 0." What if coder_calls is present but not an int? Spec doesn't say to validate type. Code just uses .get. Fine.
+
+What about reason being non-string? If reason is e.g. an integer, reason[:80] would fail with TypeError, caught by except, added to bad. Spec says "a missing text field becomes """. If reason is present but not text, spec doesn't explicitly say. But the except would catch it and mark bad. Is that correct? SPEC 7 says a status.json that cannot be read, is not valid JSON, or is not a JSON object is skipped. If reason is an int, the JSON is valid and is an object, but reason[:80] raises TypeError. The code catches it and adds to bad. Is that per spec? Hmm. SPEC 4 says missing text field becomes "". It doesn't say non-text field. But the acceptance test test_rows_order_and_fields has reason "r" * 100 which is fine.
+
+Actually, let me reconsider. The code catches all exceptions including TypeError from reason[:80] if reason is not a string. That would mark the folder as bad. Is that a spec violation? SPEC 7 lists specific conditions for bad: cannot be read, not valid JSON, not a JSON object. A non-string reason isn't listed. But this is an edge case not covered by tests. The spec says "name, state, reason and updated come from the status file; a missing text field becomes """. It implies these are text fields. If they're not text, behavior is unspecified. I won't flag this as it's not clearly breaking and tests pass.
+
+Let me check the acceptance test test_main_output:
+```
+assert out[0] == "b | provider-unavailable | 1 | " + "r" * 80
+assert out[1] == "a | passed | 2 | READY from: x"
+assert out[-1] == "unreadable: c"
+```
+With make_data: a updated 10:00, b updated 11:00, c invalid. So rows sorted newest first: b then a. Output line for b: "b | provider-unavailable | 1 | " + "r"*80. Code prints f"{name} | {state} | {coder_calls} | {reason}". For b: "b | provider-unavailable | 1 | rrrr...". Matches. For a: "a | passed | 2 | READY from: x". Matches. Then "unreadable: c". Matches. len(out) == 3. Good.
+
+Everything seems to pass. All tests are green. The results show all passed.
+
+So the verdict should be READY with no findings.
+
+Wait, but I should double check: are there any findings? The instructions say "If the code is right, give no finding line." So I should give no finding lines and end with `## Verdict: READY`.
+
+But let me be careful. Let me re-examine SPEC 6 sorting stability more carefully and whether there's a subtle bug.
+
+Actually, there's a subtle issue with the two-sort approach when updated values are not comparable or when reverse=True interacts. But for strings it's fine.
+
+Let me reconsider: `rows.sort(key=lambda r: r['name'])` sorts ascending by name. Then `rows.sort(key=lambda r: r['updated'], reverse=True)` sorts descending by updated, stable. For equal updated, the previous order (name ascending) is preserved. So result: updated descending, name ascending for ties. This matches SPEC 6. Good.
+
+Now, is there any issue with SPEC 2 "exactly one folder level; deeper files are ignored"? The code uses os.listdir(loop_dir) which gives immediate children. For each child that is a dir, it looks for status.json directly inside. It does not recurse. So deeper files ignored. Good. But what about a status.json directly in loop_dir (not in a subfolder)? The code only processes subdirs, so a status.json at top level is ignored. SPEC 2 says reads only files matching loop_dir/*/status.json. So top-level status.json is not matched. Good.
+
+Everything looks correct. All tests pass including acceptance. No findings.
+
+Verdict: READY.
+
+Actually, wait. Let me reconsider whether I should produce any finding. The task says "Review the files against the spec and the checks." The results show all tests passed. The code matches spec. So no findings, verdict READY.
+
+Let me make sure the format: end with exactly one line `## Verdict: READY`. No finding lines. That's acceptable ("If the code is right, give no finding line.").
+
+I'll output just the verdict line. But should I include anything else? The instruction says reply with at most 5 findings, each on one line. If code is right, give no finding line. End with verdict line. So my entire reply should be just:
+## Verdict: READY
+
+That's it. Let me confirm there's truly no issue.
+
+Hmm, one more thought: SPEC 9 says "main prints one line per row as 'name | state | coder_calls | reason'". The code prints exactly that. Good. "then, only if bad is not empty, one line 'unreadable: ' followed by the bad names joined by ', '". Code does that. "and returns 0." Code returns 0. Good.
+
+SPEC 10 read-only: test_read_only checks snapshot before and after collect and main. Passed. Good.
+
+I'm confident: READY, no findings.
