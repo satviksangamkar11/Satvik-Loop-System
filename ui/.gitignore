@@ -1,0 +1,5 @@
+node_modules/
+dist/
+tests/.compiled_cache.json
+test-results/
+playwright-report/
