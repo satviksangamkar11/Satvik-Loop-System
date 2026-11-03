@@ -1,0 +1,44 @@
+{
+ "name": "fl-wordcount",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/four-loop/FL_WORDCOUNT_SPEC.md",
+ "files": [
+  "scripts/source/fl_wordcount.py",
+  "pieces/test_fl_wordcount.py"
+ ],
+ "tests": [
+  "pieces/test_fl_wordcount.py"
+ ],
+ "acceptance_tests": [
+  "tests/acceptance/fl_wordcount_acceptance.py"
+ ],
+ "negative_controls": [
+  {
+   "name": "split-once",
+   "replace": {
+    "scripts/source/fl_wordcount.py": "tests/controls/fl_wordcount_split_once.py"
+   },
+   "must_fail": [
+    "tests/acceptance/fl_wordcount_acceptance.py::test_case_is_ignored",
+    "tests/acceptance/fl_wordcount_acceptance.py::test_punctuation_separates"
+   ]
+  }
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/fl_wordcount_acceptance.py::test_case_is_ignored",
+  "tests/acceptance/fl_wordcount_acceptance.py::test_punctuation_separates",
+  "tests/acceptance/fl_wordcount_acceptance.py::test_empty"
+ ],
+ "fixers": [
+  "writer_a",
+  "writer_b"
+ ],
+ "reviewers": "by_lineage",
+ "budget": {
+  "free_requests": 40,
+  "review_usd": 0,
+  "paid_usd": 0
+ },
+ "deadline_min": 60
+}
