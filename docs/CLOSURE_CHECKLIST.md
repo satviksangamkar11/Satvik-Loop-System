@@ -58,7 +58,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I4 | Backup-writer review stage names are best effort (`reviewer_b` until a READY, then `reviewer_a`) | Record the real slot in `_review` / the events (item 3) | A test of a backup review shows the correct stage |
 | I5 | Lease leak (fixed in #36) not yet confirmed in a real run | Check the `ah-run` leases: each job's own client lease is `released: true` | Confirmed from the evidence |
 | I6 | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
-| I7 | `npm ci` reports 5 moderate vulnerabilities | Run `npm audit`; fix the runtime ones; record the dev-only ones (item 5) | Audit result recorded, runtime clean |
+| I7 ✅ | `npm ci` reports 5 moderate vulnerabilities | **Done 2026-11-04:** `npm audit --omit=dev` → 0 vulnerabilities (runtime clean). All 5 moderate are dev-only: `minimatch` under eslint and typescript-eslint, lint tooling only, not in the built app | Recorded |
 | I8 | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
 | I9 | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
 | I10 | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
