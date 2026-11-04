@@ -75,6 +75,7 @@ def freeze_stages(changes):
     """The stage table to freeze with a queued job: the active profile's roster as it stands now, with `changes` on top. Returns the
     snapshot (stage_config.snapshot) or raises ApiError (400 with the problems, or 422 for a table the engine refuses)."""
     name = _profile_name()
+    changes = config_api.clean_changes(name, changes) if changes else changes
     if changes:
         problems = config_api.stage_problems(name, changes)
         if problems:
@@ -108,6 +109,7 @@ def queue_job(body):
         changes = config_api._as_changes(changes)
     if not isinstance(changes, dict):
         raise ApiError(400, "bad-stages", "stages is an object of {stage: {model, effort, settings}}")
+    changes = config_api.clean_changes(_profile_name(), changes)
     if "stage_revision" in body:
         current = config_api._roster_revision()
         if body["stage_revision"] != current:

@@ -978,6 +978,38 @@ def test_a_stage_change_is_refused_until_its_model_has_the_required_contract_ver
     assert world.client.post("/api/stages/validate", json=repair).json() == {"valid": True, "problems": []}
 
 
+def test_a_locked_row_sent_with_a_null_or_unchanged_model_is_accepted_and_ignored(world):
+    """M3: a locked row (model_selectable false in GET /stages) sent with model null, or with the model it already shows, is accepted by
+    POST /stages/validate, POST /jobs and PUT /stages (the value is ignored). A changed model on it is model-not-selectable. An unlocked
+    row still refuses a null model (bad-model)."""
+    stages = {row["stage"]: row for row in world.client.get("/api/stages", params={"profile": "test"}).json()["stages"]}
+    locked = {name for name, row in stages.items() if not row["model_selectable"]}
+    assert {"reviewer_reask", "review_fix_repair", "reviewer_a"} <= locked
+    nulls = [{"stage": name, "model": None} for name in sorted(locked)]
+    assert world.client.post("/api/stages/validate", json={"profile": "test", "changes": nulls}).json() == {"valid": True, "problems": []}
+    shown = [{"stage": name, "model": stages[name]["model"], "effort": stages[name]["effort"]} for name in sorted(locked)]
+    assert world.client.post("/api/stages/validate", json={"profile": "test", "changes": shown}).json() == {"valid": True, "problems": []}
+    queued = world.client.post("/api/jobs", json={"job_path": "docs/pilot/four-loop/fl-top.json",
+                                                  "stages": {"reviewer_reask": {"model": None, "effort": "low"}, "reviewer_a": {"model": None}}})
+    assert queued.status_code == 201 and queued.json()["queued"] is True
+    revision = world.client.get("/api/stages", params={"profile": "test"}).json()["revision"]
+    saved = world.client.put("/api/stages", json={"profile": "test", "revision": revision, "changes": nulls},
+                             headers={"Idempotency-Key": "stages-locked-0001"})
+    assert saved.status_code == 200 and saved.json() == {"revision": revision + 1}
+    changed = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [
+        {"stage": "reviewer_a", "model": "dots-studio/dots-3-note-preview:free"}]})
+    assert changed.status_code == 400 and changed.json()["error"]["code"] == "model-not-selectable"
+    assert changed.json()["error"]["details"]["problems"][0]["stage"] == "reviewer_a"
+    fixed = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [
+        {"stage": "review_fix_repair", "via": "openrouter"}]})
+    assert fixed.status_code == 400 and fixed.json()["error"]["code"] == "model-not-selectable"
+    queued_changed = world.client.post("/api/jobs", json={"job_path": "docs/pilot/four-loop/fl-top.json", "rerun": True,
+                                                          "stages": {"reviewer_reask": {"model": "dots-studio/dots-3-note-preview:free"}}})
+    assert queued_changed.status_code == 400 and queued_changed.json()["error"]["code"] == "model-not-selectable"
+    unlocked = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [{"stage": "writer_a_write", "model": None}]})
+    assert unlocked.status_code == 400 and unlocked.json()["error"]["code"] == "bad-model"
+
+
 def test_a_claude_code_model_is_not_a_valid_stage_model_while_its_contract_is_unverified(world):
     change = {"profile": "production", "changes": [{"stage": "planner", "model": "haiku", "via": "claude_code", "effort": "high"}]}
     r = world.client.post("/api/stages/validate", json=change)
