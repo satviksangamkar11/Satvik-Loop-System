@@ -93,7 +93,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I35 ✅ (`ac1f22c`: finished from the registry; end state/tests/verdict truly absent for pre-archive jobs, documented) | Dashboard shows Unknown end_state/tests/verdict/finished for pre-archive tl-*/fl-* jobs (Windows check) | Investigate: honest missing data (document) or an unread source (fix) (`i34-win`) | Decided with evidence |
 
 | I36 | Codex (critical): A stage override takes the role's paid flag, provider and prices, not the selected model's (`stage_config.py:399`, `openrouter_call.py:868`) | Batch A | Fixed with a test, or documented as a trust limit |
-| I37 | Codex (critical): Planner `controls` paths are written unvalidated (absolute or `../` escapes the plan folder); extra controls allowed (`plan_job.py:273`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I37 ✅ (`81d9f17`, merged `eefcf08`) | Codex (critical): Planner `controls` paths are written unvalidated (absolute or `../` escapes the plan folder); extra controls allowed (`plan_job.py:273`) | Batch B | Fixed with a test, or documented as a trust limit |
 | I38 | Codex (high): Production dispatch drops `stop_check`: STOP does not stop the ladder between steps (`fix_loop.py:976`) | Batch C | Fixed with a test, or documented as a trust limit |
 | I39 | Codex (high): Merge sandbox lacks `monitor/` (and `ui/` fixtures) and FastAPI/httpx: the full suite fails at merge (`merge_queue.py:39`, Dockerfile) | Batch C | Fixed with a test, or documented as a trust limit |
 | I40 | Codex (high): Pending merges are memory-only; crash before/after push loses or double-counts delivery (`merge_queue.py:66`) | Batch C | Fixed with a test, or documented as a trust limit |
@@ -107,11 +107,11 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I48 | Codex (high): Pace timestamp is recorded before waiting for the model slot, so real sends can exceed 15/min (`openrouter_call.py:891`) | Batch A | Fixed with a test, or documented as a trust limit |
 | I49 | Codex (high): Paid worst case uses chars/3 and roster prices, not live endpoint prices (`openrouter_call.py:495`) | Batch A | Fixed with a test, or documented as a trust limit |
 | I50 | Codex (medium): Paid reservations have no per-call identity; crash strands budget; midnight clears holds (`shared_limits.py:87`) | Batch A | Fixed with a test, or documented as a trust limit |
-| I51 | Codex (high): Planner exactly-once is check-then-write with no lock; intent reuse ignores the request hash (`actions.py:239`, `plan_job.py:94`) | Batch B | Fixed with a test, or documented as a trust limit |
-| I52 | Codex (high): Plan approval queues only the job JSON, not its spec/tests/controls; approval hash covers job JSON only (`plan_job.py:268`, `actions.py:309`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I51 ✅ (`5dfca43`, merged `eefcf08`) | Codex (high): Planner exactly-once is check-then-write with no lock; intent reuse ignores the request hash (`actions.py:239`, `plan_job.py:94`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I52 ✅ (`771ab2e`, merged `eefcf08`) | Codex (high): Plan approval queues only the job JSON, not its spec/tests/controls; approval hash covers job JSON only (`plan_job.py:268`, `actions.py:309`) | Batch B | Fixed with a test, or documented as a trust limit |
 | I53 | Codex (high): Protected controller files list is incomplete (omits stage_config, model_catalog, nemotron_code, monitor/) (`p0_gates.py:22`) | Batch C | Fixed with a test, or documented as a trust limit |
 | I54 | Codex (high): Sandbox test results are produced in the same process as generated code; JUnit forgery possible (`sandbox_runner.py:123`) | Batch C | Fixed with a test, or documented as a trust limit |
-| I55 | Codex (high): Secret filtering inconsistent: planner inputs can include secrets/, planner raw replies unscrubbed, repair evidence scrub list empty (`plan_job.py:162`, `p1b_production.py:812`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I55 ✅ (`57ac5e7`, merged `eefcf08`) | Codex (high): Secret filtering inconsistent: planner inputs can include secrets/, planner raw replies unscrubbed, repair evidence scrub list empty (`plan_job.py:162`, `p1b_production.py:812`) | Batch B | Fixed with a test, or documented as a trust limit |
 | I56 | Codex (high): Green candidate kept only in memory; exceptional repair failure or full disk loses it; no sandbox output/disk quota (`p1b_production.py:583`) | Batch C | Fixed with a test, or documented as a trust limit |
 | I57 | Codex (medium): Wall-clock jumps and PID reuse not handled (`shared_limits.py:82`, `loop_home.py:509`) | Batch C | Fixed with a test, or documented as a trust limit |
 | I58 | Codex (medium): Windows sharing-violation retries only in some writers; production status rewritten in place (`stage_config.py:534`, `store.py:65`) | Batch D | Fixed with a test, or documented as a trust limit |
@@ -119,6 +119,10 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I60 | Codex (medium): Blocking model verify runs inside async handlers under the mutation lock; STOP/health stall (`api.py:263`) | Batch D | Fixed with a test, or documented as a trust limit |
 | I61 | Codex (medium): UI sends model without `via`; plan polling stops after ~60 s; transport errors say 'Nothing was changed' (`App.tsx:1485`, `client.ts:101`) | Batch D | Fixed with a test, or documented as a trust limit |
 | I62 | Codex (low): Docs mix historical gaps and integrated behaviour (handoff forbids implemented future-stage edits; As integrated says catalog is null) | Batch D | Fixed with a test, or documented as a trust limit |
+
+| I63 | `test_p0_sandbox.py::test_a_hung_test_with_child_processes_is_killed_with_its_container` failed once under full-suite load (passes alone, 12/12 twice) | Make the timing robust under load (batch C2) | Stable in 3 full runs |
+| I64 | (I52 limit) a planned job's installed spec/acceptance/control files are untracked; `write_change_doc` commits only `job.files`, so the merge does not carry them | Commit them with the change (batch C2) | A test: a merged planned job carries its acceptance tests |
+| I65 | (I55 limit) the legacy non-production `run_job` path scrubs with `for k in scrub_keys` over the `{slot: key}` dict (slot names, not values) | Use `redact.scrub` there too (batch C2) | A test |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
