@@ -38,6 +38,24 @@ import p1b_routing as p1b
 import sandbox_runner as sr
 import stage_config as sc
 
+def _envelope_models(raw):
+    """The model identities a Claude Code output reports as served: the keys of its modelUsage and its model field, as strings. Empty when the
+    output reports none (or is not a JSON object)."""
+    try:
+        envelope = json.loads(raw) if raw else None
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(envelope, dict):
+        return []
+    names = set()
+    usage = envelope.get("modelUsage")
+    if isinstance(usage, dict):
+        names.update(k for k in usage if isinstance(k, str) and k)
+    if isinstance(envelope.get("model"), str) and envelope["model"]:
+        names.add(envelope["model"])
+    return sorted(names)
+
+
 def role_by_model():
     """The roster model -> role map for the active profile, read at call time."""
     return {p1b._m("writer_a"): "writer_a", p1b._m("writer_b"): "writer_b", p1b._m("reviewer_b"): "reviewer_b", p1b._m("reviewer_a"): "reviewer_a"}
@@ -565,6 +583,8 @@ class Production:
                  history=None, scrub_keys=(), repair_ask=None, job_dir=None, claude_ask=None, stop_check=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
         self.stop_check = stop_check    # the operator's stop switch (fix_loop._stop_switch): raises StopRequested; checked before each new step and retry
+        self.served = {}                # model (or the repair step's name) -> the model identities its last call reported (I46, see served_identities)
+        self._repair_raw = None         # the raw output of the repair step's last call (its served identities are read from it)
         self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
         self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
         self.files, self.protected, self.acceptance_lock, self.originals = list(job["files"]), protected, acceptance_lock, originals
@@ -676,6 +696,11 @@ class Production:
         except p1b.BadReply as exc:
             return None, str(exc)
 
+    def served_identities(self, model):
+        """The model identities that the last call for `model` (or the repair step, p1b.ANTHROPIC) actually ran with: the requested model, plus
+        every model the call reported as served (I46). The ladder records them in the lineage and the panel excludes them all."""
+        return list(self.served.get(model, [model]))
+
     def _check_stop(self):
         """Raises StopRequested when the stop switch is on. Called before each new model step (_ask, the repair step) and, through the client's
         wait hook, before each retry or wait (_set_waiting). A call in flight is never interrupted."""
@@ -697,6 +722,8 @@ class Production:
                     text, _info = self.client.call(role, system, user, kind=kind, effort=spec["effort"], stage=spec)
                 else:
                     text, _info = self.client.call(role, system, user, kind=kind, effort=spec["effort"])
+                served = (_info or {}).get("model") if isinstance(_info, dict) else None     # the adapter checked it equals the requested model
+                self.served[model] = sorted({model, served} - {None}) if isinstance(served, str) else [model]
             except oc.OpenRouterError as exc:
                 self._record_history(model, mode)
                 if isinstance(exc, oc.ReviewBudgetExceeded):     # the GLM review would pass the job's review ceiling: nothing was sent
@@ -720,6 +747,7 @@ class Production:
                 text = ask(role, system, user, kind, raw_sink=raw.append, spec=spec)
             else:
                 text = ask(role, system, user, kind, raw_sink=raw.append)
+            self.served[model] = sorted({model} | set(_envelope_models(raw[-1] if raw else None)))     # I46: the requested and the reported models
         except (cc.ClaudeFailed, cc.ClaudeBadReply) as exc:
             self._failure(model, mode, None, exc, facts={"exit_code": exc.exit_code})
             raise p1b.ModelFailed(str(exc)) from exc
@@ -817,6 +845,7 @@ class Production:
         prompt = WRITER_SYSTEM + "\n\n" + self._writer_user("repair")
 
         def keep_raw(raw):
+            self._repair_raw = raw                  # the served identities of this call are read from its output (I46)
             if self.history is not None:
                 (self.history / f"repair_step_{number:02d}_raw.json").write_text(_scrubbed(raw, self.scrub_keys), encoding="utf-8")
 
@@ -827,7 +856,9 @@ class Production:
         with self._attempt(p1b.ANTHROPIC, "repair", "repair", "claude_code", effort=(stage or {}).get("effort")):
             started, reply, text = time.monotonic(), None, None
             try:
+                self._repair_raw = None
                 text = ask(prompt, raw_sink=keep_raw)
+                self.served[p1b.ANTHROPIC] = sorted({spec["model"]} | set(_envelope_models(self._repair_raw)))     # I46: requested + reported
                 reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
             except opus_repair.RepairFailed as exc:
                 self._failure(p1b.ANTHROPIC, "repair", None, exc, facts={"exit_code": exc.exit_code})
@@ -851,6 +882,7 @@ class Production:
         except p1b.ModelFailed as exc:
             self._step(p1b.ANTHROPIC, "repair", f"unavailable: {_scrubbed(str(exc), self.scrub_keys)}")
             raise p1b.ModelFailed(str(exc), reason=opus_repair.UNAVAILABLE) from exc
+        self.served[p1b.ANTHROPIC] = list(self.served_identities(model))     # I46: the repair step ran as this model
         reply = self._usable(p1b.ANTHROPIC, "repair", _scrubbed(text, self.scrub_keys), None)
         self._step(p1b.ANTHROPIC, "repair", f"{len(reply)} file(s) returned")
         return reply

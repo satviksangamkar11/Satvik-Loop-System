@@ -121,20 +121,43 @@ class StopRequested(Exception):
 
 class Lineage:
     """Per job file: the writer that last wrote it, the origin (the writer of the last fresh write), and the chain of writers since that fresh
-    write ("anthropic" for a repair step)."""
+    write ("anthropic" for a repair step). `served` (I46, 2026-11-04) is kept beside the rows: for each path, the ACTUAL model identities that
+    contributed to its current bytes since the fresh write (every writer and every repair step, as the call reported them). A repair step's chain
+    entry stays "anthropic"; its served identities are the models that really ran. The review panel excludes every one of them."""
 
     def __init__(self):
         self._rows = {}
+        self._served = {}
 
-    def set(self, path, last, origin, chain=None):
+    def set(self, path, last, origin, chain=None, served=None):
         self._rows[path] = {"last": last, "origin": origin, "chain": list(chain) if chain is not None else [origin]}
+        if served is not None:
+            self._served[path] = list(served)
+        elif path not in self._served:
+            self._served[path] = list(self._rows[path]["chain"])      # no identity recorded: the chain is all there is to go on
 
     def get(self, path):
         return self._rows.get(path)
 
+    def served(self, path):
+        """The served model identities of a path's current bytes (a copy)."""
+        return list(self._served.get(path, []))
+
+    def contributors(self, files):
+        """Every model identity that contributed to the given job files: each row's origin and the union of their served identities."""
+        out = set()
+        for path in files:
+            row = self._rows.get(path)
+            if row is not None:
+                out.add(row["origin"])
+                out.update(self.served(path))
+        return out
+
     def save(self, path):
-        """The file holds one row per job file, plus "schema_version": 1 at the top level (a file with no version is read as version 1)."""
-        Path(path).write_text(json.dumps(dict(self._rows, schema_version=LINEAGE_SCHEMA_VERSION), indent=2, sort_keys=True), encoding="utf-8")
+        """The file holds one row per job file, the served identities under "served", and "schema_version": 1 at the top level (a file with no
+        version is read as version 1)."""
+        Path(path).write_text(json.dumps(dict(self._rows, served=self._served, schema_version=LINEAGE_SCHEMA_VERSION), indent=2, sort_keys=True),
+                              encoding="utf-8")
 
     @classmethod
     def load(cls, path):
@@ -143,6 +166,7 @@ class Lineage:
         version = data.pop("schema_version", LINEAGE_SCHEMA_VERSION)
         if version != LINEAGE_SCHEMA_VERSION:
             raise ValueError(f"lineage schema_version {version!r} is not {LINEAGE_SCHEMA_VERSION}")
+        lineage._served = data.pop("served", {})
         lineage._rows = data
         return lineage
 
@@ -236,37 +260,43 @@ def trim_tail(text, limit=TRIM_CHARS):
     return text[-limit:] if len(text) > limit else text
 
 
-def backup_writer(origin, excluded=(), writers=None):
+def backup_writer(origin, excluded=(), writers=None, contributors=()):
+    """The free writer that did not write the code, is not excluded (down, or already on this panel), and did not contribute to the code (I46:
+    a repair step served by a writer's model makes that model a contributor)."""
     writers = (_m("writer_a"), _m("writer_b")) if writers is None else writers
-    """The free writer that did not write the code and is not excluded (down, or already on this panel)."""
+    barred = {origin} | set(contributors)
     for writer in writers:
-        if writer != origin and writer not in excluded:
+        if writer not in barred and writer not in excluded:
             return writer
     raise oc.ProviderUnavailable("no second independent reviewer is available (provider-unavailable)")
 
 
-def panel_for(origin, unavailable=(), specs=None):
+def panel_for(origin, unavailable=(), specs=None, contributors=()):
     """The reviewers for a job's code whose fresh writer was `origin`, from the roster's reviewer roles in panel order: the free reviewer
     (reviewer_b) first, then reviewer_a (the paid reviewer, or the non_author_writer role of the test profile). A slot takes the free writer
-    that did not write the code (backup_writer) when its model is the author, is down, or is the non_author_writer role; a paid slot is never
-    replaced. The paid reviewer is last, so it is called only after the first reviewer says READY. The author is never on its own panel.
-    `specs` defaults to the running job's snapshot roles (walk), else the roster."""
+    that did not write the code (backup_writer) when its model is the author or a contributor (I46), is down, or is the non_author_writer role;
+    a paid slot is never replaced (a paid contributor blocks the panel). The paid reviewer is last, so it is called only after the first reviewer
+    says READY. No contributing model is ever on its own panel. `contributors`: the served identities of every model that contributed to the code
+    (Lineage.contributors). `specs` defaults to the running job's snapshot roles (walk), else the roster."""
     if specs is None:
         specs = _roles_view() or oc.ROLE_SPECS
     models = {role: spec["model"] for role, spec in specs.items()}
     writers = (models["writer_a"], models["writer_b"])
     if origin not in writers + (models["reviewer_b"],):
         raise Blocked(f"no reviewer row for code whose origin is {origin}")
+    barred = {origin} | set(contributors)
     down = set(unavailable)
     panel = []
     for role in oc.REVIEWER_ROLES:
         spec = specs[role]
         taken = set(panel) | down
-        if spec["model"] == oc.NON_AUTHOR_WRITER or (not spec["paid"] and (spec["model"] == origin or spec["model"] in down)):
-            panel.append(backup_writer(origin, taken, writers))
+        if spec["model"] in barred and spec["paid"]:
+            raise Blocked(f"the paid reviewer {spec['model']} contributed to this code: no independent reviewer (panel for {origin})")
+        if spec["model"] == oc.NON_AUTHOR_WRITER or (not spec["paid"] and (spec["model"] in barred or spec["model"] in down)):
+            panel.append(backup_writer(origin, taken, writers, contributors))
         else:
             panel.append(spec["model"])
-    if origin in panel or len(set(panel)) != len(panel):
+    if any(model in barred for model in panel) or len(set(panel)) != len(panel):
         raise Blocked(f"panel for {origin} is not independent: {panel}")
     return panel
 
@@ -292,7 +322,14 @@ def _origin(lineage, files):
 
 
 def panel_for_files(lineage, files, unavailable=()):
-    return panel_for(_origin(lineage, files), unavailable=unavailable)
+    return panel_for(_origin(lineage, files), unavailable=unavailable, contributors=lineage.contributors(files))
+
+
+def _served_of(models, model):
+    """The served model identities of the call that just wrote for `model`, as a list. A models object without them (the test fakes, a legacy
+    caller) is taken as the model itself."""
+    view = getattr(models, "served_identities", None)
+    return list(view(model)) if view is not None else [model]
 
 
 def _localized(result):
@@ -362,7 +399,8 @@ def _fix(reviewer, text, models):
 def _review(files, models, lineage, down):
     try:
         origin = _origin(lineage, files)
-        panel = panel_for(origin, unavailable=down)
+        contributors = lineage.contributors(files)
+        panel = panel_for(origin, unavailable=down, contributors=contributors)
     except Blocked as exc:
         return Outcome("blocked", str(exc))
     except oc.ProviderUnavailable as exc:
@@ -384,7 +422,7 @@ def _review(files, models, lineage, down):
             if slot in _paid_reviewers():               # the paid reviewer must answer READY: there is no substitute for it
                 return Outcome("provider-unavailable", f"paid review did not return READY ({_why(errors, slot)})")
             try:
-                backup = backup_writer(origin, used)
+                backup = backup_writer(origin, used, contributors=contributors)
             except oc.ProviderUnavailable as exc:
                 return Outcome("provider-unavailable", f"{exc} ({_why(errors, slot)})")
             used.add(backup)
@@ -441,12 +479,14 @@ def _ladder(job, models, lineage, clock):
             _reject(models, model, mode, f"{model} reply names files outside the job: {sorted(extra)}")
         if full and set(reply) != wanted:
             _reject(models, model, mode, f"{model} fresh reply is missing job files: {sorted(wanted - set(reply))}")
+        served_now = _served_of(models, model)
         for path in reply:
             previous = lineage.get(path)
             keep = bool(keep_origin and previous)
             origin = previous["origin"] if keep else model
             chain = (list(previous["chain"]) if keep else []) + [model]
-            lineage.set(path, model, origin, chain)
+            served = (lineage.served(path) if keep else []) + served_now
+            lineage.set(path, model, origin, chain, served=served)
 
     def attempt(model, mode, full=False, keep_origin=False):
         reply = models.call(model, mode, files)
@@ -558,6 +598,7 @@ def _ladder(job, models, lineage, clock):
             writer = lineage.get(_path_of(mine[0]))["last"]          # the current writer: the one that last wrote the finding's file
             models.stage_fix(mine)
             green_rows = {path: dict(lineage.get(path)) for path in files if lineage.get(path) is not None}
+            green_served = {path: lineage.served(path) for path in green_rows}
             try:
                 result = attempt(writer, "repair", keep_origin=True)
             except ModelFailed as exc:
@@ -567,7 +608,7 @@ def _ladder(job, models, lineage, clock):
             if not result.green:                 # the code that passed every test is never thrown away: put it back, the findings stay open
                 models.restore_green()
                 for path, row in green_rows.items():
-                    lineage.set(path, row["last"], row["origin"], row["chain"])
+                    lineage.set(path, row["last"], row["origin"], row["chain"], served=green_served[path])
                 return Outcome("review-fix", f"FIX FIRST repair round {rounds} by {writer} left the tests red ("
                                + ", ".join(sorted(result.failing)) + f"); the last green code is kept; {outcome.reason}", (), outcome.findings)
             outcome = _review(files, models, lineage, down)          # tests are green: the panel is recomputed from lineage and reviews again
