@@ -24,7 +24,7 @@ KEYS = {"free": FREE_KEY, "paid": PAID_KEY}
 DAY0 = calendar.timegm((2026, 11, 2, 0, 0, 0))
 DOTS = "dots-studio/dots-3-note-preview:free"
 XING = "xingchen-agi/xing4.0-29b-a4b:free"
-NORTH = "cohere/north-mini-code:free"
+REVIEWER_B = "nvidia/nemotron-3-ultra-550b-a55b:free"   # production reviewer_b since I14 (2026-11-04); it was North
 GLM_PAID = "z-ai/glm-5.3-flash"
 REMOVED = ("deepseek/deepseek-v4.1-flash-1017", "z-ai/glm-5.3-flash:free", "qwen/qwen3.8-27b:free", "thinkingmachines/inkling-small:free")
 WRITER_OK = "FILE: pieces/calc.py\n```python\nx = 1\n```\n"
@@ -376,7 +376,7 @@ def test_timeout_is_passed_to_the_transport(tmp_path):
     fake.on("/chat/completions", ok("hi"))
     built, _ = client(tmp_path, fake)
     built.call("reviewer_b", "system", "user", kind="text")
-    assert fake.posts()[0]["timeout"] == 600
+    assert fake.posts()[0]["timeout"] == 1200
 
 
 def test_client_error_is_not_retried(tmp_path):
@@ -647,7 +647,7 @@ def test_probe_makes_one_free_call_per_probe_model_and_never_calls_glm(tmp_path)
     out = tmp_path / "probe.json"
     summary = oc.probe(built, str(out))
     posts = fake.posts()
-    assert [p["body"]["model"] for p in posts] == [DOTS, XING, NORTH]
+    assert [p["body"]["model"] for p in posts] == [DOTS, XING, REVIEWER_B]
     assert all(p["headers"]["Authorization"] == "Bearer " + FREE_KEY for p in posts)
     assert set(summary["probes"]) == {"writer_a", "writer_b", "reviewer_b"}
     assert all(p["ok"] for p in summary["probes"].values())
@@ -671,7 +671,7 @@ def test_reviewer_defaults_are_the_owner_limits(tmp_path):
     built, _ = client(tmp_path, fake)
     built.call("reviewer_b", "system", "user", kind="reviewer")
     post = fake.posts()[0]
-    assert post["body"]["max_tokens"] == 16000 and post["timeout"] == 600
+    assert post["body"]["max_tokens"] == 32000 and post["timeout"] == 1200
 
 
 def test_glm_defaults_are_the_reviewer_limits(tmp_path):
@@ -906,7 +906,7 @@ def test_403_is_a_model_refusal_not_an_account_block_and_the_other_roles_still_w
         built.call("writer_a", "system", "user", kind="writer")
 
 
-# ---- 5. reviewer upstream 429 window (patch 2026-11-02): reviewers only, 15/30/60/120/180 s, Retry-After, 600 s review timeout
+# ---- 5. reviewer upstream 429 window (patch 2026-11-02): reviewers only, 15/30/60/120/180 s, Retry-After, the reviewer timeout_s (1200 s for production reviewer_b)
 
 def upstream_429(headers=None):
     return fail(429, "Provider returned error", headers, metadata={"raw": "rate-limited upstream"})
@@ -921,8 +921,8 @@ def test_reviewer_upstream_429_three_times_then_ready_passes_with_three_logged_r
     assert clock.slept == [15.0, 30.0, 60.0]
     assert [r["wait_s"] for r in built.retry_log] == [15.0, 30.0, 60.0]
     assert [r["attempt"] for r in built.retry_log] == [2, 3, 4]
-    assert all(r["model"] == NORTH and "rate-limited upstream" in r["error"] for r in built.retry_log)
-    assert built.breaker.streak.get(NORTH, 0) == 0
+    assert all(r["model"] == REVIEWER_B and "rate-limited upstream" in r["error"] for r in built.retry_log)
+    assert built.breaker.streak.get(REVIEWER_B, 0) == 0
 
 
 def test_reviewer_upstream_429_on_every_call_ends_the_window_and_drops_the_model(tmp_path):
@@ -933,7 +933,7 @@ def test_reviewer_upstream_429_on_every_call_ends_the_window_and_drops_the_model
         built.call("reviewer_b", "system", "user", kind="reviewer")
     assert len(fake.posts()) == 6 and clock.slept == [15.0, 30.0, 60.0, 120.0, 180.0]
     assert "rate-limited upstream" in str(caught.value)
-    assert built.breaker.open(NORTH)
+    assert built.breaker.open(REVIEWER_B)
 
 
 def test_retry_after_on_the_first_retry_sets_the_wait(tmp_path):
@@ -983,13 +983,13 @@ def test_a_retry_that_would_start_after_the_unit_deadline_is_not_sent(tmp_path):
     assert len(fake.posts()) == 1 and clock.slept == []
 
 
-def test_a_next_wait_past_the_600_second_review_timeout_ends_the_retries(tmp_path):
+def test_a_next_wait_past_the_1200_second_review_timeout_ends_the_retries(tmp_path):
     fake = Fake()
-    fake.on("/chat/completions", upstream_429({"retry-after": "580"}), upstream_429(), ok(REVIEW_OK))
+    fake.on("/chat/completions", upstream_429({"retry-after": "1180"}), upstream_429(), ok(REVIEW_OK))
     built, clock = client(tmp_path, fake)
     with pytest.raises(oc.ProviderUnavailable, match="review timeout"):
         built.call("reviewer_b", "system", "user", kind="reviewer")
-    assert len(fake.posts()) == 2 and clock.slept == [580.0]
+    assert len(fake.posts()) == 2 and clock.slept == [1180.0]
 
 
 def test_a_reviewer_server_error_still_counts_toward_the_two_error_rule(tmp_path):
