@@ -126,11 +126,15 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I66 | (I49 consequence) The byte-based worst case is ~3x the old estimate, so fewer paid GLM reviews fit under the $0.05 job review ceiling (p0_gates pins 0.05) | Owner decision: raise the ceiling or accept fewer reviews | Decided |
 | I67 | (I53 consequence) Loop jobs can no longer edit `scripts/source/*.py`, `monitor/`, `config/`, `tools/sandbox/`; the pilot jobs under docs/pilot are now refused (historical loaders waived in tests). A controller change needs a trusted workflow that does not exist yet | Owner decision: accept, or design the trusted workflow | Decided |
 
-| I68 ✅ cloud (`a860626`, merged `1934ce6`); Windows rerun pending | Windows: `process_start` reads only /proc, so reused-pid detection (I41, I57) does nothing on Windows; 4 tests fail there (`b6ada87`) | Windows start identity via ctypes GetProcessTimes (branch `windows-fixes`) | Passes on Windows |
-| I69 ✅ cloud (`a10b631`, merged `1934ce6`); Windows rerun pending | Windows: `test_restore_green_puts_the_green_files_back_from_disk_when_memory_is_gone` fails (restored files differ) | Find the Windows cause (newlines/paths) and fix the checkpoint code | Passes on Windows |
-| I70 ✅ cloud (`053f87e`, merged `1934ce6`); Windows rerun pending | Windows: `test_a_symlink_into_secrets_is_refused` errors (WinError 1314, no symlink privilege) | Skip only when the OS refuses the symlink | Passes or skips cleanly on Windows |
-| I71 ✅ cloud (`984d403`, merged `1934ce6`); Windows rerun pending | Windows: Vite binds `localhost` (::1) but the Playwright configs poll 127.0.0.1:5173, so e2e times out | Bind 127.0.0.1 explicitly | `npm run test:e2e` passes on Windows unmodified |
-| I72 ✅ cloud (`5241734; runtime 0, 11 moderate dev-only (eslint tree)`, merged `1934ce6`); Windows rerun pending | `npm ci` now reports 11 moderate vulnerabilities (was 5) | Audit runtime vs dev; fix runtime ones | Runtime audit 0 |
+| I68 ✅ cloud (`a860626`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: `process_start` reads only /proc, so reused-pid detection (I41, I57) does nothing on Windows; 4 tests fail there (`b6ada87`) | Windows start identity via ctypes GetProcessTimes (branch `windows-fixes`) | Passes on Windows |
+| I69 ✅ cloud (`a10b631`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: `test_restore_green_puts_the_green_files_back_from_disk_when_memory_is_gone` fails (restored files differ) | Find the Windows cause (newlines/paths) and fix the checkpoint code | Passes on Windows |
+| I70 ✅ cloud (`053f87e`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: `test_a_symlink_into_secrets_is_refused` errors (WinError 1314, no symlink privilege) | Skip only when the OS refuses the symlink | Passes or skips cleanly on Windows |
+| I71 ✅ cloud (`984d403`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: Vite binds `localhost` (::1) but the Playwright configs poll 127.0.0.1:5173, so e2e times out | Bind 127.0.0.1 explicitly | `npm run test:e2e` passes on Windows unmodified |
+| I72 ✅ cloud (`5241734; runtime 0, 11 moderate dev-only (eslint tree)`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | `npm ci` now reports 11 moderate vulnerabilities (was 5) | Audit runtime vs dev; fix runtime ones | Runtime audit 0 |
+
+| I73 | Windows: `p1b_production._produced` reads text-mode, so an untouched CRLF file looks produced and a candidate folder is written (`7bc27a0`) | Exact-bytes read (branch `crlf-fixes`) | Passes on Windows |
+| I74 | Windows, production bug: `fix_loop._prepare_job_folder` saves originals as `\r\r\n` and kill-recovery restores doubled newlines, so a killed job restarts from corrupted originals | Exact-bytes save and restore (`crlf-fixes`) | Passes on Windows |
+| I75 | Sweep every text-mode read/write of file contents that is compared, hashed or restored | One exact-bytes helper everywhere, plus a guard test (`crlf-fixes`) | Windows suite 0 failures |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
