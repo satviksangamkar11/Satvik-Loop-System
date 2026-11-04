@@ -192,7 +192,7 @@ def _from_answer(raw, root, job_name, plan_dir):
         return _outcome("planner-invalid", "the answer text is not JSON")
     if not isinstance(answer, dict):
         return _outcome("planner-invalid", "the answer is not a JSON object")
-    problems = _problems(answer, job_name)
+    problems = _problems(answer, job_name, root, plan_dir)
     if problems:
         return _outcome("planner-invalid", "; ".join(problems))
     return _write(answer, plan_dir)
@@ -219,7 +219,66 @@ def spec_problems(spec_md):
     return out
 
 
-def _problems(answer, job_name):
+def _path_problem(rel, root, context):
+    """None when `rel` is a repo-relative path the engine accepts (fix_loop._validate_path: no absolute, drive or `..` path, no secrets
+    component, inside the repo); else why not. A backslash is refused too, so no Windows-style path reaches the plan folder."""
+    if not isinstance(rel, str) or not rel:
+        return f"{context}: a path must be a non-empty string"
+    if "\\" in rel or rel.startswith("/") or re.match(r"^[A-Za-z]:", rel):
+        return f"{context}: absolute, drive or backslash path not allowed: {rel!r}"
+    try:
+        fl._validate_path(rel, Path(root), context)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _control_sources(job):
+    """Every source the job's negative controls reference (the planner's controls must be exactly these)."""
+    return {src for c in (job.get("negative_controls") or []) if isinstance(c, dict)
+            for src in (c.get("replace") or {}).values() if isinstance(src, str)}
+
+
+def _path_problems(answer, job, root, plan_dir):
+    """Every path the answer would write or the job would install, checked before any write: the acceptance files are exactly the job's
+    acceptance_tests, the controls are exactly the negative controls' sources (no extra file), and each destination is a safe relative path
+    whose resolved location is inside plan_dir/files."""
+    problems = []
+    base = (Path(plan_dir) / "files").resolve()
+    for key, expected, label in (("acceptance", set(job.get("acceptance_tests") or []), "acceptance"),
+                                 ("controls", _control_sources(job), "controls")):
+        files = answer.get(key)
+        if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
+            problems.append(f"{label} must map each file path to its text")
+            continue
+        for rel in files:
+            problem = _path_problem(rel, root, f"{label} path")
+            if problem:
+                problems.append(problem)
+                continue
+            if not (base / rel).resolve().is_relative_to(base):
+                problems.append(f"{label} path escapes the plan folder: {rel!r}")
+        extra = sorted(str(p) for p in set(files) - expected)
+        if extra:
+            problems.append(f"{label} has files the job does not reference: {extra}")
+        if label == "acceptance" and set(files) != expected:
+            problems.append("acceptance files must be exactly the job's acceptance_tests")
+        if label == "controls" and set(files) != expected:
+            problems.append(f"controls must be exactly the negative control sources; missing {sorted(expected - set(files))}")
+    for rel in [job.get("spec")] + list(job.get("files") or []) + list(job.get("tests") or []) + list(job.get("acceptance_tests") or []):
+        problem = _path_problem(rel, root, "job path")
+        if problem:
+            problems.append(problem)
+    for c in job.get("negative_controls") or []:
+        for target, src in ((c.get("replace") or {}).items() if isinstance(c, dict) else []):
+            for rel in (target, src):
+                problem = _path_problem(rel, root, "negative control path")
+                if problem:
+                    problems.append(problem)
+    return problems
+
+
+def _problems(answer, job_name, root, plan_dir):
     missing = [key for key in ("plan_md", "spec_md", "job", "acceptance", "controls", "expected_lines") if key not in answer]
     if missing:
         return [f"missing {', '.join(missing)}"]
@@ -229,6 +288,7 @@ def _problems(answer, job_name):
     problems = []
     if job.get("name") != job_name:
         problems.append("the job name differs from the job being planned")
+    problems += _path_problems(answer, job, root, plan_dir)          # before anything is written: a path that escapes is refused here
     try:
         p1b.check_production_job(job)
     except p1b.JobRefused as exc:
@@ -239,11 +299,9 @@ def _problems(answer, job_name):
     except jsonschema.ValidationError as exc:
         problems.append("job schema: " + exc.message)
     problems += spec_problems(str(answer["spec_md"]))
-    if set(answer["acceptance"]) != set(job.get("acceptance_tests") or []):
-        problems.append("acceptance files must be exactly the job's acceptance_tests")
     for control in job.get("negative_controls") or []:
         for source in (control.get("replace") or {}).values():
-            if source not in answer["controls"]:
+            if isinstance(answer["controls"], dict) and source not in answer["controls"]:
                 problems.append(f"negative control source {source} is missing from controls")
     lines = answer["expected_lines"]
     if not isinstance(lines, dict) or any(not isinstance(v, int) for v in lines.values()):
@@ -264,16 +322,22 @@ def _write(answer, plan_dir):
     if job_path.is_file():                              # a restart: the artifacts of this answer are already written and read-only
         return _summary(plan_dir)
     job = answer["job"]
+    base = (plan_dir / "files").resolve()
+    targets = {}
+    for rel, text in {**answer["acceptance"], **answer["controls"]}.items():   # every destination is checked before the first write
+        target = (plan_dir / "files" / rel).resolve()
+        if not target.is_relative_to(base):
+            raise ValueError(f"refusing to write outside the plan folder: {rel!r}")
+        targets[target] = str(text)
     plan_dir.mkdir(parents=True, exist_ok=True)
     (plan_dir / "PLAN.md").write_text(str(answer["plan_md"]), encoding="utf-8")
     (plan_dir / "SPEC.md").write_text(str(answer["spec_md"]), encoding="utf-8")
     (plan_dir / "expected_lines.json").write_text(json.dumps(answer["expected_lines"], indent=2, sort_keys=True), encoding="utf-8")
-    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")
-    os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
-    for rel, text in {**answer["acceptance"], **answer["controls"]}.items():
-        target = plan_dir / "files" / rel
+    for target, text in targets.items():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(text), encoding="utf-8")
+        target.write_text(text, encoding="utf-8")
+    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")   # job.json last: its presence means the plan is complete
+    os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
     return _summary(plan_dir)
 
 

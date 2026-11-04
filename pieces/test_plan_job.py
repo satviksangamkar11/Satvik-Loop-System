@@ -306,6 +306,52 @@ def test_acceptance_files_must_match_the_job_exactly(repo, tmp_path, monkeypatch
     assert plan(repo)["state"] == "planner-invalid"
 
 
+# ---------------------------------------------------------------- I37: every path is checked before any write (Codex audit)
+
+def nothing_written_but_the_intent(plan_dir):
+    return not any((plan_dir / name).exists() for name in ("PLAN.md", "SPEC.md", "expected_lines.json", "job.json", "files"))
+
+
+@pytest.mark.parametrize("bad", ["../x", "/abs/x", "C:\\x", "pieces/../../x"])
+def test_an_escaping_control_path_is_refused_before_any_write(repo, tmp_path, monkeypatch, bad):
+    answer = good_answer(controls={bad: "x" + chr(10)})
+    answer["job"]["negative_controls"][0]["replace"]["pieces/calc.py"] = bad
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    before = Path("/abs/x").exists()
+    result = plan(repo)
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    assert result["state"] == "planner-invalid", result
+    assert nothing_written_but_the_intent(plan_dir)
+    assert not (plan_dir / "x").exists() and Path("/abs/x").exists() == before
+
+
+@pytest.mark.parametrize("bad", ["../x", "/abs/x", "C:\\x"])
+def test_an_escaping_acceptance_path_is_refused_before_any_write(repo, tmp_path, monkeypatch, bad):
+    answer = good_answer(acceptance={bad: "def test_x():" + chr(10) + "    assert True" + chr(10)})
+    answer["job"]["acceptance_tests"] = [bad]
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid", result
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
+def test_an_extra_control_the_job_does_not_reference_is_refused(repo, tmp_path, monkeypatch):
+    extra = "tests/controls/extra.py"
+    answer = good_answer(controls={**good_answer()["controls"], extra: "x" + chr(10)})
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid" and "does not reference" in result["reason"] and extra in result["reason"]
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
+def test_a_missing_control_source_is_refused(repo, tmp_path, monkeypatch):
+    answer = good_answer(controls={})
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid" and "negative control" in result["reason"]
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
 # ---------------------------------------------------------------- what is written, and that the job is then fixed
 
 def test_the_plan_folder_holds_the_plan_spec_job_and_files_and_the_job_is_read_only(repo, tmp_path, monkeypatch):
