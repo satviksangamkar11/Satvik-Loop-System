@@ -96,6 +96,10 @@ JobDetail is a JobSummary plus these fields:
   - `restore-green`
   - `finish` (`end_state`, `reason`)
   - `merge` (`merge_state`, `head`, `attempts`)
+- **Attempt fields:** `status` is the attempt status (`ok`, `failed`, `rejected`, or `running` before the end), never the HTTP code. The engine
+  records the HTTP code of the last request; the API derives the status from it and from the engine's failed flag: a call that did not fail is
+  `ok`; a failed call whose HTTP reply was a 2xx (the reply could not be used) is `rejected`; any other failure is `failed`. The HTTP code is not
+  shown (no field in this contract).
 - **Rendering rules:**
   - A stage repeated N times appears N times.
   - A stage that never ran has **no** events.

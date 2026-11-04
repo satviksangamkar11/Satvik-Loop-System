@@ -366,6 +366,33 @@ def test_running_job_detail_matches_fixture_and_its_events(world):
     assert [e["seq"] for e in later["events"]] == [4, 5]
 
 
+def test_attempt_end_status_is_the_attempt_status_not_the_http_code(world):
+    """M1: the engine's attempt-end `status` is the HTTP code of its last request. The API shows the contract's attempt_status instead:
+    ok when the call did not fail, rejected when a 2xx reply could not be used, failed for any other failure. No HTTP code, no failed flag."""
+    job_id = "fl-top-20261104-0900-a1a1"
+    start = {"type": "attempt-start", "stage": "writer_a_write", "role": "writer_a", "mode": "write",
+             "model": "dots-studio/dots-3-note-preview:free", "via": "openrouter", "effort": "high"}
+    end = {"type": "attempt-end", "prompt_tokens": 10, "completion_tokens": 5, "reasoning_tokens": None, "finish_reason": "stop",
+           "seconds": 1.5, "requests": 1}
+    events = [
+        {"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+        dict(start, attempt_id="a1"), dict(end, attempt_id="a1", status=200, failed=False, error=None),
+        dict(start, attempt_id="a2"), dict(end, attempt_id="a2", status=200, failed=True, error="the reply has no file blocks"),
+        dict(start, attempt_id="a3"), dict(end, attempt_id="a3", status=429, failed=True, error="HTTP 429: rate limited"),
+    ]
+    add_job(world, job_id, events=events, end="passed", state="passed", started=("writer_a_write",), registry="passed")
+    reindex(world)
+    rows = world.client.get(f"/api/loops/{job_id}/events", params={"after": 0}).json()["events"]
+    ends = {e["attempt_id"]: e for e in rows if e["type"] == "attempt-end"}
+    assert {k: v["status"] for k, v in ends.items()} == {"a1": "ok", "a2": "rejected", "a3": "failed"}
+    assert ends["a3"]["error"] == "HTTP 429: rate limited" and ends["a2"]["error"] == "the reply has no file blocks"
+    for row in rows:
+        if row["type"].startswith("attempt-"):
+            assert not isinstance(row["status"], int) and row["status"] in ("running", "ok", "failed", "rejected")
+            assert "failed" not in row and "requests" not in row
+    assert shape_diff(fixture("running_job.json")["events"]["events"][2], ends["a1"]) == []
+
+
 def test_failed_review_job_matches_fixture(world):
     scripted_review_open(world)
     body = world.client.get(f"/api/loops/{JOB_ID_REVIEW}").json()

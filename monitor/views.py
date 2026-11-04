@@ -278,14 +278,31 @@ ATTEMPT_FIELDS = ("attempt_id", "stage", "role", "mode", "model", "via", "effort
                   "reasoning_tokens", "finish_reason", "seconds", "error")
 
 
+def _is_http_success(code):
+    return isinstance(code, int) and not isinstance(code, bool) and 200 <= code < 300
+
+
+def _attempt_status(e):
+    """The contract's attempt_status (ok | failed | rejected) for an attempt-end. The engine's `status` is the HTTP status of the last
+    request (a number), so it is not the attempt status: the `failed` flag decides. A call that did not fail is ok. A failed call whose
+    HTTP reply arrived with a 2xx (the reply came back but the job could not use it) is rejected; any other failure is failed."""
+    if not e.get("failed"):
+        return "ok"
+    return "rejected" if _is_http_success(e.get("status")) else "failed"
+
+
 def _event(e):
-    """One event as the API shows it: job_id dropped; an attempt event carries every attempt field (null when the engine has none yet)."""
-    out = {k: v for k, v in e.items() if k not in ("job_id", "failed")}
+    """One event as the API shows it: the engine's job_id, failed and requests (its request count) are dropped, none is in the contract. An
+    attempt event carries every attempt field (null when the engine has none yet); its status is the contract's attempt_status, never the
+    HTTP code."""
+    out = {k: v for k, v in e.items() if k not in ("job_id", "failed", "requests")}
     if e.get("type") in ("attempt-start", "attempt-end"):
         for key in ATTEMPT_FIELDS:
             out.setdefault(key, None)
         if e.get("type") == "attempt-start" and out.get("status") is None:
             out["status"] = "running"
+        if e.get("type") == "attempt-end":
+            out["status"] = _attempt_status(e)
     return out
 
 
