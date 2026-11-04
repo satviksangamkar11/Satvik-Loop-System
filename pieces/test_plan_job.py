@@ -322,6 +322,7 @@ def test_a_different_request_under_the_same_name_is_refused_and_the_old_plan_is_
 def test_the_same_request_with_other_files_is_a_different_request(repo, tmp_path, monkeypatch):
     log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
     assert plan(repo)["state"] == "planned"
+    (repo / "pieces" / "test_calc.py").write_text("def test_calc():" + chr(10) + "    pass" + chr(10), encoding="utf-8")
     other = plan(repo, files=["pieces/calc.py", "pieces/test_calc.py"])
     assert other["state"] == "request-conflict" and len(calls(log)) == 1
 
@@ -539,6 +540,96 @@ def test_an_approval_with_a_changed_test_file_is_409_plan_changed(repo, tmp_path
     with pytest.raises(ApiError) as changed:
         actions.approve_plan("p2", approved["job_sha256"], False)
     assert changed.value.status == 409 and changed.value.code == "plan-changed"
+
+
+# ---------------------------------------------------------------- I55: no secret goes to the planner, and none is kept (Codex audit)
+
+def test_a_file_under_secrets_is_refused_before_any_call_or_intent(repo, tmp_path, monkeypatch):
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "openrouter_key.txt").write_text("sk-or-v1-abcdefghijklmnop" + chr(10), encoding="utf-8")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=["secrets/openrouter_key.txt"])
+    assert result["state"] == "planner-refused" and "secret" in result["reason"], result
+    assert calls(log) == [] and not (repo / "_loop" / "calc" / "plan" / "INTENT.json").exists()
+
+
+@pytest.mark.parametrize("rel", ["config/api_token.txt", "pieces/my_secret.py", "deploy/.env", "keys/server.pem", "home/id_rsa"])
+def test_a_secret_shaped_file_name_is_refused(repo, tmp_path, monkeypatch, rel):
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x" + chr(10), encoding="utf-8")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=[rel])
+    assert result["state"] == "planner-refused", result
+    assert calls(log) == []
+
+
+def test_a_symlink_into_secrets_is_refused(repo, tmp_path, monkeypatch):
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "notes.txt").write_text("x" + chr(10), encoding="utf-8")
+    (repo / "pieces" / "notes.py").symlink_to(repo / "secrets" / "notes.txt")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=["pieces/notes.py"])
+    assert result["state"] == "planner-refused" and calls(log) == []
+
+
+def test_a_request_holding_a_credential_shape_is_refused(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, request="Write calculate_total; use key sk-or-v1-abcdefghijklmnop123456 for it")
+    assert result["state"] == "planner-refused" and "credential-shaped" in result["reason"]
+    assert calls(log) == []
+
+
+def test_a_loaded_key_value_in_the_reply_is_scrubbed_and_the_reply_is_refused(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("SATVIK_TEST_KEY_VALUE", "loaded-value-0123456789")
+    fake_run(tmp_path, monkeypatch, envelope(good_answer(spec_md="# Spec" + chr(10) + "- KNOWN: uses loaded-value-0123456789 here" + chr(10))))
+    result = plan(repo)
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    assert result["state"] == "planner-refused" and "loaded-key" in result["reason"], result
+    saved = (plan_dir / "raw_response.json").read_text(encoding="utf-8")
+    assert "loaded-value-0123456789" not in saved and "[REDACTED]" in saved
+    assert not (plan_dir / "job.json").exists() and not (plan_dir / "SPEC.md").exists()
+
+
+def test_a_bearer_token_in_the_reply_is_scrubbed_from_the_saved_answer(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer(spec_md="# Spec" + chr(10) + "- KNOWN: header Bearer abcdefghijklmnop" + chr(10))))
+    result = plan(repo)
+    saved = (repo / "_loop" / "calc" / "plan" / "raw_response.json").read_text(encoding="utf-8")
+    assert result["state"] == "planner-refused" and "bearer" in result["reason"]
+    assert "abcdefghijklmnop" not in saved
+
+
+def test_the_planner_error_text_is_scrubbed_from_the_attempt_event(repo):
+    def boom(prompt, cwd, claude_cmd, timeout_s):
+        raise OSError("the key sk-or-v1-abcdefghijklmnop123456 was rejected")
+    with pytest.raises(OSError):
+        plan(repo, runner=boom)
+    start, end = events_of(repo)
+    assert end["failed"] is True and "sk-or-" not in end["error"] and "[REDACTED]" in end["error"]
+
+
+def test_redact_names_what_it_found_and_leaves_no_secret_text():
+    import redact
+    text, kinds = redact.scan("a sk-ant-abcdefgh1234 and Bearer abcdefghijkl and loaded-value-0123456789", ["loaded-value-0123456789"])
+    assert "sk-ant-" not in text and "abcdefghijkl" not in text and "loaded-value" not in text
+    assert kinds == ["loaded-key", "anthropic-key", "bearer"]
+
+
+def test_the_repair_evidence_scrub_uses_the_loaded_values(monkeypatch):
+    import p1b_production as p1
+    monkeypatch.setenv("SATVIK_TEST_KEY_VALUE", "loaded-value-0123456789")
+    values = p1.loaded_scrub_values({"free": "other-loaded-value-99"})
+    text = p1._scrubbed("a loaded-value-0123456789 b other-loaded-value-99 c sk-or-v1-abcdefghijk", values)
+    assert "loaded-value" not in text and "other-loaded" not in text and "sk-or-" not in text
+
+
+def test_a_production_run_scrubs_the_keys_it_was_given(monkeypatch):
+    import p1b_production as p1
+    seen = {}
+    monkeypatch.setattr(p1, "_run", lambda job, root, status_dir_job, **kw: seen.update(kw) or {"name": "x", "state": "passed"})
+    p1.run(job={}, root=".", status_dir_job=Path("."), sandbox=None, protected=None, acceptance_lock=None, originals=None, evidence={},
+           client=None, parse_files=None, check_path=None, content_problem=None, scrub_keys={"free": "given-key-value-123456"})
+    assert "given-key-value-123456" in seen["scrub_keys"]
 
 
 # ---------------------------------------------------------------- what is written, and that the job is then fixed

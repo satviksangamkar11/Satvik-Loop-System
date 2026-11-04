@@ -27,6 +27,7 @@ import fix_loop as fl
 import p0_gates as gates
 import openrouter_call as oc
 import p1b_routing as p1b
+import redact
 
 PLAN_TIMEOUT_S = 1800
 MAX_FILES = 30
@@ -91,6 +92,9 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner={model})")
     root, plan_dir = Path(root), Path(plan_dir)
     intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
+    problem = input_problem(root, files, request)                     # I55: no secret file, key or credential is sent (before any intent)
+    if problem:
+        return _outcome("planner-refused", problem)
     fingerprint = request_fingerprint(job_name, request, files, via, model, effort)
     if intent_path.is_file():
         return _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir)
@@ -115,6 +119,7 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
             with _planner_attempt(plan_dir, model, via, effort) as attempt:
                 _code, raw = runner(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+                raw = _scrub_reply(raw)                               # I55: scrubbed and scanned before it is kept or read
                 attempt["raw"] = raw
     except subprocess.TimeoutExpired:
         return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
@@ -189,7 +194,7 @@ def _planner_attempt(plan_dir, model, via, effort):
     try:
         yield attempt
     except BaseException as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        error = redact.scrub(f"{type(exc).__name__}: {exc}", _secret_values())
         raise
     finally:
         if error is None:
@@ -214,6 +219,68 @@ def _envelope_error(raw):
     return None
 
 
+SECRET_PART = re.compile(r"(?i)(^|[._-])(secrets?|credentials?|tokens?|passwords?|api[._-]?keys?)([._-]|$)")
+SECRET_FILE = re.compile(r"(?i)(\.env(\.|$)|\.(key|pem|p12|pfx|jks|kdbx|netrc)$|^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|^\.(npmrc|pypirc)$)")
+
+
+def _secret_values():
+    """The exact key values to scrub from anything the planner writes: the keys the adapter loads (secrets/ or the environment) and the
+    key-like environment variables (redact.env_key_values)."""
+    try:
+        keys = oc.load_keys()
+    except Exception:
+        keys = {}
+    return redact.values_of(keys, redact.env_key_values())
+
+
+def _file_problem(root, rel):
+    """None when `rel` may be sent to the planner as a file; else why not. It must be a repo path the engine accepts, a file, and have no part
+    named like a secret (secrets/, a *secret* or *token* name, a key, .env or netrc file), and the same holds for the file it resolves to, so a
+    symlink into secrets/ is refused too (I55)."""
+    problem = _path_problem(rel, root, "planner file")
+    if problem:
+        return problem
+    if not (Path(root) / rel).is_file():
+        return f"planner file is not a file under the repo: {rel}"
+    resolved = (Path(root) / rel).resolve().relative_to(Path(root).resolve())
+    for path in (Path(rel), resolved):
+        for part in path.parts:
+            if SECRET_PART.search(part) or SECRET_FILE.search(part):
+                return f"planner file {rel!r} has a secret-shaped part ({part!r}): it is not sent to the planner"
+    return None
+
+
+def input_problem(root, files, request):
+    """Why the planner may not be given these files or this request (None when it may): a file under secrets/ or with a secret-shaped name, or a
+    request that holds a loaded key or a credential shape. Checked before any intent is written or any call is made (I55)."""
+    for rel in files:
+        problem = _file_problem(Path(root), rel)
+        if problem:
+            return problem
+    _text, kinds = redact.scan(request, _secret_values())
+    if kinds:
+        return f"the request holds credential-shaped text ({', '.join(kinds)}): it is not sent to the planner"
+    return None
+
+
+def _scrub_reply(raw):
+    """The planner's raw reply, scrubbed (redact.scan) before it is kept or read. A reply that held a loaded key or a credential shape is kept
+    scrubbed in a JSON envelope with its kinds in `redaction_hits`, and _from_answer refuses it: its text is never used as an answer (I55)."""
+    if not isinstance(raw, str):
+        return raw
+    scrubbed, kinds = redact.scan(raw, _secret_values())
+    if not kinds:
+        return scrubbed
+    try:
+        envelope = json.loads(scrubbed)
+    except ValueError:
+        envelope = None
+    if not isinstance(envelope, dict):
+        envelope = {"is_error": True, "result": scrubbed[:4000]}
+    envelope["redaction_hits"] = kinds
+    return json.dumps(envelope)
+
+
 def _prompt(root, request, files):
     parts = [INSTRUCTIONS, "REQUEST:", request, "", "FILES (chosen by the controller):"]
     base = root.resolve()
@@ -221,6 +288,9 @@ def _prompt(root, request, files):
         path = (root / rel).resolve()
         if base not in path.parents or not path.is_file():
             raise ValueError(f"planner file is not a file under the repo: {rel}")
+        problem = _file_problem(root, rel)                              # the same rule as input_problem: a secret is never read into a prompt
+        if problem:
+            raise ValueError(problem)
         parts.append(f"### {rel}" + NL + path.read_text(encoding="utf-8"))
     return NL.join(parts)
 
@@ -232,6 +302,9 @@ def _from_answer(raw, root, job_name, plan_dir):
         return _outcome("planner-invalid", "the output is not JSON")
     if not isinstance(envelope, dict):
         return _outcome("planner-invalid", "the output is not a JSON object")
+    if envelope.get("redaction_hits"):                                   # I55: a reply that held a key or a credential is never used
+        kinds = ", ".join(str(k) for k in envelope["redaction_hits"])
+        return _outcome("planner-refused", f"the planner's reply held credential-shaped text ({kinds}): it is refused and not used")
     reported = [key for key in ("mcp_servers", "mcpServers", "mcp", "plugins") if envelope.get(key)]
     if reported:
         return _outcome("planner-refused", f"the session reports MCP servers or plugins ({', '.join(reported)}); the planner runs with none")

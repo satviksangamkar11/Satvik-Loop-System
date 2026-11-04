@@ -269,11 +269,14 @@ def create_plan(body):
         raise ApiError(400, "bad-request", "files is a list of repo paths")
     if len(files) > MAX_PLAN_FILES:
         raise ApiError(400, "too-many-files", f"at most {MAX_PLAN_FILES} files may be sent to the planner", {"max": MAX_PLAN_FILES})
+    root = repo()
+    problem = plan_job.input_problem(root, files, request)              # I55: a secret file, key or credential is never sent to the planner
+    if problem:
+        raise ApiError(400, "secret-input", problem)
     if _profile_name() == "test":
         raise ApiError(422, "planner-refused-in-test", "test profile: free only, and its planner is fake")
     if (home / "STOP").exists():
         raise ApiError(409, "stop-on", "STOP is on: no new starts")
-    root = repo()
     conflict = plan_job.intent_conflict(root, name, request, files)      # a plan name is bound to its request (I51)
     if conflict is not None:
         raise ApiError(409, "plan-request-conflict", conflict, {"name": name})
