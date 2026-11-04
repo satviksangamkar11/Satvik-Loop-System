@@ -31,6 +31,7 @@ import inspect
 
 import atomic_json
 import claude_code as cc
+from exact_text import read_text_exact, write_text_exact    # noqa: F401 (re-exported: the I69 helpers live in exact_text)
 import event_log
 import openrouter_call as oc
 import opus_repair
@@ -241,17 +242,6 @@ def client_for(root, job, keys=None):
     return client
 
 
-def read_text_exact(path) -> str:
-    """The file's text exactly as its bytes are (utf-8, no newline translation). Text mode would turn \\r\\n into \\n on Windows and so
-    drop bytes the hashes count (I69)."""
-    return Path(path).read_bytes().decode("utf-8")
-
-
-def write_text_exact(path, text) -> None:
-    """Writes the text as exactly its utf-8 bytes. Text mode would write \\r\\n on Windows, so the disk would not hash to the text (I69)."""
-    Path(path).write_bytes(text.encode("utf-8"))
-
-
 def restore_files(root, originals):
     """Puts every job file back to its original text; a file that did not exist before the job is removed."""
     for rel, text in (originals or {}).items():
@@ -295,7 +285,7 @@ def read_green_checkpoint(folder):
     """The green checkpoint {tested_hash, files} from disk, or None when it is missing, unreadable or does not hash to its own tested_hash
     (fail closed: a damaged checkpoint is never restored)."""
     try:
-        data = json.loads((Path(folder) / GREEN_FILE).read_text(encoding="utf-8"))
+        data = json.loads(read_text_exact(Path(folder) / GREEN_FILE))
         files = data["files"]
         if not isinstance(files, dict) or _texts_hash(files) != data["tested_hash"]:
             return None
@@ -322,7 +312,7 @@ def _produced(root, files, originals):
     """True when a candidate exists: some job file on disk differs from its original. A stop before any write has no candidate."""
     for rel in files:
         path = Path(root) / rel
-        now = path.read_text(encoding="utf-8") if path.is_file() else None
+        now = read_text_exact(path) if path.is_file() else None      # exact bytes, as the originals were captured (I73): text mode turns CRLF into LF
         if now != (originals or {}).get(rel):
             return True
     return False
@@ -751,7 +741,9 @@ class Production:
     def _apply_edits(self, text):
         """(reply, None) when every SEARCH/REPLACE block applies to the job files as they are on disk and the result passes the checks a whole-file
         reply passes; else (None, why). Nothing is applied when any block is refused."""
-        contents = {rel: (self.root / rel).read_text(encoding="utf-8") for rel in self.files if (self.root / rel).is_file()}
+        # SEARCH blocks are LF text from the model: the files are matched as LF (read exact, CRLF folded), or a CRLF file could never match
+        # and an edit would leave mixed line endings. The result is checked and written back as its own text, never compared with the originals here.
+        contents = {rel: read_text_exact(self.root / rel).replace("\r\n", "\n") for rel in self.files if (self.root / rel).is_file()}
         changed, refusals = apply_edits(text, contents)
         if refusals:
             return None, "; ".join(refusals)
