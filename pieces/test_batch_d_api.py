@@ -1,4 +1,4 @@
-"""Batch D (API and UI, codex audit 2026-11-04): I45, I58, I59, I60. Fakes only: the monitor API on a temp home (test_api_contract's world),
+"""Batch D (API and UI, codex audit 2026-11-04): I45, I59, I60. Fakes only: the monitor API on a temp home (test_api_contract's world),
 a scripted verifier, a flaky file replacer. No network, no model call.
 
 I45 one authoritative stage validator (config_api.authoritative_problems) runs at PUT /stages, POST /jobs and PATCH /loops/{id}/stages,
@@ -195,3 +195,42 @@ def test_I59_a_5xx_is_aborted_so_the_same_key_may_run_again(world, monkeypatch):
     retried = world.client.post("/api/system/stop", json={"on": True}, headers={"Idempotency-Key": "stop-5xx-000001"})
     assert retried.status_code == 200 and retried.json() == {"stop": True}
     world.client.post("/api/system/stop", json={"on": False})
+
+
+# ---------------------------------------------------------------- I60: slow work is off the event loop and off the effects lock
+
+def test_I60_stop_and_health_answer_while_a_verify_is_in_progress(world, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def slow_verify(client, model_id, contract):                # a fake slow verifier: the model call is the only slow part
+        started.set()
+        assert release.wait(30)
+        return {"passed": True}
+    monkeypatch.setattr(mc, "verify_model", slow_verify)
+    box = {}
+
+    def call_verify():
+        box["r"] = world.client.post("/api/models/verify", json={"model_id": DOTS, "contract": "writer_file_blocks"},
+                                     headers={"Idempotency-Key": "verify-slow-0001"})
+    worker = threading.Thread(target=call_verify, daemon=True)
+    worker.start()
+    try:
+        assert started.wait(30), "the verify never started"
+        t0 = time.monotonic()
+        health = world.client.get("/api/system/health")
+        stop = world.client.post("/api/system/stop", json={"on": True}, headers={"Idempotency-Key": "stop-verify-0001"})
+        elapsed = time.monotonic() - t0
+        assert worker.is_alive()                                  # the verify is still in its model call
+        assert health.status_code == 200
+        assert stop.status_code == 200 and stop.json() == {"stop": True}
+        assert elapsed < 10, f"STOP and health took {elapsed:.1f}s while a verify was in progress"
+        # the same verify key, retried while the first is in flight: reconciled, not run again
+        dup = world.client.post("/api/models/verify", json={"model_id": DOTS, "contract": "writer_file_blocks"},
+                                headers={"Idempotency-Key": "verify-slow-0001"})
+        assert dup.status_code == 409 and dup.json()["error"]["code"] == "operation-in-progress"
+    finally:
+        release.set()
+        worker.join(60)
+        world.client.post("/api/system/stop", json={"on": False}, headers={"Idempotency-Key": "stop-verify-0002"})
+    assert not worker.is_alive()
+    assert box["r"].status_code == 200 and box["r"].json()["result"] == "pass"

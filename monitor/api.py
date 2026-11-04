@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import job_history  # the engine's module (monitor/__init__ puts scripts/source on sys.path): the index is rebuilt from the files at startup
@@ -93,15 +94,21 @@ def _home():
     return satvik_home()
 
 
-def _run(request: Request, body: dict, fn):
-    """A mutation: once per Idempotency-Key. fn(home, body) -> (status, body). Returns the response."""
+def _run(request: Request, body: dict, fn, slow: bool = False):
+    """A mutation: once per Idempotency-Key (store.respond). fn(home, body) -> (status, body). Returns the response. slow: the work calls a
+    model, so it does not hold the effects lock (I60)."""
     key = request.headers.get("Idempotency-Key")
     home = _home()
     fingerprint = request_fingerprint(request.method, request.url.path, body)
-    status, out = respond(home, key, lambda: fn(home, body), fingerprint)
+    status, out = respond(home, key, lambda: fn(home, body), fingerprint, slow)
     if status == 204:
         return Response(status_code=204)
     return JSONResponse(status_code=status, content=out)
+
+
+async def _mutate(request: Request, body: dict, fn, slow: bool = False):
+    """Runs a mutation in a worker thread (I60): the event loop keeps answering (STOP, health, reads) while it works."""
+    return await run_in_threadpool(_run, request, body, fn, slow)
 
 
 def _query_int(request: Request, name: str, default: int) -> int:
@@ -224,66 +231,66 @@ async def budget_validate(request: Request):
 @app.post("/api/jobs")
 async def jobs_queue(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: actions.queue_job(b))
+    return await _mutate(request, body, lambda home, b: actions.queue_job(b))
 
 
 @app.post("/api/loops/start")
 async def loops_start(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: actions.start_loops(b.get("loops")))
+    return await _mutate(request, body, lambda home, b: actions.start_loops(b.get("loops")))
 
 
 @app.patch("/api/loops/{job_id}/stages")
 async def loop_stage(job_id: str, request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, actions.patch_stage(job_id, b.get("stage"), b.get("change"), b.get("revision"))))
+    return await _mutate(request, body, lambda home, b: (200, actions.patch_stage(job_id, b.get("stage"), b.get("change"), b.get("revision"))))
 
 
 @app.post("/api/plans")
 async def plans(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: actions.create_plan(b))
+    return await _mutate(request, body, lambda home, b: actions.create_plan(b))
 
 
 @app.post("/api/plans/{plan_id}/approve")
 async def plan_approve(plan_id: str, request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: actions.approve_plan(plan_id, b.get("job_sha256"), b.get("approve_assumed")))
+    return await _mutate(request, body, lambda home, b: actions.approve_plan(plan_id, b.get("job_sha256"), b.get("approve_assumed")))
 
 
 @app.post("/api/models")
 async def models_add(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: config_api.add_model(b.get("model_id"), b.get("hosting_provider"), home))
+    return await _mutate(request, body, lambda home, b: config_api.add_model(b.get("model_id"), b.get("hosting_provider"), home))
 
 
 @app.delete("/api/models/{model_id:path}")
 async def models_remove(model_id: str, request: Request):
-    return _run(request, {}, lambda home, b: config_api.remove_model(model_id, home))
+    return await _mutate(request, {}, lambda home, b: config_api.remove_model(model_id, home))
 
 
 @app.post("/api/models/verify")
 async def models_verify(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, config_api.verify_contract(home, b.get("model_id"), b.get("contract"), b.get("effort"))))
+    return await _mutate(request, body, lambda home, b: (200, config_api.verify_contract(home, b.get("model_id"), b.get("contract"), b.get("effort"))), slow=True)
 
 
 @app.post("/api/models/verify-reasoning")
 async def models_verify_reasoning(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, config_api.verify_reasoning(home, b.get("model_id"), b.get("efforts"))))
+    return await _mutate(request, body, lambda home, b: (200, config_api.verify_reasoning(home, b.get("model_id"), b.get("efforts"))), slow=True)
 
 
 @app.post("/api/models/refresh")
 async def models_refresh(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, config_api.refresh_prices(home)))
+    return await _mutate(request, body, lambda home, b: (200, config_api.refresh_prices(home)), slow=True)
 
 
 @app.put("/api/stages")
 async def stages_save(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: config_api.save_stages(b.get("profile"), b.get("revision"), b.get("changes", [])))
+    return await _mutate(request, body, lambda home, b: config_api.save_stages(b.get("profile"), b.get("revision"), b.get("changes", [])))
 
 
 @app.put("/api/system/limits")
@@ -293,10 +300,10 @@ async def limits_update(request: Request):
     slots = 0
     if "sandbox_slots" in changes:
         slots = len(views._gate_holders(_home()).get("sandbox", []))
-    return _run(request, body, lambda home, b: config_api.update_limits(b.get("revision"), changes, slots))
+    return await _mutate(request, body, lambda home, b: config_api.update_limits(b.get("revision"), changes, slots))
 
 
 @app.post("/api/system/stop")
 async def system_stop(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, actions.set_stop(b.get("on"))))
+    return await _mutate(request, body, lambda home, b: (200, actions.set_stop(b.get("on"))))
