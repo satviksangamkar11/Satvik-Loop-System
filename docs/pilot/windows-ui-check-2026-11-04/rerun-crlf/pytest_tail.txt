@@ -1,0 +1,40 @@
+    def test_the_groq_reviewer_receives_only_its_own_file_set(tmp_path):
+        root = make_root(tmp_path)
+        (root / "pieces" / "test_m.py").write_text("def test_m():\n    assert True\n", encoding="utf-8")
+        loaded = fl.load_job(write_job(root, {"groq_review_files": ["pieces/m.py", "pieces/test_m.py"]}))
+        seen = {}
+    
+        def groq(files, report):
+            seen["groq"] = [p.name for p in files]
+            report.write_text("## Verdict: READY\n", encoding="utf-8")
+            return {"verdict": "READY"}
+    
+        def codex(files, report):
+            seen["codex"] = [p.name for p in files]
+            report.write_text("## Verdict: READY\n", encoding="utf-8")
+            return {"verdict": "READY"}
+    
+        reply_text = (FILE_MARK + "pieces/m.py\n" + FENCE + "python\nX = 2\n" + FENCE + "\n"
+                      + FILE_MARK + "pieces/test_m.py\n" + FENCE + "python\ndef test_m():\n    assert True\n" + FENCE + "\n")
+        result = fl.run_job(loaded, root, caller=lambda s_, u: (reply_text, {"status": 200, "finish": "stop"}),
+                            reviewer={"codex": codex, "groq": groq}, pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=[])
+>       assert result["state"] == "passed"
+E       AssertionError: assert 'escalate' == 'passed'
+E         
+E         - passed
+E         + escalate
+
+pieces\test_groq_files.py:57: AssertionError
+---------------------------- Captured stdout call -----------------------------
+j round 0: fixer=nemotron tests fail files bad
+j round 1: fixer=nemotron tests fail files bad
+j: escalate
+=========================== short test summary info ===========================
+SKIPPED [1] pieces\test_batch_a_paid.py:308: no /proc on this platform
+SKIPPED [1] pieces\test_guards.py:103: pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:117: docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:128: no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)
+SKIPPED [1] pieces\test_i68_process_identity.py:69: no /proc on this platform
+SKIPPED [1] pieces\test_i68_process_identity.py:78: no /proc on this platform
+SKIPPED [1] pieces\test_plan_job.py:573: this OS refuses to create the symlink ([WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1621\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1621\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'); the refusal is only testable where symlinks can be made
+1 failed, 1518 passed, 7 skipped, 7 subtests passed in 389.91s (0:06:29)
