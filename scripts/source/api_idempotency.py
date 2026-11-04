@@ -1,8 +1,15 @@
 import json
 import os
 import re
+import sys
 import tempfile
 import time
+
+try:
+    import atomic_json
+except ImportError:  # loaded by path (the loop acceptance tests): this folder is not on sys.path yet
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import atomic_json
 
 
 _KEY_RE = re.compile(r'^[A-Za-z0-9_-]{8,128}$')
@@ -34,18 +41,8 @@ class IdempotencyStore:
             return None
 
     def _write(self, path, data):
-        """Atomically write data to path via a temp file + os.replace."""
-        fd, tmp_path = tempfile.mkstemp(dir=self._folder)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(data, f)
-            os.replace(tmp_path, path)
-        except BaseException:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-            raise
+        """Atomically write data to path: the one atomic writer (atomic_json, I58)."""
+        atomic_json.write_text_atomic(path, json.dumps(data))
 
     def get(self, key):
         if not self._is_valid_key(key):

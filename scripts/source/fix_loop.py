@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional
 import yaml
 import jsonschema
 
+import atomic_json
+
 
 JOB_SCHEMA = {
     "type": "object",
@@ -201,24 +203,7 @@ def _sandbox_mod():
 def _atomic_write(path: Path, text: str) -> None:
     """Publish a file in one step (F10): write a temp file next to it, then os.replace, so a concurrent reader sees the old or the new text, never half of it.
     Windows refuses the replace while a reader has the file open: retry for a few seconds."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        for attempt in range(200):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:
-                time.sleep(0.05)
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    atomic_json.write_text_atomic(path, text)           # the one atomic writer (I58): bounded sharing-violation retries
 
 
 def _read_file_safe(root: Path, rel: str) -> str | None:

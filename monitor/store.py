@@ -3,7 +3,6 @@ Idempotency-Key wrapper over the loop's api_idempotency store. Stdlib only; the 
 import json
 import os
 import sys
-import tempfile
 import threading
 from pathlib import Path
 
@@ -12,7 +11,8 @@ ENGINE = ROOT / "scripts" / "source"
 if str(ENGINE) not in sys.path:
     sys.path.insert(0, str(ENGINE))
 
-import loop_home  # noqa: E402  (after the path is set)
+import atomic_json  # noqa: E402  (after the path is set)
+import loop_home  # noqa: E402
 from api_idempotency import IdempotencyStore  # noqa: E402
 
 
@@ -54,18 +54,9 @@ def read_json(path, default=None):
 
 
 def atomic_write_json(path, data):
-    """Writes JSON through a temp file in the same folder, then a rename: a reader sees the old file or the new one, never half of one."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    """Writes JSON through the engine's one atomic writer (atomic_json, I58): a temp file in the same folder, then a replace, with bounded
+    retries on a Windows sharing violation. A reader sees the old file or the new one, never half of one."""
+    atomic_json.write_json_atomic(path, data)
 
 
 _MUTATION_LOCK = threading.RLock()     # one mutation at a time in this process: a double click cannot run two actions

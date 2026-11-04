@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 from types import MappingProxyType
 
+import atomic_json
 import openrouter_call as oc
 
 SNAPSHOT_FILE = "stage_snapshot.json"
@@ -608,10 +609,8 @@ class job_lock:
 
 
 def _atomic_json(path, data):
-    path = Path(path)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    """A stage table file (snapshot, started marks): the one atomic writer with bounded sharing-violation retries (I58)."""
+    atomic_json.write_json_atomic(path, data)
 
 
 def write_snapshot(job_dir, snap):

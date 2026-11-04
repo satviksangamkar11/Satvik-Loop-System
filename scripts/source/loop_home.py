@@ -19,6 +19,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import atomic_json
+
 try:
     import msvcrt
 except ImportError:                       # not Windows: fcntl does the same job
@@ -220,17 +222,8 @@ def _load(path, default):
 
 
 def _write_bytes(path, data: bytes):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_bytes(data)
-    for _ in range(40):                   # Windows refuses a replace while another process has the file open for a moment
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            time.sleep(0.05)
-    os.replace(tmp, path)
+    """Shared state files: the one atomic writer (atomic_json, I58): bounded retries on a Windows sharing violation."""
+    atomic_json.write_bytes_atomic(path, data)
 
 
 def _save(path, obj):
