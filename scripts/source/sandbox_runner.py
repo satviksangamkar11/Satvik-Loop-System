@@ -51,7 +51,11 @@ def _ignore(directory, names):
 
 
 class DockerSandbox:
-    def __init__(self, image: str = DEFAULT_IMAGE, include=None, cpus: str = "1", memory: str = "1g", pids: int = 256, docker: str = "docker"):
+    def __init__(self, image: str = DEFAULT_IMAGE, include=None, cpus: str = "1", memory: str = "1g", pids: int = 256, docker: str = "docker",
+                 label: str | None = None):
+        """label: an optional tag every container of this sandbox carries (satvik-sandbox-run=<label>), so a caller can find its own containers
+        and no others (I63)."""
+        self.label = label
         self.image = image
         self.include = list(include or [])
         self.cpus, self.memory, self.pids = cpus, memory, pids
@@ -155,7 +159,7 @@ class DockerSandbox:
 
     def _run_container(self, tmpd: Path, cmd, readonly=None, timeout_s=600, extra_mounts=()) -> RunResult:
         name = "satvik-p0-" + uuid.uuid4().hex[:12]
-        args = ["run", "--rm", "--name", name,
+        args = ["run", "--rm", "--name", name] + (["--label", f"satvik-sandbox-run={self.label}"] if self.label else []) + [
                 "--network", "none", "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                 "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
                 "--pids-limit", str(self.pids), "--memory", self.memory, "--memory-swap", self.memory, "--cpus", self.cpus,

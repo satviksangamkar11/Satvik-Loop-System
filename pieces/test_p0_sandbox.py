@@ -119,14 +119,29 @@ def test_a_planted_sitecustomize_or_conftest_config_is_not_honoured(tmp_path):
     assert _outcomes(res) == {"test_attack": "failed"}, res.output
 
 
+def _containers_of(label):
+    return subprocess.run(["docker", "ps", "-a", "-q", "--filter", f"label=satvik-sandbox-run={label}"], capture_output=True,
+                          text=True).stdout.strip()
+
+
 def test_a_hung_test_with_child_processes_is_killed_with_its_container(tmp_path):
+    """I63: the containers are counted by this run's own label, not by a name prefix shared with every other sandbox on the host, and the
+    check allows the kill and the removal to finish under load (up to 60 s) before it asserts that none survived. A container that survives
+    the whole minute still fails the test."""
+    import time
+    import uuid
     root = _repo(tmp_path, {"pieces/test_attack.py": "import subprocess, sys" + NL + "def test_attack():" + NL
                             + "    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3600)'])" + NL
                             + "    while True:" + NL + "        pass" + NL})
-    res = sr.DockerSandbox(include=["pieces"]).run(root, ["pieces/test_attack.py"], timeout_s=15)
+    label = uuid.uuid4().hex
+    res = sr.DockerSandbox(include=["pieces"], label=label).run(root, ["pieces/test_attack.py"], timeout_s=15)
     assert res.timed_out
-    left = subprocess.run(["docker", "ps", "-a", "-q", "--filter", "name=satvik-p0-"], capture_output=True, text=True).stdout.strip()
-    assert left == "", "a sandbox container survived its timeout"
+    deadline = time.monotonic() + 60
+    left = _containers_of(label)
+    while left and time.monotonic() < deadline:
+        time.sleep(1)
+        left = _containers_of(label)
+    assert left == "", f"a sandbox container survived its timeout: {left}"
     assert gates.verify_junit(res.junit, {"pieces/test_attack.py": {"test_attack"}}, res.returncode, res.timed_out)
 
 
