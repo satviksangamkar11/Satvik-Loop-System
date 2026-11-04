@@ -234,7 +234,7 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
             target = root / rel
             if had and (orig_dir / rel).is_file():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write(target, (orig_dir / rel).read_text(encoding="utf-8"))
+                _atomic_write(target, _read_file_safe(orig_dir, rel))      # the saved original, exact bytes (I74)
             elif not had and target.exists():
                 target.unlink()
     old = [p for p in status_dir_job.iterdir() if not p.name.startswith("prev_") and p.name != "events.jsonl"]   # events are append-only: they stay
@@ -255,7 +255,7 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
         if text is not None:
             dest = orig_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(text, encoding="utf-8")
+            dest.write_bytes(text.encode("utf-8"))      # exact bytes (I74): text mode would write each \r\n as \r\r\n on Windows
     orig_dir.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps(saved), encoding="utf-8")
     return originals
