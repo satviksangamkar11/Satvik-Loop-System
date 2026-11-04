@@ -88,10 +88,7 @@ def _whole_or_none(value):
 
 def _owner_alive(hold) -> bool:
     """True while the hold's owner is the same live process that took it (its pid, and its start time when one was recorded)."""
-    pid = hold.get("pid", 0)
-    if not lh.pid_alive(pid):
-        return False
-    return hold.get("start") is None or hold.get("start") == lh.process_start(pid)
+    return lh.owner_alive(hold.get("pid", 0), hold.get("start"))
 
 
 def _book(st, job_id, micro):
@@ -116,9 +113,13 @@ def _state(root, now) -> dict:
     last live read (record_free_cap), kept across days until the next read; None means no live read applies (the fallback). Open holds are
     kept across the day change and reconciled (_reconcile)."""
     raw = lh._load(_path(root), {})
+    # The accounting epoch never runs backwards (I57): a clock that jumps back keeps the latest instant seen, so the day counts reset once
+    # at a day change and never again when the clock returns to the old day. A jump forward is kept too (spend is counted, never freed).
+    now = max(float(now), float(raw.get("epoch", 0.0) or 0.0))
     day = day_key(now)
     fresh = raw.get("day") != day
     st = {
+        "epoch": now,
         "day": day,
         "free_used": 0 if fresh else int(raw.get("free_used", 0)),
         "free_cap": _whole_or_none(raw.get("free_cap")),

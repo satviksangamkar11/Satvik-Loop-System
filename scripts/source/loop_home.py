@@ -260,14 +260,15 @@ def _lease_path(root, job_id) -> Path:
 
 def _is_stale(lease, now) -> bool:
     return (not lease.get("released") and now - float(lease.get("heartbeat", 0.0)) > STALE_S
-            and not pid_alive(lease.get("pid", 0)))
+            and not owner_alive(lease.get("pid", 0), lease.get("start")))
 
 
 def _live(root, job_id) -> bool:
-    """A claim or a running request is held while its lease is not released and its process is alive. The 5-minute heartbeat rule governs
-    only a lease TAKEOVER (Lease.acquire, Lease.stale), so a killed job frees its claims at once."""
+    """A claim or a running request is held while its lease is not released and its owner is alive: the same process that took it, by pid
+    AND process start, so a reused pid is a dead owner (I57). The 5-minute heartbeat rule governs only a lease TAKEOVER (Lease.acquire,
+    Lease.stale), so a killed job frees its claims at once."""
     lease = _load(_lease_path(root, job_id), None)
-    return lease is not None and not lease.get("released") and pid_alive(lease.get("pid", 0))
+    return lease is not None and not lease.get("released") and owner_alive(lease.get("pid", 0), lease.get("start"))
 
 
 def _stored_gen(root, job_id) -> int:
@@ -309,7 +310,8 @@ class Lease:
             if cur is not None and not cur.get("released") and not _is_stale(cur, now):
                 raise LeaseHeld(f"job {job_id} is held by pid {cur.get('pid')}")
             gen = (int(cur.get("generation", 0)) if cur else 0) + 1
-            _save(path, {"job_id": job_id, "pid": os.getpid(), "started": now, "heartbeat": now, "generation": gen, "released": False})
+            _save(path, {"job_id": job_id, "pid": os.getpid(), "start": process_start(os.getpid()), "started": now, "heartbeat": now,
+                         "generation": gen, "released": False})
             return gen
 
     def beat(self, job_id, gen):
@@ -555,9 +557,9 @@ class Gate:
         while True:
             with _locked(root):
                 table = _load(path, {})
-                held = [e for e in table.get(name, []) if pid_alive(e.get("pid", 0))]
+                held = [e for e in table.get(name, []) if owner_alive(e.get("pid", 0), e.get("start"))]
                 if len(held) < cap:
-                    held.append({"pid": os.getpid(), "gen": gen, "token": token})
+                    held.append({"pid": os.getpid(), "start": process_start(os.getpid()), "gen": gen, "token": token})
                     table[name] = held
                     _save(path, table)
                     break
