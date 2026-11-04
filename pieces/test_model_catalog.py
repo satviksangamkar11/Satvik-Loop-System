@@ -58,6 +58,16 @@ def entry(data, model_id):
     return mc.entry_of(data, model_id)
 
 
+def unverified(model_id):
+    """A change for catalog(): the model's contracts and their times are cleared, as in a catalog no check has run on. config/models.json
+    itself holds the real verify results (LIGHTNING is verified there), so each test that needs an unverified model says so here."""
+    def change(data):
+        e = entry(data, model_id)
+        e["contracts"] = {c: None for c in mc.CONTRACTS}
+        e["verified_at"] = None
+    return change
+
+
 def pin_qwen(data):
     e = entry(data, QWEN)
     e["hosting_provider"] = {"name": "Alibaba", "slug": "alibaba"}
@@ -204,7 +214,7 @@ BAD = {
 @pytest.mark.parametrize("contract", mc.CONTRACTS)
 @pytest.mark.parametrize("passed", [True, False])
 def test_verify_records_pass_or_fail_for_each_contract_through_the_adapter_on_the_shared_ledger(tmp_path, catalog, contract, passed):
-    path = catalog()
+    path = catalog(unverified(LIGHTNING))
     provider = ph.Provider({LIGHTNING: [(GOOD if passed else BAD)[contract]]})
     client = ph.client(tmp_path, provider)
     result = mc.verify_model(client, LIGHTNING, contract, clock=lambda: 1_790_000_000)
@@ -252,6 +262,7 @@ def test_capabilities_hide_every_unsupported_or_unknown_control(catalog):
         e = entry(data, DEEPSEEK)
         e["reasoning"] = {"on_off": False, "efforts": ["high"], "token_budget": False}
         e["contracts"] = {"writer_file_blocks": False, "repair_edit_blocks": None, "reviewer_verdict": False}
+        unverified(LIGHTNING)(data)
     path = catalog(change)
     assert mc.capabilities(DEEPSEEK, path) == {"model_id": DEEPSEEK, "via": "openrouter", "paid": True}
     assert mc.capabilities(LIGHTNING, path) == {"model_id": LIGHTNING, "via": "openrouter", "paid": False}
@@ -263,8 +274,8 @@ def test_capabilities_show_the_supported_controls_and_only_the_efforts_the_adapt
         e["reasoning"] = {"on_off": True, "efforts": ["minimal", "low", "high"], "token_budget": True}
         e["temperature"] = {"min": 0.0, "max": 2.0}
         e["max_output_tokens"] = 32768
-        e["contracts"]["reviewer_verdict"] = True
-        e["contracts"]["writer_file_blocks"] = False
+        e["contracts"] = {"writer_file_blocks": False, "repair_edit_blocks": None, "reviewer_verdict": True}
+        e["verified_at"] = {"reviewer_verdict": STAMP}
     path = catalog(change)
     assert mc.capabilities(LIGHTNING, path) == {
         "model_id": LIGHTNING, "via": "openrouter", "paid": False,

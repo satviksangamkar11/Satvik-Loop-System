@@ -989,6 +989,15 @@ def test_requirements_file_and_docs_mention_it():
 
 # ---------------------------------------------------------------- I2: required contract per stage; I16: Claude Code contracts; I15: limits; I17: one worker
 
+def _unverify_in_catalog(world, model_id):
+    """Clears the contracts of a catalog model in the test's copy of config/models.json (the real file holds the recorded verify results)."""
+    data = json.loads(mc.CATALOG_PATH.read_text())
+    e = next(e for e in data["openrouter"] if e["model_id"] == model_id)
+    e["contracts"] = {c: None for c in mc.CONTRACTS}
+    e["verified_at"] = None
+    mc.CATALOG_PATH.write_text(json.dumps(data))
+
+
 def _verify_in_catalog(world, model_id, **contracts):
     """Records verified (true) contracts for a catalog model in the test's copy of config/models.json (what POST /models/verify writes)."""
     data = json.loads(mc.CATALOG_PATH.read_text())
@@ -1015,6 +1024,7 @@ def test_every_stage_row_carries_its_required_contract_and_fallback(world):
 
 
 def test_a_stage_change_is_refused_until_its_model_has_the_required_contract_verified(world):
+    _unverify_in_catalog(world, "dots-studio/dots-3-note-preview:free")          # the real catalog verifies it; this test starts from none
     write = {"profile": "test", "changes": [{"stage": "writer_a_write", "settings": {"temperature": 0.2}}]}
     bad = world.client.post("/api/stages/validate", json=write)
     assert bad.status_code == 400 and bad.json()["error"]["code"] == "contract-not-verified"
