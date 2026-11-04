@@ -111,6 +111,9 @@ def _set(model_id, field, value):
     (lambda d: d["claude_code"][0].update(cost=20.0), "claude_code_cost"),
     (lambda d: d["claude_code"][0].update(efforts=["low"]), "claude_code"),
     (lambda d: d["claude_code"][0].update(model="gpt"), "claude_code"),
+    (lambda d: d["claude_code"][0].update(contracts={"writer_file_blocks": "yes", "repair_edit_blocks": None, "reviewer_verdict": None}),
+     "contracts"),
+    (lambda d: d["claude_code"][0].update(verified_at={"planner_json": "2026-11-04T00:00:00Z"}), "verified_at"),
 ])
 def test_a_bad_catalog_is_refused_with_a_stable_code(change, code):
     data = file_catalog()

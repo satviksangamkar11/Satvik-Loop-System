@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 FIXTURES = REPO / "monitor" / "fixtures"
 sys.path.insert(0, str(REPO / "scripts" / "source"))
 
+import claude_code as cc  # noqa: E402
 import event_log  # noqa: E402
 import fix_loop  # noqa: E402
 import job_history  # noqa: E402
@@ -1068,14 +1069,85 @@ def test_a_fresh_claude_code_entry_shows_its_contracts_unverified_with_text_vali
     assert shown == contracts                                              # the fixture matches the response
 
 
-def test_a_claude_code_model_cannot_be_verified_so_no_result_is_ever_recorded_for_it(world):
-    from monitor import config_api
-    world.monkeypatch.setattr(config_api, "make_client", lambda home: SimpleNamespace(own_job=lambda *a: None, release_job=lambda: False))
-    r = world.client.post("/api/models/verify", json={"model_id": "haiku", "contract": "writer_file_blocks"},
-                          headers={"Idempotency-Key": "verify-haiku-0001"})
-    assert r.status_code == 422 and r.json()["error"]["code"] == "not-in-catalog"
+FAKE_CLAUDE = REPO / "pieces" / "fake_claude.py"
+
+
+def _fake_claude_reply(world, text, is_error=False):
+    """Points the Claude Code runner at the fake claude, whose one reply is `text` (a JSON envelope, as `claude -p --output-format json`).
+    Returns the fake's log file: one line per run, so a test can see whether a process started at all."""
+    out = world.tmp / "fake_reply.json"
+    out.write_text(json.dumps({"type": "result", "is_error": is_error, "result": text, "usage": {"input_tokens": 7, "output_tokens": 3}}),
+                   encoding="utf-8")
+    log = world.tmp / "fake_claude.log"
+    world.monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    world.monkeypatch.setenv("FAKE_CLAUDE_OUTPUT", str(out))
+    world.monkeypatch.setattr(cc, "CLAUDE_CMD", [sys.executable, str(FAKE_CLAUDE)])
+    return log
+
+
+def _verify(world, model_id, contract, n, **extra):
+    return world.client.post("/api/models/verify", json={"model_id": model_id, "contract": contract, **extra},
+                             headers={"Idempotency-Key": f"verify-{model_id}-{n:04d}"})
+
+
+def test_verify_a_claude_code_model_runs_the_probe_through_the_fake_claude_and_records_a_pass(world):
+    log = _fake_claude_reply(world, "FILE: hello.py\n```python\nx = 2\n```")
+    r = _verify(world, "haiku", "writer_file_blocks", 1)
+    assert r.status_code == 200 and r.json()["result"] == "pass" and r.json()["verified_at"]
+    run = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert run["args"][run["args"].index("--model") + 1] == "haiku" and run["args"][run["args"].index("--effort") + 1] == "high"
+    assert run["api_key_in_env"] is False and run["guarded_env"] == []            # the isolated call: no API key, no OpenRouter variable
+    models = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
+    contracts = models["haiku"]["capabilities"]["contracts"]
+    assert contracts["writer_file_blocks"] == "verified" and contracts["repair_whole_file"] == "verified"
+    assert contracts["repair_edit_blocks"] == "unverified" and contracts["reviewer_verdict"] == "unverified"
+    assert contracts["planner_json"] == "unverified" and models["haiku"]["verified_at"] is not None
+    assert models["sonnet"]["capabilities"]["contracts"]["writer_file_blocks"] == "unverified"       # only haiku was checked
+    stored = next(e for e in json.loads(mc.CATALOG_PATH.read_text())["claude_code"] if e["model"] == "haiku")
+    assert stored["contracts"]["writer_file_blocks"] is True and stored["verified_at"]["writer_file_blocks"] == r.json()["verified_at"]
+
+
+def test_a_claude_code_reply_that_fails_the_contract_records_a_fail(world):
+    _fake_claude_reply(world, "Sure, here is a plain sentence with no file block.")
+    r = _verify(world, "haiku", "writer_file_blocks", 2)
+    assert r.status_code == 200 and r.json()["result"] == "fail" and r.json()["verified_at"]
+    models = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
+    assert models["haiku"]["capabilities"]["contracts"]["writer_file_blocks"] == "failed"
+
+
+def test_a_claude_code_call_that_gives_no_reply_records_nothing(world):
+    _fake_claude_reply(world, "", is_error=True)
+    r = _verify(world, "haiku", "writer_file_blocks", 3)
+    assert r.status_code == 503 and r.json()["error"]["code"] == "provider-unavailable"
     models = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
     assert models["haiku"]["capabilities"]["contracts"]["writer_file_blocks"] == "unverified"
+
+
+def test_the_test_profile_verifies_only_haiku_at_high_and_refuses_the_rest_before_any_call(world):
+    world.monkeypatch.setenv("SATVIK_PROFILE", "test")
+    log = _fake_claude_reply(world, "FILE: hello.py\n```python\nx = 2\n```")
+    for n, (model, effort) in enumerate((("sonnet", "high"), ("haiku", "low"), ("opus", None)), start=1):
+        extra = {} if effort is None else {"effort": effort}
+        r = _verify(world, model, "writer_file_blocks", 10 + n, **extra)
+        assert r.status_code == 422 and r.json()["error"]["code"] == "not-allowed-in-test", (model, effort)
+    assert not log.exists()                                                       # no claude process started for any of them
+    assert _verify(world, "haiku", "writer_file_blocks", 20, effort="high").status_code == 200
+
+
+def test_a_claude_code_verify_refuses_an_unknown_effort_and_contract_without_a_call(world):
+    log = _fake_claude_reply(world, "FILE: hello.py\n```python\nx = 2\n```")
+    assert _verify(world, "haiku", "writer_file_blocks", 30, effort="ultra").json()["error"]["code"] == "bad-effort"
+    assert _verify(world, "haiku", "planner_json", 31).json()["error"]["code"] == "unknown-contract"
+    assert not log.exists()
+
+
+def test_a_verified_claude_code_model_can_be_put_on_a_stage_and_an_unverified_one_cannot(world):
+    change = {"profile": "production", "changes": [{"stage": "writer_a_write", "model": "haiku", "via": "claude_code", "effort": "high"}]}
+    refused = world.client.post("/api/stages/validate", json=change)
+    assert refused.status_code == 400 and refused.json()["error"]["code"] == "contract-not-verified"
+    _fake_claude_reply(world, "FILE: hello.py\n```python\nx = 2\n```")
+    assert _verify(world, "haiku", "writer_file_blocks", 40).status_code == 200
+    assert world.client.post("/api/stages/validate", json=change).json() == {"valid": True, "problems": []}
 
 
 def test_a_job_review_usd_other_than_the_engine_value_is_refused_and_not_stored(world):
