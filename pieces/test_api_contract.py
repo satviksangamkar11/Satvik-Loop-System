@@ -300,6 +300,18 @@ def test_models_shape_matches_fixture(world):
     assert body["index_ok"] is True
 
 
+def test_the_contract_places_contracts_and_reasoning_mode_under_capabilities(world):
+    """M7: the prose and the example agree with the fixture and the API: contracts and reasoning_mode are under `capabilities`."""
+    doc = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert "`capabilities.contracts.<contract>" in doc and "`capabilities.reasoning_mode`" in doc
+    assert "`contracts.<contract> = contract_state`" not in doc
+    for model in fixture("models.json")["models"]:
+        assert set(model["capabilities"]) >= {"contracts", "reasoning_mode"}
+        assert "contracts" not in model and "reasoning_mode" not in model
+    body = world.client.get("/api/models").json()["models"][0]
+    assert "contracts" in body["capabilities"] and "reasoning_mode" in body["capabilities"]
+
+
 def test_stages_shape_matches_fixture_and_lists_ten_stages(world):
     body = world.client.get("/api/stages", params={"profile": "test"}).json()
     expected = fixture("stages.json")

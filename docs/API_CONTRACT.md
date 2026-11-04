@@ -114,7 +114,7 @@ JobDetail is a JobSummary plus these fields:
 ```
 
 ### Model (`GET /models`)
-Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> = contract_state`, and `reasoning_mode`. A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
+Each entry also has `endpoint` (provider slug, or null). Its contract states are under `capabilities`: `capabilities.contracts.<contract> = contract_state`, and `capabilities.reasoning_mode` (the same nesting as the example below). A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
 ```json
 {"model_id": "nvidia/nemotron-3-ultra-550b-a55b:free", "via": "openrouter", "hosting_provider": null, "paid": false,
  "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": 262144, "max_output_tokens": 32768,
