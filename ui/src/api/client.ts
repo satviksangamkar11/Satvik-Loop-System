@@ -42,6 +42,7 @@ import type {
   SystemLimits,
   VerifyResult,
   DataMode,
+  Via,
 } from './types';
 
 export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765/api';
@@ -85,11 +86,12 @@ export function buildModelPath(modelId: string): string {
  */
 export function buildStagesPayload(
   rows: StageSetting[]
-): Record<string, { model: string | null; effort: Effort | null; settings: Record<string, unknown> }> {
-  const out: Record<string, { model: string | null; effort: Effort | null; settings: Record<string, unknown> }> = {};
+): Record<string, { model: string | null; via: Via | null; effort: Effort | null; settings: Record<string, unknown> }> {
+  const out: Record<string, { model: string | null; via: Via | null; effort: Effort | null; settings: Record<string, unknown> }> = {};
   for (const row of rows) {
     out[row.stage_key] = {
       model: row.configured_model_id,
+      via: row.via,
       effort: row.effort,
       settings: row.settings,
     };
@@ -97,14 +99,34 @@ export function buildStagesPayload(
   return out;
 }
 
-/** Rows of PUT /stages and POST /stages/validate (`changes`). */
+/** Rows of PUT /stages and POST /stages/validate (`changes`). Each row carries its model's `via` with the model (I61). */
 export function buildStageChanges(rows: StageSetting[]): StageChange[] {
   return rows.map((row) => ({
     stage: row.stage_key,
     model: row.configured_model_id,
+    via: row.via,
     effort: row.effort,
     settings: row.settings,
   }));
+}
+
+/**
+ * A stage row after its model was picked in the select (I61). The model's transport (`via`) comes with it, so an OpenRouter
+ * model is never sent on a Claude Code stage, or the reverse. The effort travels with it too. A model the listing does not know
+ * keeps the row's own transport: the API then refuses the change (model-not-selectable), it is not guessed here.
+ */
+export function stageRowWithModel(
+  row: StageSetting,
+  modelId: string,
+  models: ReadonlyArray<{ model_id: string; via: Via | null }>
+): StageSetting {
+  const known = models.find((m) => m.model_id === modelId);
+  return {
+    ...row,
+    configured_model_id: modelId,
+    via: known ? known.via : row.via,
+    effort: row.effort,
+  };
 }
 
 export interface SatvikApiClientOptions {
@@ -184,9 +206,13 @@ export class SatvikApiClient {
       throw new ApiHttpError({
         status: 503,
         code: 'backend-unreachable',
-        message: `Cannot reach the live backend at ${this.baseUrl}${path} (${
-          networkErr?.message || 'connection refused'
-        }). Nothing was changed.`,
+        // A mutation may have reached the backend before the connection failed: its outcome is unknown, not "nothing changed" (I61).
+        message:
+          method === 'GET'
+            ? `Cannot reach the live backend at ${this.baseUrl}${path} (${networkErr?.message || 'connection refused'}). Nothing was changed.`
+            : `Cannot reach the live backend at ${this.baseUrl}${path} (${
+                networkErr?.message || 'connection refused'
+              }). The outcome is UNKNOWN: the request may have reached the backend. Reload and check the current state before you retry.`,
         endpoint: endpointLabel,
         idempotencyKey,
       });

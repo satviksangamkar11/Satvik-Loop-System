@@ -394,6 +394,8 @@ export interface SystemLimits {
 export interface StageChange {
   stage: StageKey;
   model: string | null;
+  /** The transport of `model` (I61): sent with the model, never the model alone. */
+  via: Via | null;
   effort: Effort | null;
   settings: Record<string, unknown>;
 }
