@@ -998,6 +998,15 @@ def _unverify_in_catalog(world, model_id):
     mc.CATALOG_PATH.write_text(json.dumps(data))
 
 
+def _unverify_claude_code_in_catalog(world, model):
+    """Clears the contracts of a Claude Code model in the test's copy of config/models.json (the real file holds the recorded verify results)."""
+    data = json.loads(mc.CATALOG_PATH.read_text())
+    e = next(e for e in data["claude_code"] if e["model"] == model)
+    e["contracts"] = {c: None for c in e["contracts"]}
+    e["verified_at"] = None
+    mc.CATALOG_PATH.write_text(json.dumps(data))
+
+
 def _verify_in_catalog(world, model_id, **contracts):
     """Records verified (true) contracts for a catalog model in the test's copy of config/models.json (what POST /models/verify writes)."""
     data = json.loads(mc.CATALOG_PATH.read_text())
@@ -1080,6 +1089,7 @@ def test_a_claude_code_model_is_not_a_valid_stage_model_while_its_contract_is_un
 
 
 def test_a_fresh_claude_code_entry_shows_its_contracts_unverified_with_text_validated(world):
+    _unverify_claude_code_in_catalog(world, "haiku")                       # the real catalog verifies reviewer_verdict; this test starts from none
     rows = {m["model_id"]: m for m in world.client.get("/api/models").json()["models"]}
     haiku = rows["haiku"]["capabilities"]
     assert haiku["text_validated"] is True
@@ -1115,6 +1125,7 @@ def _verify(world, model_id, contract, n, **extra):
 
 
 def test_verify_a_claude_code_model_runs_the_probe_through_the_fake_claude_and_records_a_pass(world):
+    _unverify_claude_code_in_catalog(world, "haiku")                       # the real catalog verifies reviewer_verdict; this test starts from none
     log = _fake_claude_reply(world, "FILE: hello.py\n```python\nx = 2\n```")
     r = _verify(world, "haiku", "writer_file_blocks", 1)
     assert r.status_code == 200 and r.json()["result"] == "pass" and r.json()["verified_at"]

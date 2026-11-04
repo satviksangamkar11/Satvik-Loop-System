@@ -293,9 +293,13 @@ def test_two_processes_index_the_same_home_at_once_without_a_lost_or_doubled_row
     for proc in procs:
         _, err = proc.communicate(timeout=120)
         assert proc.returncode == 0, err
-    counts = dict(sqlite3.connect(str(home / jh.DB_NAME)).execute("SELECT job_id, count(*) FROM events GROUP BY job_id").fetchall())
+    conn = sqlite3.connect(str(home / jh.DB_NAME))
+    try:
+        counts = dict(conn.execute("SELECT job_id, count(*) FROM events GROUP BY job_id").fetchall())
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
     assert counts == {job_id: n + 4 for n, job_id in enumerate(ids)}
-    mode = sqlite3.connect(str(home / jh.DB_NAME)).execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"
 
 
