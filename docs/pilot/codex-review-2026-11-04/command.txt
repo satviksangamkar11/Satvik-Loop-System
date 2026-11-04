@@ -1,0 +1,2 @@
+# run from the worktree root (D:/aai work/wt-codex-review, detached at 810b0f3), with OPENROUTER_FREE_KEY unset
+codex exec --sandbox read-only -m gpt-6.1-sol -c model_reasoning_effort="medium" --output-last-message "C:/Users/Satvik/AppData/Local/Temp/rb/codex/codex_review.md" "$(cat "C:/Users/Satvik/AppData/Local/Temp/rb/codex/review_prompt.md")"
