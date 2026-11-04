@@ -484,12 +484,19 @@ def clean_changes(name, changes):
     return cleaned
 
 
+def authoritative_problems(name, changes):
+    """THE stage validator (I45). Every mutation and runtime boundary calls it: POST /stages/validate, PUT /stages, POST /jobs (the queued
+    stage table) and PATCH /loops/{id}/stages (through stage_config.apply_future_stage). The engine's rules and the pool rule
+    (stage_problems), then the verified-contract rule (_contract_problems). [] when the change can be used. `changes` is already cleaned."""
+    return stage_problems(name, changes) or _contract_problems(name, changes)
+
+
 def validate_stages(profile, changes):
     """POST /stages/validate: {valid: true, problems: []}; 400 with details.problems otherwise. A change is refused as contract-not-verified when
     its model's required contract is not verified."""
     name = _profile(profile)
     changes = clean_changes(name, _as_changes(changes))
-    problems = stage_problems(name, changes) or _contract_problems(name, changes)
+    problems = authoritative_problems(name, changes)
     if problems:
         raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
     return {"valid": True, "problems": []}
@@ -517,7 +524,7 @@ def save_stages(profile, revision, changes):
         current = _roster_revision()
         if revision != current:
             raise ApiError(409, "stale-revision", f"the stage settings are at revision {current}, not {revision}", {"revision": current})
-        problems = stage_problems(name, changes)
+        problems = authoritative_problems(name, changes)
         if problems:
             raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
         raw = read_json(oc.ROSTER_PATH)
@@ -590,7 +597,7 @@ def validate_budget(profile, stages, paid_budget_usd):
     if isinstance(paid_budget_usd, bool) or not isinstance(paid_budget_usd, (int, float)) or paid_budget_usd < 0:
         raise ApiError(400, "bad-budget", "paid_budget_usd is a number of at least 0")
     changes = _as_changes(stages or {})
-    problems = stage_problems(name, changes)
+    problems = authoritative_problems(name, changes)
     if problems:
         raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
     paid_stages = _paid_stages(name, changes)

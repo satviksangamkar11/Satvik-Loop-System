@@ -764,13 +764,17 @@ def started_stages(job_dir, snap=None):
 
 # ---------------------------------------------------------------- apply future stage
 
-def apply_future_stage(job_dir, stage, change):
+def apply_future_stage(job_dir, stage, change, validate=None):
     """Changes one stage of a running job for its future calls: {"ok": True, "revision": n} or {"ok": False, "code", "message"}.
 
     Allowed only when the job has not started that stage (no start mark, no step, no call record), when a model change names a selectable
     stage, and when the whole resolved table still passes validation. It writes the job's stage_snapshot.json as revision n+1, atomically,
     under the job's stage lock; the job reads it when the stage next starts. A started stage (in flight or finished) is refused
-    (stage-started), so no call in flight is ever changed."""
+    (stage-started), so no call in flight is ever changed.
+
+    validate(changes) -> list of problems (dicts with code and message) is the caller's authoritative stage validator (I45: the API passes the
+    one POST /stages/validate uses, including the verified-contract rule). It runs under the job lock, on the change merged onto the table;
+    its first problem refuses the change with that problem's code. None: only the engine's own rules apply."""
     def refused(code, message):
         return {"ok": False, "code": code, "message": message}
 
@@ -795,6 +799,10 @@ def apply_future_stage(job_dir, stage, change):
         problems = _problems(data["name"], data)
         if problems:
             return refused(problems[0]["code"], "; ".join(p["message"] for p in problems))
+        if validate is not None:
+            extra = validate({stage: change})
+            if extra:
+                return refused(extra[0]["code"], extra[0]["message"])
         fresh = dict(snap, revision=snap["revision"] + 1, updated=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         fresh["roster"] = dict(snap["roster"], stages=data["stages"])
         fresh["resolved"] = thaw(freeze(_table(data)))
