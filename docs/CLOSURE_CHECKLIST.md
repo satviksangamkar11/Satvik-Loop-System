@@ -7,7 +7,8 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 - Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
 - Local work goes to Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`), or Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) when agent 1's
   context is full.
-- No other sessions. No paid calls (`SATVIK_PROFILE=test`, $0). No UI redesign.
+- No other sessions. No UI redesign.
+- **No paid calls and no Opus calls until the very end**, anywhere: no paid OpenRouter model (GLM etc.), no Opus in the loop (production repair and planner stay unused), no paid verify. `SATVIK_PROFILE=test`, $0; only free models and Haiku.
 
 ## A. Already done (evidence)
 - [x] **P1 events, stage snapshots, model catalog:** PR #38 → `main` `8a1fe46`. Suite: 1164 passed, plus the root-only failure.
