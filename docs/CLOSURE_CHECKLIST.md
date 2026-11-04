@@ -136,7 +136,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I74 ✅ cloud (`f1185a3`, merged `ab13cdf`); Windows ✅ (`e866507`) | Windows, production bug: `fix_loop._prepare_job_folder` saves originals as `\r\r\n` and kill-recovery restores doubled newlines, so a killed job restarts from corrupted originals | Exact-bytes save and restore (`crlf-fixes`) | Passes on Windows |
 | I75 ✅ cloud (`8d23881`, merged `ab13cdf`); Windows ✅ (`e866507`) | Sweep every text-mode read/write of file contents that is compared, hashed or restored | One exact-bytes helper everywhere, plus a guard test (`crlf-fixes`) | Windows suite 0 failures |
 
-| I76 | Windows: the round-0 append-only check compares the coder's LF reply with the CRLF original bytes, so any pre-existing CRLF test file escalates (`test_groq_files`, `e866507`) | Reply-vs-original comparisons ignore line endings; locked-file hashes stay byte-exact (branch `crlf-round0`) | Windows suite 0 failures |
+| I76 ✅ cloud (`d87389d`, merged `2716a1d`); Windows rerun pending | Windows: the round-0 append-only check compares the coder's LF reply with the CRLF original bytes, so any pre-existing CRLF test file escalates (`test_groq_files`, `e866507`) | Reply-vs-original comparisons ignore line endings; locked-file hashes stay byte-exact (branch `crlf-round0`) | Windows suite 0 failures |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
