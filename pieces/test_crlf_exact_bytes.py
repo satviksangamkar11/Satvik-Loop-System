@@ -201,3 +201,86 @@ def test_i75_the_guard_itself_catches_text_mode_io():
     assert func("def f(p, m):\n    return open(p, m)")
     assert func("def f(p):\n    return open(p, 'rb').read()") == []
     assert func("def f(p, t):\n    p.write_bytes(t.encode())") == []
+
+
+# ---------------------------------------------------------------- I76: a model reply is compared with an on-disk original line-ending-insensitively
+# The coder always replies with LF. A CRLF file on disk (Windows) restated unchanged by the coder is not a change; a changed test still is.
+# Hashes of locked files stay byte-exact (the acceptance lock is not touched by these comparisons).
+
+from test_groq_files import write_job                     # noqa: E402 (pieces/ is on sys.path under pytest)
+from test_fix_loop_review import FENCE, FILE_MARK, make_root  # noqa: E402
+
+FROZEN_CRLF_TEST = "def test_m():\r\n    assert True\r\n"
+FROZEN_LF_TEST = "def test_m():\n    assert True\n"
+APPENDED_LF_TEST = "\ndef test_m_again():\n    assert True\n"
+
+
+def _ok_reviewer(files, report):
+    report.write_text("## Verdict: READY\n", encoding="utf-8")
+    return {"verdict": "READY"}
+
+
+def _run_round0(tmp_path, reply_test_text):
+    """One round-0 job (groq scenario): pieces/test_m.py is a pre-existing CRLF file on disk; the coder replies with `reply_test_text` for it."""
+    root = make_root(tmp_path)
+    (root / "pieces" / "test_m.py").write_bytes(FROZEN_CRLF_TEST.encode("utf-8"))
+    loaded = fl.load_job(write_job(root, {}))
+    reply_text = (FILE_MARK + "pieces/m.py\n" + FENCE + "python\nX = 2\n" + FENCE + "\n"
+                  + FILE_MARK + "pieces/test_m.py\n" + FENCE + "python\n" + reply_test_text + FENCE + "\n")
+    return fl.run_job(loaded, root, caller=lambda s_, u: (reply_text, {"status": 200, "finish": "stop"}),
+                      reviewer={"codex": _ok_reviewer, "groq": _ok_reviewer}, pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=[])
+
+
+def test_i76_round0_accepts_an_lf_reply_that_restates_a_crlf_test_and_appends_a_test(tmp_path):
+    result = _run_round0(tmp_path, FROZEN_LF_TEST + APPENDED_LF_TEST)
+    assert result["state"] == "passed", result["rounds"]
+    assert result["rounds"][0]["reason"] is None
+
+
+def test_i76_round0_refuses_a_real_change_to_a_crlf_test(tmp_path):
+    result = _run_round0(tmp_path, "def test_m():\n    assert False\n" + APPENDED_LF_TEST)
+    assert result["state"] == "escalate"
+    assert "frozen or pre-existing tests" in result["rounds"][0]["reason"]
+    assert result["rounds"][0]["reason"].count("pieces/test_m.py") == 1
+
+
+def test_i76_a_frozen_crlf_test_restated_in_lf_is_not_a_change(tmp_path, windows_text_io):
+    path = tmp_path / "test_m.py"
+    path.write_bytes(FROZEN_CRLF_TEST.encode("utf-8"))
+    assert fl._test_change_forbidden(path, FROZEN_LF_TEST, None) is False        # the same text, other line endings: not a change
+
+
+def test_i76_a_frozen_crlf_test_with_a_real_change_is_still_forbidden(tmp_path):
+    path = tmp_path / "test_m.py"
+    path.write_bytes(FROZEN_CRLF_TEST.encode("utf-8"))
+    assert fl._test_change_forbidden(path, "def test_m():\n    assert False\n", None) is True
+
+
+def test_i76_the_groq_reviewer_file_set_passes_with_a_crlf_test_file(tmp_path, windows_text_io):
+    """pieces/test_groq_files.py::test_the_groq_reviewer_receives_only_its_own_file_set, with test_m.py written as CRLF (Windows)."""
+    root = make_root(tmp_path)
+    (root / "pieces" / "test_m.py").write_text("def test_m():\n    assert True\n", encoding="utf-8")
+    assert (root / "pieces" / "test_m.py").read_bytes() == FROZEN_CRLF_TEST.encode("utf-8")
+    loaded = fl.load_job(write_job(root, {"groq_review_files": ["pieces/m.py", "pieces/test_m.py"]}))
+    seen = {}
+
+    def groq(files, report):
+        seen["groq"] = [p.name for p in files]
+        return _ok_reviewer(files, report)
+
+    def codex(files, report):
+        seen["codex"] = [p.name for p in files]
+        return _ok_reviewer(files, report)
+
+    reply_text = (FILE_MARK + "pieces/m.py\n" + FENCE + "python\nX = 2\n" + FENCE + "\n"
+                  + FILE_MARK + "pieces/test_m.py\n" + FENCE + "python\ndef test_m():\n    assert True\n" + FENCE + "\n")
+    result = fl.run_job(loaded, root, caller=lambda s_, u: (reply_text, {"status": 200, "finish": "stop"}),
+                        reviewer={"codex": codex, "groq": groq}, pytest_runner=lambda *a, **k: (True, "ok"), scrub_keys=[])
+    assert result["state"] == "passed", result["rounds"]
+    assert seen["groq"] == ["m.py", "test_m.py"]
+    assert seen["codex"] == ["m.py", "test_m.py", "s.md"]
+
+
+def test_i76_the_review_package_shows_an_untouched_crlf_file_as_unchanged(windows_text_io):
+    assert p1b.diff_block("pieces/m.py", "X = 1\r\n", "X = 1\n") == "pieces/m.py: (no change)"
+    assert p1b.diff_block("pieces/m.py", "X = 1\r\n", "X = 2\n").startswith("pieces/m.py: changed")
