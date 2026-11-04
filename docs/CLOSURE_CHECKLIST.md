@@ -132,9 +132,9 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I71 ✅ cloud (`984d403`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: Vite binds `localhost` (::1) but the Playwright configs poll 127.0.0.1:5173, so e2e times out | Bind 127.0.0.1 explicitly | `npm run test:e2e` passes on Windows unmodified |
 | I72 ✅ cloud (`5241734; runtime 0, 11 moderate dev-only (eslint tree)`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | `npm ci` now reports 11 moderate vulnerabilities (was 5) | Audit runtime vs dev; fix runtime ones | Runtime audit 0 |
 
-| I73 | Windows: `p1b_production._produced` reads text-mode, so an untouched CRLF file looks produced and a candidate folder is written (`7bc27a0`) | Exact-bytes read (branch `crlf-fixes`) | Passes on Windows |
-| I74 | Windows, production bug: `fix_loop._prepare_job_folder` saves originals as `\r\r\n` and kill-recovery restores doubled newlines, so a killed job restarts from corrupted originals | Exact-bytes save and restore (`crlf-fixes`) | Passes on Windows |
-| I75 | Sweep every text-mode read/write of file contents that is compared, hashed or restored | One exact-bytes helper everywhere, plus a guard test (`crlf-fixes`) | Windows suite 0 failures |
+| I73 ✅ cloud (`39b5dfc`, merged `ab13cdf`); Windows rerun pending | Windows: `p1b_production._produced` reads text-mode, so an untouched CRLF file looks produced and a candidate folder is written (`7bc27a0`) | Exact-bytes read (branch `crlf-fixes`) | Passes on Windows |
+| I74 ✅ cloud (`f1185a3`, merged `ab13cdf`); Windows rerun pending | Windows, production bug: `fix_loop._prepare_job_folder` saves originals as `\r\r\n` and kill-recovery restores doubled newlines, so a killed job restarts from corrupted originals | Exact-bytes save and restore (`crlf-fixes`) | Passes on Windows |
+| I75 ✅ cloud (`8d23881`, merged `ab13cdf`); Windows rerun pending | Sweep every text-mode read/write of file contents that is compared, hashed or restored | One exact-bytes helper everywhere, plus a guard test (`crlf-fixes`) | Windows suite 0 failures |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
