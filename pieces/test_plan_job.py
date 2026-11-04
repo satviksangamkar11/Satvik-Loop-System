@@ -306,6 +306,90 @@ def test_acceptance_files_must_match_the_job_exactly(repo, tmp_path, monkeypatch
     assert plan(repo)["state"] == "planner-invalid"
 
 
+# ---------------------------------------------------------------- I51: one call per plan name, bound to its request (Codex audit)
+
+def test_a_different_request_under_the_same_name_is_refused_and_the_old_plan_is_not_served(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    other = pj.plan(root=repo, job_name="calc", plan_dir=repo / "_loop" / "calc" / "plan", request="a different request",
+                    files=["pieces/calc.py"], claude_cmd=[sys.executable, FAKE], timeout_s=5)
+    assert other["state"] == "request-conflict" and other["job_sha256"] is None
+    assert len(calls(log)) == 1, "a different request makes no second call"
+    assert pj.intent_conflict(repo, "calc", "a different request", ["pieces/calc.py"]) is not None
+    assert pj.intent_conflict(repo, "calc", "Write calculate_total: the sum of the prices.", ["pieces/calc.py"]) is None
+
+
+def test_the_same_request_with_other_files_is_a_different_request(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    other = plan(repo, files=["pieces/calc.py", "pieces/test_calc.py"])
+    assert other["state"] == "request-conflict" and len(calls(log)) == 1
+
+
+def test_an_intent_another_plan_created_is_read_and_never_called_again(repo):
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    plan_dir.mkdir(parents=True)
+    fingerprint = pj.request_fingerprint("calc", "r", ["pieces/calc.py"], "claude_code", "opus", "medium")
+    (plan_dir / "INTENT.json").write_text(json.dumps({"fingerprint": fingerprint}), encoding="utf-8")
+    calls_made = []
+    result = pj.plan(root=repo, job_name="calc", plan_dir=plan_dir, request="r", files=["pieces/calc.py"],
+                     runner=lambda *a, **k: calls_made.append(1))
+    assert result["state"] == "planner-uncertain" and calls_made == []
+
+
+def test_the_intent_is_created_exclusively(tmp_path):
+    path = tmp_path / "INTENT.json"
+    pj._create_intent(path, {"a": 1})
+    with pytest.raises(FileExistsError):
+        pj._create_intent(path, {"a": 2})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_two_plans_for_one_name_at_once_make_one_planner_call(repo):
+    import threading
+    import time
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    calls_made, results = [], []
+
+    def runner(prompt, cwd, claude_cmd, timeout_s):
+        calls_made.append(1)
+        time.sleep(0.3)                                     # the second plan checks while this call is out
+        return 0, envelope(good_answer())
+
+    def go(request):
+        results.append(pj.plan(root=repo, job_name="calc", plan_dir=plan_dir, request=request, files=["pieces/calc.py"], runner=runner))
+
+    threads = [threading.Thread(target=go, args=("r",)), threading.Thread(target=go, args=("r",))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls_made) == 1, "one plan name, one planner call"
+    states = {r["state"] for r in results}
+    assert "planned" in states and states <= {"planned", "planner-uncertain"}, states     # the loser is uncertain or reads the answer
+
+
+def test_create_plan_refuses_a_different_request_under_a_planned_name(repo, tmp_path, monkeypatch, profile):
+    from monitor import actions
+    from monitor.store import ApiError
+    profile("production")
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SATVIK_REPO", str(repo))
+    calls_made = []
+
+    def fake_runner(prompt, cwd, claude_cmd, timeout_s):
+        calls_made.append(1)
+        return 0, envelope(good_answer())
+    monkeypatch.setitem(actions.PLANNER_HOOK, "run", lambda **kw: pj.plan(runner=fake_runner, **kw))
+    monkeypatch.setitem(actions.PLANNER_HOOK, "sync", True)
+    status, _body = actions.create_plan({"name": "calc", "request": "Write calculate_total", "files": ["pieces/calc.py"]})
+    assert status == 202
+    with pytest.raises(ApiError) as refused:
+        actions.create_plan({"name": "calc", "request": "Write something else", "files": ["pieces/calc.py"]})
+    assert refused.value.status == 409 and refused.value.code == "plan-request-conflict"
+    assert len(calls_made) == 1
+
+
 # ---------------------------------------------------------------- I37: every path is checked before any write (Codex audit)
 
 def nothing_written_but_the_intent(plan_dir):

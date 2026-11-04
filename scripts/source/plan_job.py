@@ -91,10 +91,9 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner={model})")
     root, plan_dir = Path(root), Path(plan_dir)
     intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
+    fingerprint = request_fingerprint(job_name, request, files, via, model, effort)
     if intent_path.is_file():
-        if raw_path.is_file():
-            return _from_answer(raw_path.read_text(encoding="utf-8"), root, job_name, plan_dir)     # reused: no call
-        return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
+        return _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir)
     if len(files) > MAX_FILES:
         return _outcome("planner-refused", f"at most {MAX_FILES} files may be sent to the planner; got {len(files)}")
     if runner is None and via == "claude_code" and cc.real_call_refused(list(claude_cmd or ["claude"])):   # the guard: no real call under pytest or SATVIK_NO_OPUS=1
@@ -106,9 +105,12 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         runner = openrouter_runner(client or oc.OpenRouter(oc.load_keys(), root / "_loop" / "openrouter"))
     prompt = _prompt(root, request, files)
     plan_dir.mkdir(parents=True, exist_ok=True)
-    intent_path.write_text(json.dumps({"job": job_name, "via": via, "model": model, "effort": effort, "files": list(files),
-                                       "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "timeout_s": timeout_s,
-                                       "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
+    try:                                       # the lock: only one plan creates INTENT.json; the other one reads it and never calls
+        _create_intent(intent_path, {"job": job_name, "via": via, "model": model, "effort": effort, "files": list(files),
+                                     "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "fingerprint": fingerprint,
+                                     "timeout_s": timeout_s, "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    except FileExistsError:
+        return _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir)
     try:
         with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
             with _planner_attempt(plan_dir, model, via, effort) as attempt:
@@ -118,6 +120,59 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
     raw_path.write_text(raw, encoding="utf-8")
     return _from_answer(raw, root, job_name, plan_dir)
+
+
+def request_fingerprint(job_name, request, files, via, model, effort):
+    """The identity of one planning request: the job name, the request text, the files in order and the planner that answers it. A plan
+    name is bound to this fingerprint: a different request under the same name is never served the earlier plan (I51)."""
+    body = json.dumps({"job": job_name, "request": request, "files": list(files), "via": via, "model": model, "effort": effort},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _create_intent(path, data):
+    """INTENT.json created exclusively (os.open with O_EXCL) and synced before the call. Of two plans for one name, only the one that
+    creates the file may call the planner; the other finds the file and reads it (_existing_intent)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, indent=2))
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir):
+    """An intent already holds this plan name. The same request is served from its saved answer (no call); a different request is refused
+    (request-conflict); an intent with no saved answer, or one still being written, is uncertain and never retried."""
+    try:
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _outcome("planner-uncertain", "the intent is unreadable or still being written: the outcome is unknown, and it is never retried")
+    if not isinstance(intent, dict) or intent.get("fingerprint") != fingerprint:
+        return _outcome("request-conflict", "this job name already holds a plan for a different request, files or planner: a new request under the "
+                                            "same name is refused, and the earlier plan is not served")
+    if raw_path.is_file():
+        return _from_answer(raw_path.read_text(encoding="utf-8"), root, job_name, plan_dir)     # reused: no call
+    return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
+
+
+def intent_conflict(root, job_name, request, files):
+    """None when the plan name has no intent yet, or its intent is for this same request; else why a new plan under the name is refused.
+    The API asks this before it accepts a request (409 plan-request-conflict)."""
+    intent_path = Path(root) / "_loop" / job_name / "plan" / "INTENT.json"
+    if not intent_path.is_file():
+        return None
+    try:
+        spec = oc.roster_state()["ROLE_SPECS"]["planner"]
+    except oc.RosterRefused:
+        return None                                       # the planner call refuses by itself
+    fingerprint = request_fingerprint(job_name, request, files, oc.via_of(spec), spec["model"], spec.get("effort"))
+    try:
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "the plan name's intent is unreadable: a different request under this name is refused"
+    if isinstance(intent, dict) and intent.get("fingerprint") == fingerprint:
+        return None
+    return "this job name already holds a plan for a different request, files or planner"
 
 
 @contextmanager

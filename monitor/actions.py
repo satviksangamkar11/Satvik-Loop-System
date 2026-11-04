@@ -272,12 +272,15 @@ def create_plan(body):
         raise ApiError(422, "planner-refused-in-test", "test profile: free only, and its planner is fake")
     if (home / "STOP").exists():
         raise ApiError(409, "stop-on", "STOP is on: no new starts")
+    root = repo()
+    conflict = plan_job.intent_conflict(root, name, request, files)      # a plan name is bound to its request (I51)
+    if conflict is not None:
+        raise ApiError(409, "plan-request-conflict", conflict, {"name": name})
     import uuid
     plan_id = uuid.uuid4().hex
     rec = {"plan_id": plan_id, "name": name, "request": request, "files": files, "state": "planning", "job_sha256": None, "assumed": [],
            "reason": None, "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _save_plan(home, rec)
-    root = repo()
     if PLANNER_HOOK.get("sync"):
         _run_planner(home, rec, root)
     else:
