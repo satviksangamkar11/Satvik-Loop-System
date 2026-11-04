@@ -13,7 +13,7 @@ if str(ENGINE) not in sys.path:
 
 import atomic_json  # noqa: E402  (after the path is set)
 import loop_home  # noqa: E402
-from api_idempotency import IdempotencyStore  # noqa: E402
+from api_idempotency import OperationConflict, OperationStore  # noqa: E402
 
 
 class ApiError(Exception):
@@ -59,18 +59,25 @@ def atomic_write_json(path, data):
     atomic_json.write_json_atomic(path, data)
 
 
-_MUTATION_LOCK = threading.RLock()     # one mutation at a time in this process: a double click cannot run two actions
+# Two locks (I60). _STATE_LOCK is held only for the short transitions: a mutation's intent is recorded under it before its effects, and its
+# outcome after. _EFFECTS_LOCK is held while a fast mutation does its work, so two fast mutations never interleave. A slow mutation (a model
+# call: verify, verify-reasoning, refresh) does not take _EFFECTS_LOCK, so STOP and the reads answer while it runs.
+_STATE_LOCK = threading.RLock()
+_EFFECTS_LOCK = threading.RLock()
 
 
 def _store(home_dir):
-    """The loop's idempotency store (scripts/source/api_idempotency.py): one file per key under SATVIK_HOME/api/idempotency/."""
-    return IdempotencyStore(Path(home_dir) / "api" / "idempotency")
+    """The API's idempotency records (scripts/source/api_idempotency.py OperationStore): one file per key under SATVIK_HOME/api/idempotency/."""
+    return OperationStore(Path(home_dir) / "api" / "idempotency")
 
 
-def respond(home_dir, key, fn):
-    """Runs one mutation at most once per Idempotency-Key. fn() -> (status, body). A repeat with the same key returns the first final
-    response and runs nothing. A final response is anything below 500 (a validation or state error included); a 5xx is not stored, so the
-    caller may try again. Returns (status, body)."""
+def respond(home_dir, key, fn, fingerprint=None, slow=False):
+    """Runs one mutation at most once per Idempotency-Key (codex I59, the protocol is in OperationStore). fn() -> (status, body).
+
+    The intent (key + request fingerprint, state started) is recorded before fn runs. A repeat with the same key replays the recorded final
+    response, or answers 409 operation-in-progress (started, no outcome), 409 idempotency-record-corrupt, or 422 idempotency-key-reused
+    (another request). A final response is anything below 500 (a validation or state error included). A 5xx, or an exception, aborts the
+    intent, so the caller may try again. Returns (status, body)."""
     def once():
         try:
             return fn()
@@ -78,16 +85,34 @@ def respond(home_dir, key, fn):
             if exc.status >= 500:
                 raise
             return exc.status, exc.body()
-    with _MUTATION_LOCK:
-        if key is None:
+
+    def work():
+        if slow:
             return once()
-        store = _store(home_dir)
-        try:
-            prior = store.get(key)
-        except ValueError as exc:
-            raise ApiError(400, "invalid-idempotency-key", str(exc))
-        if prior is not None:
-            return prior["status"], prior.get("body")
-        status, body = once()
-        stored = store.put(key, {"status": status, "body": body})
-        return stored["status"], stored.get("body")
+        with _EFFECTS_LOCK:
+            return once()
+
+    if key is None:
+        return work()
+    store = _store(home_dir)
+    try:
+        with _STATE_LOCK:
+            decision, recorded = store.begin(key, fingerprint or "")
+    except ValueError as exc:
+        raise ApiError(400, "invalid-idempotency-key", str(exc))
+    except OperationConflict as exc:
+        raise ApiError(exc.status, exc.code, exc.message)
+    if decision == "replay":
+        return recorded
+    try:
+        status, body = work()
+    except BaseException:
+        with _STATE_LOCK:
+            store.abort(key)
+        raise
+    if status >= 500:
+        with _STATE_LOCK:
+            store.abort(key)
+        return status, body
+    with _STATE_LOCK:
+        return store.finish(key, fingerprint or "", status, body)

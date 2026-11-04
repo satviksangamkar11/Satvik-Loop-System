@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import job_history  # the engine's module (monitor/__init__ puts scripts/source on sys.path): the index is rebuilt from the files at startup
 from . import actions, config_api, views
+from api_idempotency import request_fingerprint  # noqa: E402  (store.py put the engine folder on sys.path)
 from .store import ApiError, home as satvik_home, respond
 
 log = logging.getLogger("satvik.api")
@@ -96,7 +97,8 @@ def _run(request: Request, body: dict, fn):
     """A mutation: once per Idempotency-Key. fn(home, body) -> (status, body). Returns the response."""
     key = request.headers.get("Idempotency-Key")
     home = _home()
-    status, out = respond(home, key, lambda: fn(home, body))
+    fingerprint = request_fingerprint(request.method, request.url.path, body)
+    status, out = respond(home, key, lambda: fn(home, body), fingerprint)
     if status == 204:
         return Response(status_code=204)
     return JSONResponse(status_code=status, content=out)
