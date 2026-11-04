@@ -39,14 +39,14 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
    - Fix every mismatch in the API or the UI normalizer, never by editing fixtures to hide a bug.
    - Done when all 7 pages render real data, a failed verify shows not-verified, STOP toggles, a duplicate queue shows 409, and
      `npm run test:e2e` passes against the real API.
-6. [ ] **One PR to `main`** with the API, the UI repair, the integration fixes and the contract sync. Done when it is merged and pinned to its
+6. [x] **Done: PR #39 merged → `main` `96efdef`, pinned to head `c4dc55f`.** **One PR to `main`** with the API, the UI repair, the integration fixes and the contract sync. Done when it is merged and pinned to its
    head SHA.
 7. [ ] **Windows check (Local agent 2):** a fresh worktree of `main`;
    - run `pip install -r monitor/requirements.txt`, then `python -m uvicorn monitor.api:app --port 8765` with the real `SATVIK_HOME`;
    - in `ui/`, run `npm ci` and then `npm run dev:live`;
    - open each of the 7 pages, take screenshots, and push them to branch `windows-ui-check-2026-11-04`.
    - Done when every page shows real data, with no console errors.
-8. [ ] **Written (`69c5312`): As integrated + `docs/STATUS_2026-11-04.md`; ticks when the B6 PR merges.** **Docs:** add an "As integrated" section to `docs/ARCHITECTURE_REVISION_4.md` (API and UI), tick this checklist, and record a STATUS
+8. [x] **Merged in #39 (`96efdef`). Written (`69c5312`): As integrated + `docs/STATUS_2026-11-04.md`** **Docs:** add an "As integrated" section to `docs/ARCHITECTURE_REVISION_4.md` (API and UI), tick this checklist, and record a STATUS
    entry. Done when merged.
 
 ## D. Issues register (every known issue; none may be skipped)
