@@ -166,6 +166,10 @@ def test_with_default_stages_every_openrouter_request_body_is_byte_for_byte_toda
         reply = FILE_TEXT if kind in ("writer", "repair") else READY
         bodies = []
         for use_stage in (False, True):
+            # a fresh SATVIK_HOME per request: the shared ledger's 15-a-minute window (shared_limits) never fills, so no real minute is waited
+            home = tmp_path / f"home-{role}-{mode}-{use_stage}"
+            home.mkdir()
+            monkeypatch.setenv("SATVIK_HOME", str(home))
             provider = ph.Provider({model: [reply]})
             client = ph.client(tmp_path / f"{role}-{mode}-{use_stage}", provider, budget=oc.JobBudget(40, 0.05))
             if use_stage:

@@ -11,15 +11,18 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import jsonschema
 
 import claude_code as cc
+import event_log
 import fix_loop as fl
 import p0_gates as gates
 import openrouter_call as oc
@@ -108,11 +111,52 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
                                        "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
     try:
         with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
-            _code, raw = runner(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+            with _planner_attempt(plan_dir, model, via, effort) as attempt:
+                _code, raw = runner(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+                attempt["raw"] = raw
     except subprocess.TimeoutExpired:
         return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
     raw_path.write_text(raw, encoding="utf-8")
     return _from_answer(raw, root, job_name, plan_dir)
+
+
+@contextmanager
+def _planner_attempt(plan_dir, model, via, effort):
+    """The planner call as an attempt-start and an attempt-end event (stage planner) in the plan's job folder, <job>/events.jsonl. The end
+    event is written also when the call raises (a timeout, an OS error): failed, with the exception as its error. An event that cannot be
+    written never changes the plan (event_log.emit never raises). The yielded dict takes the call's raw answer under "raw"."""
+    job_dir = plan_dir.parent
+    attempt_id = f"planner-{secrets.token_hex(4)}"
+    event_log.emit(job_dir, "attempt-start", attempt_id=attempt_id, stage="planner", role="planner", mode="plan", model=model, via=via,
+                   effort=effort)
+    attempt, started = {"raw": None}, time.monotonic()
+    error = None
+    try:
+        yield attempt
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        if error is None:
+            error = _envelope_error(attempt["raw"])
+        event_log.emit(job_dir, "attempt-end", attempt_id=attempt_id, stage="planner", role="planner", mode="plan", status="failed" if error
+                       else "ok", failed=error is not None, prompt_tokens=None, completion_tokens=None, reasoning_tokens=None,
+                       finish_reason=None, seconds=round(time.monotonic() - started, 3), **({"error": error[:300]} if error else {}))
+
+
+def _envelope_error(raw):
+    """None when the call's answer is a claude envelope (or openrouter envelope) without is_error; else why it counts as failed."""
+    if raw is None:
+        return "no answer"
+    try:
+        envelope = json.loads(raw)
+    except ValueError:
+        return "the answer is not JSON"
+    if not isinstance(envelope, dict):
+        return "the answer is not a JSON object"
+    if envelope.get("is_error"):
+        return str(envelope.get("result") or envelope.get("stderr") or envelope.get("exit_code") or "is_error")
+    return None
 
 
 def _prompt(root, request, files):

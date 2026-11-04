@@ -313,11 +313,11 @@ def _why(errors, reviewer):
     return f"reviewer {reviewer} error: {errors[reviewer]}" if errors.get(reviewer) else f"reviewer {reviewer} gave no verdict line"
 
 
-def _review_one(models, reviewer, files):
+def _review_one(models, reviewer, files, slot=None):
     """(kind, text). READY. FIX: a FIX FIRST with valid evidence. UNSUPPORTED: a FIX FIRST without valid evidence, even after one re-ask; it
     stays open, and neither a backup nor a later READY overrides it. INVALID: the call failed or the reply has no verdict line, so the backup
     takes the slot (no re-ask). `models.package` is the package the review was given (the runner sets it on each review call)."""
-    text = models.call(reviewer, "review", files)
+    text = models.call(reviewer, "review", files, slot=slot)
     verdict = verdict_of(text)
     if verdict == "READY":
         return "READY", text
@@ -326,7 +326,7 @@ def _review_one(models, reviewer, files):
     if evidence_ok(text, models.package):
         return "FIX", text
     try:
-        again = models.call(reviewer, "review-reask", files)
+        again = models.call(reviewer, "review-reask", files, slot=slot)
     except ModelFailed:
         return "UNSUPPORTED", text
     if verdict_of(again) == "FIX FIRST" and evidence_ok(again, models.package):
@@ -334,10 +334,10 @@ def _review_one(models, reviewer, files):
     return "UNSUPPORTED", again if again.strip() else text
 
 
-def _verdict(models, reviewer, files):
+def _verdict(models, reviewer, files, slot=None):
     """(kind, text, error) for one reviewer call. A failed call is INVALID with its upstream error; BudgetStop and Blocked propagate."""
     try:
-        kind, text = _review_one(models, reviewer, files)
+        kind, text = _review_one(models, reviewer, files, slot)
     except ModelFailed as exc:
         return "INVALID", "", str(exc)
     return kind, text, ""
@@ -365,8 +365,9 @@ def _review(files, models, lineage, down):
     used = set(panel) | set(down)
     ready, errors = [], {}
     try:
-        for slot in panel:                              # North (or its backup) first; GLM only after that READY
-            kind, text, error = _verdict(models, slot, files)
+        for index, slot in enumerate(panel):            # North (or its backup) first; GLM only after that READY
+            seat = oc.REVIEWER_ROLES[index]             # the panel slot: reviewer_b, then reviewer_a (panel_for keeps this order)
+            kind, text, error = _verdict(models, slot, files, seat)
             if kind == "READY":
                 ready.append(slot)
                 continue
@@ -382,7 +383,7 @@ def _review(files, models, lineage, down):
             except oc.ProviderUnavailable as exc:
                 return Outcome("provider-unavailable", f"{exc} ({_why(errors, slot)})")
             used.add(backup)
-            kind, text, error = _verdict(models, backup, files)
+            kind, text, error = _verdict(models, backup, files, seat)     # a backup takes the slot it stands in for
             if kind == "READY":
                 ready.append(f"{backup} (backup for {slot})")
                 continue
