@@ -322,7 +322,7 @@ def _produced(root, files, originals):
     """True when a candidate exists: some job file on disk differs from its original. A stop before any write has no candidate."""
     for rel in files:
         path = Path(root) / rel
-        now = path.read_text(encoding="utf-8") if path.is_file() else None
+        now = read_text_exact(path) if path.is_file() else None      # exact bytes, as the originals were captured (I73): text mode turns CRLF into LF
         if now != (originals or {}).get(rel):
             return True
     return False
