@@ -1609,7 +1609,8 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
         stop_beat()
     state = result["state"]
     try:
-        write_change_doc(wt, job_id, job, dict(result, state=state), base)
+        write_change_doc(wt, job_id, job, dict(result, state=state), base,
+                         installed=installed_plan_paths(job) if package is not None else ())   # a planned job's installed files (I64)
     except BaseException:
         launcher.finish(job_id, gen, "error", base)
         raise
@@ -1631,7 +1632,14 @@ def merge_manifest(job: dict, wt: Path, result: dict) -> dict:
     return {"files": files, "reviewed_hash": reviewed, "acceptance_tests": locked, "acceptance_hashes": gates.hash_paths(wt, locked)}
 
 
-def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
+def installed_plan_paths(job: dict) -> list:
+    """The repo paths an approved plan installs into the worktree (install_plan): the spec, the locked acceptance tests and the negative-control
+    sources. They are committed with the change, so the merge carries them (I64)."""
+    controls = [src for c in (job.get("negative_controls") or []) for src in (c.get("replace") or {}).values()]
+    return list(dict.fromkeys([job["spec"], *(job.get("acceptance_tests") or []), *controls]))
+
+
+def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str, installed=()) -> Path:
     """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it. A passed job's own files (job
     "files": the code and its tests) go into the same commit: they are what the merge delivers. A job that did not pass commits the doc only
     (its files were restored to the originals)."""
@@ -1650,8 +1658,9 @@ def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) 
     git = _sibling_module("launch").git
     git(["add", doc.relative_to(wt).as_posix()], wt)
     if result.get("state") == "passed":                      # the delivered code: new, changed or deleted job files
-        tracked = set(git(["ls-files", "--", *job["files"]], wt).stdout.split())
-        paths = [rel for rel in job["files"] if (Path(wt) / rel).exists() or rel in tracked]
+        delivered = list(dict.fromkeys([*job["files"], *installed]))   # plus the approved plan's installed files (I64)
+        tracked = set(git(["ls-files", "--", *delivered], wt).stdout.split())
+        paths = [rel for rel in delivered if (Path(wt) / rel).exists() or rel in tracked]
         if paths:
             git(["add", "-A", "--", *paths], wt)
     git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
