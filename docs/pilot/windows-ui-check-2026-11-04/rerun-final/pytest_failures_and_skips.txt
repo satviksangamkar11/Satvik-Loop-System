@@ -1,0 +1,12 @@
+23:_______ test_a_provider_failure_before_the_first_write_is_a_clean_stop ________
+37:E       AssertionError: assert not True
+38:E        +  where True = exists()
+39:E        +    where exists = (((WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1616/test_a_provider_failure_before0/repo') / '_loop') / 'calc') / 'candidate').exists
+64:E       AssertionError: assert ('def calculate_total(prices):\n    return 0\n' in 'SPEC:\ncalculate_total(prices) returns the sum of the prices.\n\nEXPECTED FILES:\n\npieces/calc.py:\ndef calculate_to...le)\n\nReply in exactly this format (an example, one file):\nFILE: pieces/calc.py\n```python\ntotal = sum(prices)\n```')
+70:SKIPPED [1] pieces\test_batch_a_paid.py:308: no /proc on this platform
+71:SKIPPED [1] pieces\test_guards.py:103: pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)
+72:SKIPPED [1] pieces\test_guards.py:117: docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)
+73:SKIPPED [1] pieces\test_guards.py:128: no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)
+74:SKIPPED [1] pieces\test_i68_process_identity.py:69: no /proc on this platform
+75:SKIPPED [1] pieces\test_i68_process_identity.py:78: no /proc on this platform
+76:SKIPPED [1] pieces\test_plan_job.py:573: this OS refuses to create the symlink ([WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1616\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1616\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'); the refusal is only testable where symlinks can be made
