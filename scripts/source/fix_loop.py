@@ -16,7 +16,7 @@ import yaml
 import jsonschema
 
 import atomic_json
-from exact_text import read_text_exact, write_text_exact
+from exact_text import line_ends_as_lf, read_text_exact, write_text_exact
 
 
 JOB_SCHEMA = {
@@ -403,8 +403,10 @@ def _text_not_weaker(old: str, new: str) -> bool:
 
 
 def _test_change_forbidden(path: Path, content: str, pytest_output) -> bool:
-    """True when a fix round may NOT replace this existing test file with `content`."""
-    old = read_text_exact(path)                        # compared as bytes: the disk is what acceptance hashes (I75)
+    """True when a fix round may NOT replace this existing test file with `content`. The disk is read as bytes (I75); the reply is compared
+    with it line-ending-insensitively (I76): the coder answers in LF, so a CRLF test restated unchanged is not a change."""
+    old = line_ends_as_lf(read_text_exact(path))
+    content = line_ends_as_lf(content)
     if old == content:
         return False
     if _parses(path):                                  # a working test: repairable only for an error in its own code, and never weaker
@@ -1096,7 +1098,8 @@ def run_job(
                          and _test_change_forbidden(root / rel, content, last_pytest_output)]
         if files_ok and round_no == 0:            # round 0: a test file that existed before the job may only be EXTENDED (old text kept, new tests appended)
             rewritten = [rel for rel, content in parsed_files.items()
-                         if rel in tests and original_contents.get(rel) and not content.startswith(original_contents[rel].rstrip())]
+                         if rel in tests and original_contents.get(rel)
+                         and not line_ends_as_lf(content).startswith(line_ends_as_lf(original_contents[rel]).rstrip())]     # I76: LF reply, CRLF original
             if rewritten:
                 tests_changed = rewritten
         if tests_changed:                         # tests are frozen after round 0: a wrong test is an escalation, never a quiet edit
@@ -1109,7 +1112,7 @@ def run_job(
             for rel, content in parsed_files.items():
                 if rel in tests and (root / rel).exists():
                     old_text = read_text_exact(root / rel)
-                    if old_text != content:                              # only reachable for an accepted test-bug repair or a syntax-error repair
+                    if line_ends_as_lf(old_text) != line_ends_as_lf(content):      # only reachable for an accepted test-bug repair or a syntax-error repair (I76: not a line-ending change)
                         tests_repaired.append(rel)
                         diff = "".join(difflib.unified_diff(old_text.splitlines(True), content.splitlines(True), f"{rel} (before round {round_no})", f"{rel} (after round {round_no})"))
                         _atomic_write(status_dir_job / "test_edits" / f"round_{round_no}_{Path(rel).name}.diff", diff)

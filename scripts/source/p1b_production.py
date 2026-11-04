@@ -31,7 +31,7 @@ import inspect
 
 import atomic_json
 import claude_code as cc
-from exact_text import read_text_exact, write_text_exact    # noqa: F401 (re-exported: the I69 helpers live in exact_text)
+from exact_text import line_ends_as_lf, read_text_exact, write_text_exact    # noqa: F401 (re-exported: the I69 helpers live in exact_text)
 import event_log
 import openrouter_call as oc
 import opus_repair
@@ -349,10 +349,17 @@ def spec_requirements(spec_text):
     return [line.strip() for line in spec_text.splitlines() if line.strip() and not line.strip().startswith("#")]
 
 
+def _same_text(a, b):
+    """True when two texts differ at most in line endings (I76): the originals are exact bytes (CRLF on Windows), the disk text read here is LF."""
+    if a is None or b is None:
+        return a is b
+    return line_ends_as_lf(a) == line_ends_as_lf(b)
+
+
 def diff_block(rel, before, now):
     if before is None and now is None:
         return f"{rel}: absent before and after (no change)"
-    if before == now:
+    if _same_text(before, now):
         return f"{rel}: (no change)"
     head = f"{rel}: NEW FILE" if before is None else f"{rel}: DELETED" if now is None else f"{rel}: changed"
     body = difflib.unified_diff((before or "").splitlines(), (now or "").splitlines(), fromfile=f"original/{rel}", tofile=f"current/{rel}",
@@ -507,7 +514,7 @@ def build_package(root, job, originals, junit, scrub_keys=(), limit=None):
             blocks.append(f"{rel}: (missing)")
             continue
         shown[rel] = len(now.splitlines())
-        blocks.append(f"{rel}" + (" (unchanged)" if now == originals.get(rel) else "") + "\n" + numbered(now))
+        blocks.append(f"{rel}" + (" (unchanged)" if _same_text(now, originals.get(rel)) else "") + "\n" + numbered(now))
     sections[3] = "## 3. FILES\n" + ("\n\n".join(blocks) or "(none)")
 
     blocks = []
