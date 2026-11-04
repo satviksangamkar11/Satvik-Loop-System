@@ -46,7 +46,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
    - in `ui/`, run `npm ci` and then `npm run dev:live`;
    - open each of the 7 pages, take screenshots, and push them to branch `windows-ui-check-2026-11-04`.
    - Done when every page shows real data, with no console errors.
-8. [ ] **Docs:** add an "As integrated" section to `docs/ARCHITECTURE_REVISION_4.md` (API and UI), tick this checklist, and record a STATUS
+8. [ ] **Written (`69c5312`): As integrated + `docs/STATUS_2026-11-04.md`; ticks when the B6 PR merges.** **Docs:** add an "As integrated" section to `docs/ARCHITECTURE_REVISION_4.md` (API and UI), tick this checklist, and record a STATUS
    entry. Done when merged.
 
 ## D. Issues register (every known issue; none may be skipped)
@@ -60,8 +60,8 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I6 ✅ (`8447113`, deleted) | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
 | I7 ✅ | `npm ci` reports 5 moderate vulnerabilities | **Done 2026-11-04:** `npm audit --omit=dev` → 0 vulnerabilities (runtime clean). All 5 moderate are dev-only: `minimatch` under eslint and typescript-eslint, lint tooling only, not in the built app | Recorded |
 | I8 ✅ (`08361b1`: System page saves with revision; 409 stale and not-applied-by-engine shown. No job_review_usd input in the UI) | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
-| I9 | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
-| I10 | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
+| I9 ✅ (`69c5312`) | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
+| I10 ✅ (`69c5312`) | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
 | I11 | Replies from the PC agents to this session fail ("not found") | Known platform limit; git branches are the report channel | Documented (no fix possible here) |
 | I12 | The p2-api commits are only in this container's local worktree | Merge onto the pushed working branch as soon as the API agent reports (item 3) | On GitHub |
 | I13 | (Cloud 2026-11-04 `2c74b35`: 1308 passed, 4 skipped, root-only only; UI unit 56, fixture e2e 12, real e2e 18.) The cloud suite has one root-only failure (`test_plan_job.py::…_read_only`) | Environmental; must pass on Windows (item 7) | Passes in the Windows suite run |
@@ -82,7 +82,8 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I28 ✅ (`cd5fca0`) | job_review_usd: in-range values other than 0.05 must give not-applied-by-engine (I15 wording) | `api-mismatch` | A test |
 | I29 ✅ (`2cc5c96`; new archives only, the earlier ah-budget archive stays spec null) | Archived job detail has spec/files null: the archive lacks `<name>.job.json` | Archive copies the job file (`api-mismatch`) | A test |
 | I30 ✅ (`f54f6a8`) | Contract prose puts contracts/reasoning_mode at Model level; example, fixture and API nest them under capabilities | Fix the prose (`api-mismatch`) | Doc fixed |
-| I31 | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
+| I31 ✅ (`69c5312`) | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
+| I32 | Nothing calls `job_history.rebuild_index`: history.db is built only by finish/merge hooks, so a missing or corrupt index never comes back on its own | Rebuild from the files when the index is missing or unreadable (API startup) plus a CLI | A test: delete history.db, start the API, index_ok true |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
