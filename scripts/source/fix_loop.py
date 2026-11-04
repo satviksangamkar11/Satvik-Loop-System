@@ -977,7 +977,7 @@ def run_job(
         return p1b_production.run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock,
                                   originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root, job),
                                   parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys,
-                                  frozen_snapshot=stage_snapshot)
+                                  frozen_snapshot=stage_snapshot, stop_check=stop_check)
 
     rounds_record: list[dict] = []
     coder_calls = 0
@@ -1485,15 +1485,19 @@ def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
 
 # ---- close-1 wiring (steps 4-8): a launched job runs in its own worktree, through launch.Launcher and the merge queue
 
-class StopRequested(Exception):
-    """The stop switch (home/STOP) was on before a round. The job stops; its files are restored to the base commit."""
+def __getattr__(name):
+    """StopRequested is the production runner's class (p1b_routing.StopRequested), so one exception serves the round loop and the P1b ladder."""
+    if name == "StopRequested":
+        return _p1b().StopRequested
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _stop_switch(home: Path):
-    """A stop_check for run_job: raises StopRequested while home/STOP exists."""
+    """A stop_check for run_job: raises StopRequested while home/STOP exists. It is checked before each round (the round loop) and, for a
+    production job, before each new model step and retry (p1b_production)."""
     def check() -> None:
         if _sibling_module("launch").stop_requested(home):
-            raise StopRequested("stop switch is on")
+            raise _p1b().StopRequested("stop switch is on")
     return check
 
 
@@ -1593,7 +1597,7 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     try:
         try:
             result = (run or run_job)(job, wt, **run_kwargs)
-        except StopRequested:
+        except _p1b().StopRequested:
             restore_files(wt, list(job["files"]))
             result = {"name": name, "state": "stopped", "round": None}
         except BaseException:
@@ -1683,12 +1687,30 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+API_QUEUED_TAG = "api"               # queue/<ns>-api-<pid>-<name>.json: queued with a frozen stage table (through the API). The tag is in the NAME, so
+                                     # the one rename that takes the job carries the requirement with it (I43): no separate marker can be lost.
+                                     # It sits between the arrival stamp and the pid, so the name still ends with <name>.json and the queue still
+                                     # sorts by arrival (the stamp is fixed width and comes first).
+
+
+def requires_snapshot(queued: Path) -> bool:
+    """True for a job queued through the API: its frozen stage table is required to start it."""
+    parts = Path(queued).name.split("-", 2)
+    return len(parts) == 3 and parts[1] == API_QUEUED_TAG
+
+
 def enqueue(job_path: Path, home: Path, stages: dict | None = None, plan: dict | None = None) -> Path:
     """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename). With `stages` (a frozen
-    stage snapshot) or `plan` (an approved plan), their sidecars are written first, so a job that appears in the queue always has them beside it."""
+    stage snapshot) or `plan` (an approved plan), their sidecars are written first, so a job that appears in the queue always has them beside it.
+    With `stages` the name carries the API_QUEUED_TAG (the table is then required at start, I43)."""
     folder = queue_dir(home)
     folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
+    if stages is None:
+        dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
+    else:
+        base = Path(job_path).name
+        base = base[:-len(".json")] if base.endswith(".json") else base
+        dest = folder / f"{time.time_ns():020d}-{API_QUEUED_TAG}-{os.getpid()}-{base}.json"
     if stages is not None:
         _write_json_atomic(stages_file(dest), stages)
     if plan is not None:
@@ -1712,6 +1734,25 @@ def read_stages(queued: Path) -> dict | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+class SnapshotRequired(ValueError):
+    """An API-queued job whose frozen stage table is missing, corrupt, or was not moved with it: the job does not run (I43). Never a silent
+    fallback to the current defaults."""
+
+
+def frozen_stage_table(taken: Path) -> dict | None:
+    """The stage table a taken job starts with. None for a job queued without one (the roster is read at start, as before). For an
+    API-queued job it must be there and be a stage table: a missing, unreadable or wrong-shaped sidecar raises SnapshotRequired."""
+    frozen = read_stages(taken)
+    if not requires_snapshot(taken):
+        return frozen
+    sc = _sibling_module("stage_config")
+    if frozen is None or frozen.get("schema_version") != sc.SNAPSHOT_SCHEMA or not isinstance(frozen.get("resolved"), dict) \
+            or not isinstance(frozen.get("profile"), str):
+        raise SnapshotRequired(f"{Path(taken).name}: its frozen stage table is missing, corrupt or was not moved with the job; it is not run "
+                               "with the current defaults")
+    return frozen
 
 
 COMPLETED = ("passed", "merged")      # a job in one of these states runs again only with rerun=True
@@ -1787,7 +1828,12 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
         except (ValueError, OSError) as exc:
             out.append((path.name, "invalid"))
             continue
-        frozen = read_stages(path)                  # the table frozen at queue time; None for a job queued without one
+        try:
+            frozen = frozen_stage_table(path)       # the table frozen at queue time; None for a job queued without one; SnapshotRequired refuses
+        except SnapshotRequired as exc:
+            print(f"{path.name}: refused: {exc}", flush=True)
+            out.append((path.name, "refused"))
+            continue
         approved = read_plan(path)                  # the approved plan of a planned job; None otherwise
         if approved is not None and _file_sha256(path) != approved.get("job_sha256"):
             out.append((path.name, "plan-changed"))  # the queued copy is not the approved job file: nothing starts

@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPO / "scripts" / "source"))
 
 import claude_code as cc  # noqa: E402
 import event_log  # noqa: E402
+import p0_gates as _p0gates  # noqa: E402
 import fix_loop  # noqa: E402
 import job_history  # noqa: E402
 import launch  # noqa: E402
@@ -60,6 +61,9 @@ def fixture(name):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+_REAL_CONTROLLER_RULE = _p0gates.is_protected_control_file     # the rule as written, before any test waives it
+
+
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
@@ -77,6 +81,9 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "CATALOG_PATH", repo / "config" / "models.json")
     monkeypatch.setattr(limits_config, "PATH", repo / "config" / "limits.json")
     monkeypatch.setattr(oc, "load_keys", lambda *a, **k: {"free": "free-key-not-a-real-value"})
+    # the four-loop job below edits a scripts/source module (I53, 2026-11-04): these contract tests read it as a fixture, with the controller-file
+    # rule off; the refusal through the API is tested by test_the_api_refuses_a_job_that_edits_a_host_module with the real rule
+    monkeypatch.setattr(_p0gates, "is_protected_control_file", lambda rel: False)
     from monitor import config_api
     from monitor import views
     LISTING[:] = BASE_LISTING
@@ -299,6 +306,15 @@ def test_models_shape_matches_fixture(world):
         assert expected["model_id"] in by_id, expected["model_id"]
         assert shape_diff(expected, by_id[expected["model_id"]]) == []
     assert body["index_ok"] is True
+
+
+def test_the_api_refuses_a_job_that_edits_a_host_module(world):
+    """I53: a loop job that edits a host-executed module is refused by the API's validation, with the controller refusal. The real rule is
+    restored here; the world fixture waives it for the contract tests."""
+    world.monkeypatch.setattr(_p0gates, "is_protected_control_file", _REAL_CONTROLLER_RULE)
+    r = world.client.post("/api/jobs/validate", json={"job_path": "docs/pilot/four-loop/fl-top.json"})
+    assert r.status_code != 200, r.text
+    assert "scripts/source/fl_top.py: job edits the loop's own control files" in r.text
 
 
 def test_ui_and_api_contract_tests_read_the_same_fixture_files(world):
