@@ -1,5 +1,10 @@
 # Satvik Loop: engine handoff for the Control Center UI
 
+> **Status (2026-11-04).** This document is the handoff as it was written on 3 Nov. Sections and rows marked **HISTORICAL** describe gaps
+> that are now closed: the API exists (`monitor/`), job stage tables are frozen at queue time, and a running job's future stage can be
+> changed (`PATCH /api/loops/{id}/stages`). The current capability and verification matrix is in `docs/ARCHITECTURE_REVISION_4.md`
+> ("As integrated", Batch D). Where this document and that matrix differ, the matrix and the code win.
+
 Source of truth: `main` at `b96063e` (after PR #36), 3 Nov 2026. Every finding is marked **[exists]**, **[extend]** (the code exists but needs an addition) or **[none]**
 (not supported today). Paths are relative to the repo root, and `S/` means `scripts/source/`.
 
@@ -93,8 +98,10 @@ Repeats are bounded by `REPAIR_CALLS`, `FIX_ROUNDS`, `TRUNCATION_RETRIES`, `MAX_
 
 ### A6. Stage configuration
 - Defaults live in `config/roster.json` per profile. They are read at call time, with no cache across processes.
-- **Per-job overrides [none]:** a job names roles (`fixers: ["writer_a","writer_b"]`), never models.
-- **Frozen snapshot per job [none]:** the roster is read live, so editing it during a run changes later calls of a running job.
+- **Per-job overrides [none]:** a job names roles (`fixers: ["writer_a","writer_b"]`), never models. **HISTORICAL:** a queued job now carries its
+  own stage table (`stage_snapshot.json`, revision 1), and `PATCH /api/loops/{id}/stages` changes a stage the job has not started yet.
+- **Frozen snapshot per job [none]:** the roster is read live, so editing it during a run changes later calls of a running job. **HISTORICAL:**
+  implemented (`scripts/source/stage_config.py` snapshot, 2026-11-04); a roster edit now affects future jobs only.
 - **Validation** [exists]: `RosterRefused(text)` at load. The test profile refuses paid roles, and any Claude Code role other than haiku at high.
 
 ### A7. Lineage and independence [exists]
@@ -195,8 +202,8 @@ There are no routes or HTTP codes today. "Call" is the function a local server w
 | Download artifacts | read `SATVIK_HOME/results/<job_id>/` (#36) | — | files | `archive_failed` in the registry row: the evidence stays in `wt/<job_id>` | after finish | none | safe | exists (no API) |
 | Model verify | `openrouter_call.py probe` (`main()`, `probe()`) | roles or models | probe JSON, one call per role | errors per role | key set | 1 free call each | repeats calls | exists (roster models only) |
 | Refresh price | `OpenRouter.endpoint(model)` | paid model | price, provider | ProviderUnavailable | paid roles | 1 GET | safe | extend (paid only, not stored) |
-| Change a stage model | edit `config/roster.json` | file | — | `RosterRefused` at the next load | any (no lock) | affects running jobs at their next call | — | extend (no snapshot or revision) |
-| Apply future stage | — | — | — | — | — | — | — | **none** |
+| Change a stage model | edit `config/roster.json` | file | — | `RosterRefused` at the next load | any (no lock) | affects running jobs at their next call | — | **HISTORICAL** (2026-11-04: `PUT /api/stages` with a revision and a frozen table per job) |
+| Apply future stage | — | — | — | — | — | — | — | **HISTORICAL**: implemented as `PATCH /api/loops/{id}/stages` (`stage_config.apply_future_stage`, I45 validator) |
 | Resume a failed job | — | — | — | — | — | — | — | **none** (re-queue starts over; the registry blocks only running duplicates) |
 | Cancel one job | — | — | — | — | — | — | — | **none** (STOP is global) |
 
@@ -209,8 +216,8 @@ There are no routes or HTTP codes today. "Call" is the function a local server w
 | A local HTTP server with read routes for Part B and action routes for Part C, stable error codes, and a health route | new server module wrapping `fix_loop`, `launch`, `merge_queue`, `loop_home`, `shared_limits`, `openrouter_call` | P2 (UI backend) |
 | Live events (step start/end, merge stage) | `p1b_production.Production._step` / `_heartbeat`; `merge_queue.drain` (emit a per-job event file) | P1 extension |
 | ~~Stall vs waiting states~~ | done in #36 (`status.json.waiting`); liveness stays with the lease | done |
-| Frozen roster per job, with revisions | `p1b_production.run` (copy the resolved roles into `status.json.evidence`), and `openrouter_call.roster_state` (read from the snapshot) | P1 |
-| Future-stage edits only | needs the frozen snapshot above, plus a per-stage override read in `_ladder`; today a roster edit changes running jobs | P1 |
+| ~~Frozen roster per job, with revisions~~ (done 2026-11-04) | `p1b_production.run` (copy the resolved roles into `status.json.evidence`), and `openrouter_call.roster_state` (read from the snapshot) | P1 |
+| ~~Future-stage edits only~~ (done 2026-11-04) | needs the frozen snapshot above, plus a per-stage override read in `_ladder`; today a roster edit changes running jobs | P1 |
 | Model capability metadata (context, max output, structured outputs, free prices, freshness) | `openrouter_call` (`/models` read, stored beside the roster) | P1 |
 | Structured-output requests and JSON-schema validation | `openrouter_call._post` / `check_reply`, `p1b_production` parsers (text formats today) | P1 |
 | Per-job cancel | `fix_loop.run_launched` stop_check per job id (today only global STOP) | P2 |
@@ -224,5 +231,5 @@ There are no routes or HTTP codes today. "Call" is the function a local server w
 **Safe to expose as-is:** Validate, Dry run, Queue (`try_enqueue`), the run-loop start, Global STOP, the reads of status (with `waiting`),
 results, registry, ledger, claims, leases and counters, and Model verify for roster models.
 
-**Do not expose:** a model switch during a run (no snapshot), Resume, per-job Cancel, a manual Merge, and Apply Future Stage. None of these
-exist in the engine.
+**HISTORICAL (2026-11-04):** a model switch during a run and Apply Future Stage are now implemented (see above). Still not exposed and not in
+the engine: Resume, per-job Cancel, a manual Merge.
