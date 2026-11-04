@@ -234,7 +234,12 @@ def _base(test_id):
 
 
 def verify_junit(xml_text, expected: dict, returncode: int, timed_out: bool) -> list:
-    """Problems with a run that must PASS. Empty list = every expected test was collected and passed, nothing was skipped, xfailed or errored."""
+    """Problems with a run that must PASS. Empty list = every expected test was collected and passed, nothing was skipped, xfailed or errored.
+
+    Report forgery (I54), fail closed: generated code runs in the same pytest process that writes the JUnit file, so the report is checked
+    against what the controller locked. A case from a file that is not a locked test file is a problem; the suite's own `tests` count must equal
+    the number of cases. Trust limit: a forgery that fakes the report with exactly the locked cases, all passing, is not detected here (the
+    report and the stdout are both written by generated code's process); see ARCHITECTURE_REVISION_4."""
     problems = []
     if timed_out:
         problems.append("pytest timed out")
@@ -243,11 +248,21 @@ def verify_junit(xml_text, expected: dict, returncode: int, timed_out: bool) -> 
     if not xml_text:
         return problems + ["no JUnit XML result"]
     try:
+        root = ET.fromstring(xml_text)
         cases = _cases(xml_text)
     except ET.ParseError as exc:
         return problems + [f"JUnit XML unreadable: {exc}"]
     if not cases:
         problems.append("no test was collected")
+    suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+    for suite in suites:
+        declared = suite.get("tests")
+        if declared is not None and declared.isdigit() and int(declared) != len(cases):
+            problems.append(f"JUnit reports {declared} tests but has {len(cases)} cases")
+    locked_files = set(expected)
+    for file, tid, outcome in cases:
+        if file not in locked_files:
+            problems.append(f"{file or '?'}::{tid}: not a locked test file (unexpected case in the report)")
     for file, tid, outcome in cases:
         if outcome != "passed":
             problems.append(f"{file or '?'}::{tid}: {outcome}")
