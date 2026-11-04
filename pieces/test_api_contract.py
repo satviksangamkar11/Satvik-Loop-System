@@ -301,6 +301,32 @@ def test_models_shape_matches_fixture(world):
     assert body["index_ok"] is True
 
 
+def test_ui_and_api_contract_tests_read_the_same_fixture_files(world):
+    """B4: the UI contract tests and this file read the same monitor/fixtures files, and the sample fields the checklist names are present:
+    GET /system/limits revision, GET /jobs {jobs, index_ok} (jobs.json), GET /system/health profile."""
+    ui_test = (REPO / "ui" / "tests" / "contract.test.ts").read_text(encoding="utf-8")
+    for name in ("models.json", "overview.json", "stages.json", "system_health.json", "running_job.json", "results_escalate.json", "jobs.json"):
+        assert f"../../monitor/fixtures/{name}" in ui_test, name
+        assert (FIXTURES / name).is_file(), name
+    assert set(fixture("jobs.json")) == {"jobs", "index_ok"}
+    assert isinstance(fixture("system_health.json")["limits"]["revision"], int)
+    assert "profile" in fixture("system_health.json")["health"]
+    contract = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert '"revision": 1' in contract and "### Job list (`GET /jobs`)" in contract and '"profile": "test|production"' in contract
+
+
+def test_the_contract_places_contracts_and_reasoning_mode_under_capabilities(world):
+    """M7: the prose and the example agree with the fixture and the API: contracts and reasoning_mode are under `capabilities`."""
+    doc = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert "`capabilities.contracts.<contract>" in doc and "`capabilities.reasoning_mode`" in doc
+    assert "`contracts.<contract> = contract_state`" not in doc
+    for model in fixture("models.json")["models"]:
+        assert set(model["capabilities"]) >= {"contracts", "reasoning_mode"}
+        assert "contracts" not in model and "reasoning_mode" not in model
+    body = world.client.get("/api/models").json()["models"][0]
+    assert "contracts" in body["capabilities"] and "reasoning_mode" in body["capabilities"]
+
+
 def test_stages_shape_matches_fixture_and_lists_ten_stages(world):
     body = world.client.get("/api/stages", params={"profile": "test"}).json()
     expected = fixture("stages.json")
@@ -365,6 +391,83 @@ def test_running_job_detail_matches_fixture_and_its_events(world):
             assert shape_diff(want, got[want["seq"]]) == [], want["seq"]
     later = world.client.get(f"/api/loops/{JOB_ID_COMPLETED}/events", params={"after": 3}).json()
     assert [e["seq"] for e in later["events"]] == [4, 5]
+
+
+def test_attempt_end_status_is_the_attempt_status_not_the_http_code(world):
+    """M1: the engine's attempt-end `status` is the HTTP code of its last request. The API shows the contract's attempt_status instead:
+    ok when the call did not fail, rejected when a 2xx reply could not be used, failed for any other failure. No HTTP code, no failed flag."""
+    job_id = "fl-top-20261104-0900-a1a1"
+    start = {"type": "attempt-start", "stage": "writer_a_write", "role": "writer_a", "mode": "write",
+             "model": "dots-studio/dots-3-note-preview:free", "via": "openrouter", "effort": "high"}
+    end = {"type": "attempt-end", "prompt_tokens": 10, "completion_tokens": 5, "reasoning_tokens": None, "finish_reason": "stop",
+           "seconds": 1.5, "requests": 1}
+    events = [
+        {"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+        dict(start, attempt_id="a1"), dict(end, attempt_id="a1", status=200, failed=False, error=None),
+        dict(start, attempt_id="a2"), dict(end, attempt_id="a2", status=200, failed=True, error="the reply has no file blocks"),
+        dict(start, attempt_id="a3"), dict(end, attempt_id="a3", status=429, failed=True, error="HTTP 429: rate limited"),
+    ]
+    add_job(world, job_id, events=events, end="passed", state="passed", started=("writer_a_write",), registry="passed")
+    reindex(world)
+    rows = world.client.get(f"/api/loops/{job_id}/events", params={"after": 0}).json()["events"]
+    ends = {e["attempt_id"]: e for e in rows if e["type"] == "attempt-end"}
+    assert {k: v["status"] for k, v in ends.items()} == {"a1": "ok", "a2": "rejected", "a3": "failed"}
+    assert ends["a3"]["error"] == "HTTP 429: rate limited" and ends["a2"]["error"] == "the reply has no file blocks"
+    for row in rows:
+        if row["type"].startswith("attempt-"):
+            assert not isinstance(row["status"], int) and row["status"] in ("running", "ok", "failed", "rejected")
+            assert "failed" not in row and "requests" not in row
+    assert shape_diff(fixture("running_job.json")["events"]["events"][2], ends["a1"]) == []
+
+
+def test_attempt_end_carries_its_attempt_fields_from_the_start_even_after_a_cursor(world):
+    """M2: an attempt-end that lacks stage, role, mode, model, via or effort takes them from the attempt-start with the same attempt id,
+    also when the start is before the poll's `after` cursor."""
+    job_id = "fl-top-20261104-0900-b2b2"
+    events = [
+        {"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+        {"type": "attempt-start", "attempt_id": "a1", "stage": "reviewer_b", "role": "reviewer_b", "mode": "review",
+         "model": "nvidia/nemotron-3.5-super-vl:free", "via": "openrouter", "effort": "low"},
+        {"type": "attempt-end", "attempt_id": "a1", "status": 200, "failed": False, "prompt_tokens": 10099, "completion_tokens": 420,
+         "reasoning_tokens": 300, "finish_reason": "stop", "seconds": 41.2, "error": None},
+    ]
+    add_job(world, job_id, events=events, end="passed", state="passed", started=("reviewer_b",), registry="passed")
+    reindex(world)
+    later = world.client.get(f"/api/loops/{job_id}/events", params={"after": 1}).json()
+    assert [e["seq"] for e in later["events"]] == [2, 3]
+    end = later["events"][1]
+    assert end["type"] == "attempt-end" and end["attempt_id"] == "a1"
+    assert {k: end[k] for k in ("stage", "role", "mode", "model", "via", "effort")} == {
+        "stage": "reviewer_b", "role": "reviewer_b", "mode": "review", "model": "nvidia/nemotron-3.5-super-vl:free", "via": "openrouter",
+        "effort": "low"}
+    assert end["status"] == "ok" and end["prompt_tokens"] == 10099
+    whole = world.client.get(f"/api/loops/{job_id}/events", params={"after": 0}).json()["events"]
+    assert all(e["stage"] == "reviewer_b" for e in whole if e["type"].startswith("attempt-"))
+
+
+def test_an_archived_job_shows_its_spec_and_files_from_the_archived_job_file(world):
+    """M5: GET /loops/{id} reads spec and files from the job file in the archive (results/<id>/<name>.job.json), after the worktree is gone.
+    An archive that has no job file (made before the archive kept one) shows them as null: not guessed."""
+    job = {"name": "fl-top", "spec": "docs/pilot/four-loop/FL_TOP_SPEC.md", "files": ["scripts/source/fl_top.py"], "tests": [],
+           "profile": "test", "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}}
+    job_id = "fl-top-20261104-0900-d4d4"
+    events = [{"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+              {"type": "finish", "state": "passed", "reason": "READY"}]
+    add_job(world, job_id, where="wt", events=events, end="passed", state="passed", registry="passed", lease="released")
+    wt_job_file = world.home / "wt" / job_id / "_loop" / "fl-top.job.json"
+    wt_job_file.unlink()                                             # the run wrote no copy of its job file
+    assert launch.archive_job(world.home, job_id, job=job) == "archived"
+    shutil.rmtree(world.home / "wt" / job_id)                        # the worktree is gone: the archive alone answers
+    reindex(world)
+    body = world.client.get(f"/api/loops/{job_id}").json()
+    assert body["spec"] == job["spec"] and body["files"] == job["files"]
+    assert body["archive"] == {"available": True, "archive_failed": False}
+    old = "fl-top-20261104-0900-e5e5"
+    add_job(world, old, where="results", events=events, end="passed", state="passed", registry="passed", lease="released")
+    (world.home / "results" / old / "fl-top.job.json").unlink()      # an older archive: no job file at all
+    reindex(world)
+    older = world.client.get(f"/api/loops/{old}").json()
+    assert older["spec"] is None and older["files"] is None and older["end_state"] == "passed"
 
 
 def test_failed_review_job_matches_fixture(world):
@@ -797,7 +900,7 @@ def test_queued_job_freezes_its_stage_table_and_the_start_uses_it(world):
     class Launcher:
         repo = world.repo
 
-        def start(self, name, files, key=None):
+        def start(self, name, files, key=None, job=None):
             wt = world.home / "wt" / "fl-top-test-0001"
             wt.mkdir(parents=True, exist_ok=True)
             return {"ok": True, "job_id": "fl-top-test-0001", "gen": 1, "base": BASE, "worktree": str(wt), "branch": "job/x"}
@@ -927,6 +1030,38 @@ def test_a_stage_change_is_refused_until_its_model_has_the_required_contract_ver
     assert world.client.post("/api/stages/validate", json=repair).json() == {"valid": True, "problems": []}
 
 
+def test_a_locked_row_sent_with_a_null_or_unchanged_model_is_accepted_and_ignored(world):
+    """M3: a locked row (model_selectable false in GET /stages) sent with model null, or with the model it already shows, is accepted by
+    POST /stages/validate, POST /jobs and PUT /stages (the value is ignored). A changed model on it is model-not-selectable. An unlocked
+    row still refuses a null model (bad-model)."""
+    stages = {row["stage"]: row for row in world.client.get("/api/stages", params={"profile": "test"}).json()["stages"]}
+    locked = {name for name, row in stages.items() if not row["model_selectable"]}
+    assert {"reviewer_reask", "review_fix_repair", "reviewer_a"} <= locked
+    nulls = [{"stage": name, "model": None} for name in sorted(locked)]
+    assert world.client.post("/api/stages/validate", json={"profile": "test", "changes": nulls}).json() == {"valid": True, "problems": []}
+    shown = [{"stage": name, "model": stages[name]["model"], "effort": stages[name]["effort"]} for name in sorted(locked)]
+    assert world.client.post("/api/stages/validate", json={"profile": "test", "changes": shown}).json() == {"valid": True, "problems": []}
+    queued = world.client.post("/api/jobs", json={"job_path": "docs/pilot/four-loop/fl-top.json",
+                                                  "stages": {"reviewer_reask": {"model": None, "effort": "low"}, "reviewer_a": {"model": None}}})
+    assert queued.status_code == 201 and queued.json()["queued"] is True
+    revision = world.client.get("/api/stages", params={"profile": "test"}).json()["revision"]
+    saved = world.client.put("/api/stages", json={"profile": "test", "revision": revision, "changes": nulls},
+                             headers={"Idempotency-Key": "stages-locked-0001"})
+    assert saved.status_code == 200 and saved.json() == {"revision": revision + 1}
+    changed = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [
+        {"stage": "reviewer_a", "model": "dots-studio/dots-3-note-preview:free"}]})
+    assert changed.status_code == 400 and changed.json()["error"]["code"] == "model-not-selectable"
+    assert changed.json()["error"]["details"]["problems"][0]["stage"] == "reviewer_a"
+    fixed = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [
+        {"stage": "review_fix_repair", "via": "openrouter"}]})
+    assert fixed.status_code == 400 and fixed.json()["error"]["code"] == "model-not-selectable"
+    queued_changed = world.client.post("/api/jobs", json={"job_path": "docs/pilot/four-loop/fl-top.json", "rerun": True,
+                                                          "stages": {"reviewer_reask": {"model": "dots-studio/dots-3-note-preview:free"}}})
+    assert queued_changed.status_code == 400 and queued_changed.json()["error"]["code"] == "model-not-selectable"
+    unlocked = world.client.post("/api/stages/validate", json={"profile": "test", "changes": [{"stage": "writer_a_write", "model": None}]})
+    assert unlocked.status_code == 400 and unlocked.json()["error"]["code"] == "bad-model"
+
+
 def test_a_claude_code_model_is_not_a_valid_stage_model_while_its_contract_is_unverified(world):
     change = {"profile": "production", "changes": [{"stage": "planner", "model": "haiku", "via": "claude_code", "effort": "high"}]}
     r = world.client.post("/api/stages/validate", json=change)
@@ -1041,6 +1176,21 @@ def test_a_job_review_usd_other_than_the_engine_value_is_refused_and_not_stored(
     ok = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0.05, "sandbox_slots": 2},
                           headers={"Idempotency-Key": "limits-jrv-000003"})
     assert ok.status_code == 200 and ok.json() == {"revision": 2}
+
+
+def test_job_review_usd_out_of_range_is_422_out_of_range_and_in_range_elsewhere_is_not_applied(world):
+    """M4: a value outside the limit's bounds (job_review_usd 0..0.05) is 422 out-of-range; an in-range value other than the engine's 0.05
+    is 422 not-applied-by-engine. Nothing is stored for either. The bounds are the contract's (section 3, Update limits)."""
+    for number, value in (("out-high", 0.06), ("out-low", -0.01)):
+        r = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": value},
+                             headers={"Idempotency-Key": f"limits-range-{number}"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "out-of-range", (value, r.json())
+    inside = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0.04},
+                              headers={"Idempotency-Key": "limits-range-inside"})
+    assert inside.status_code == 422 and inside.json()["error"]["code"] == "not-applied-by-engine"
+    assert limits_config.load()["revision"] == 1 and limits_config.job_review_usd() == 0.05
+    contract = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert "422 `out-of-range`" in contract and "job_review_usd` other than the engine's 0.05" in contract
 
 
 def test_the_run_command_pins_one_worker_in_the_docs_the_requirements_and_the_app(world):

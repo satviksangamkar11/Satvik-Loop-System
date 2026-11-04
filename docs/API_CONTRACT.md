@@ -66,6 +66,9 @@ and a repeat with the same key could run twice. The run command above pins `--wo
  "finished": "2026-11-03T17:43:02Z", "free_requests_used": 3, "review_usd_spent": 0.0}
 ```
 
+### Job list (`GET /jobs`)
+`GET /jobs?filter=all|running|queued|finished|failed` answers `{"jobs": [JobSummary…], "index_ok": true|false}`. The sample is `monitor/fixtures/jobs.json`.
+
 ### JobDetail (`GET /loops/{id}`)
 JobDetail is a JobSummary plus these fields:
 ```json
@@ -96,6 +99,10 @@ JobDetail is a JobSummary plus these fields:
   - `restore-green`
   - `finish` (`end_state`, `reason`)
   - `merge` (`merge_state`, `head`, `attempts`)
+- **Attempt fields:** `status` is the attempt status (`ok`, `failed`, `rejected`, or `running` before the end), never the HTTP code. The engine
+  records the HTTP code of the last request; the API derives the status from it and from the engine's failed flag: a call that did not fail is
+  `ok`; a failed call whose HTTP reply was a 2xx (the reply could not be used) is `rejected`; any other failure is `failed`. The HTTP code is not
+  shown (no field in this contract).
 - **Rendering rules:**
   - A stage repeated N times appears N times.
   - A stage that never ran has **no** events.
@@ -110,7 +117,7 @@ JobDetail is a JobSummary plus these fields:
 ```
 
 ### Model (`GET /models`)
-Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> = contract_state`, and `reasoning_mode`. A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
+Each entry also has `endpoint` (provider slug, or null). Its contract states are under `capabilities`: `capabilities.contracts.<contract> = contract_state`, and `capabilities.reasoning_mode` (the same nesting as the example below). A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
 ```json
 {"model_id": "nvidia/nemotron-3-ultra-550b-a55b:free", "via": "openrouter", "hosting_provider": null, "paid": false,
  "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": 262144, "max_output_tokens": 32768,
@@ -172,7 +179,7 @@ stages) and `fallback_contract` (`repair_whole_file` for a repair stage, else `n
 | Remove a model | `DELETE /models/{id}` | — | 204 | 409 `model-in-use` (`details.stages[]`), 422 `pool-min` (min 10) | not used by any stage | edits `config/models.json` | v1 |
 | Test reasoning | `POST /models/verify-reasoning` | `{"model_id", "efforts": [...]}` | `{"reasoning_mode", "efforts_verified": [...]}` | 503 | key present | ≤1 free call per effort | v1 |
 | Validate paid budget | `POST /budget/validate` | `{"stages": {...}, "paid_budget_usd"}` | `{"valid", "worst_case_usd", "problems": []}` | 400 `budget-over-cap`, 422 `paid-in-test` | always | none | v1 |
-| Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range`, 422 `not-applied-by-engine` (`job_review_usd` other than the engine's 0.05, which the production gate requires) | no job running for slots | edits config; applies to new starts only | v1 |
+| Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range` (a value outside its bounds: `sandbox_slots` 1-4, `review_usd_daily_cap` 0-5, `job_review_usd` 0-0.05), 422 `not-applied-by-engine` (`job_review_usd` other than the engine's 0.05, which the production gate requires) | no job running for slots | edits config; applies to new starts only | v1 |
 | Validate stage settings | `POST /stages/validate` | `{"profile", "changes": [...]}` | `{"valid": true, "problems": []}` | 400 with `problems[{code, stage, message}]`; `contract-not-verified` when a changed stage's model lacks its required contract | always | none | v1 |
 | Save stage settings | `PUT /stages` | `{"profile", "revision", "changes": [...]}` | `{"revision": n+1}` | 409 `stale-revision`, 400 validation | always | affects **future jobs only**; running jobs keep their snapshot | v1 |
 | Verify model | `POST /models/verify` | `{"model_id", "contract", "effort"?}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, `not-allowed-in-test` (test profile: only haiku at high), 400 `bad-effort`, 503 provider | OpenRouter: key present; Claude Code: none (a claude call, `effort` default `high`) | OpenRouter: 1 free call; Claude Code: 1 isolated claude call | v1 |

@@ -93,6 +93,32 @@ def test_the_archive_leaves_out_the_loop_gitignore_and_keeps_the_evidence(tmp_pa
     assert (home / "results" / "job-1" / "calc" / "status.json").is_file()
 
 
+def test_the_archive_writes_the_job_file_the_launcher_started_from(tmp_path):
+    """M5: an archived job keeps its job file (results/<id>/<name>.job.json: the spec and files the API shows). A run whose _loop holds no
+    copy of the file (an older run) gets the job the launcher started from, written beside its evidence."""
+    home = tmp_path / "home"
+    folder = home / "wt" / "job-1" / "_loop" / "calc"
+    event_log.emit(folder, "job-start", name="calc", base="a" * 40, branch="job/job-1", gen=1, key="calc")
+    job = {"name": "calc", "spec": "docs/pilot/calc.md", "files": ["scripts/source/calc.py"], "profile": "test"}
+    assert launch.archive_job(home, "job-1", job=job) == "archived"
+    assert json.loads((home / "results" / "job-1" / "calc.job.json").read_text(encoding="utf-8")) == job
+    assert (home / "results" / "job-1" / "calc" / "events.jsonl").is_file()
+
+
+def test_the_archive_keeps_the_job_file_the_run_wrote_and_skips_a_bad_name(tmp_path):
+    home = tmp_path / "home"
+    loop = home / "wt" / "job-1" / "_loop"
+    (loop / "calc").mkdir(parents=True)
+    (loop / "calc.job.json").write_text('{"name": "calc", "spec": "as run"}', encoding="utf-8")
+    assert launch.archive_job(home, "job-1", job={"name": "calc", "spec": "passed in", "files": []}) == "archived"
+    kept = json.loads((home / "results" / "job-1" / "calc.job.json").read_text(encoding="utf-8"))
+    assert kept == {"name": "calc", "spec": "as run"}
+    assert launch.archive_job(home, "job-2") == "none"                               # no _loop: nothing to archive, no file
+    (home / "wt" / "job-3" / "_loop" / "x").mkdir(parents=True)
+    assert launch.archive_job(home, "job-3", job={"name": "../evil", "spec": "x"}) == "archived"
+    assert sorted(p.name for p in (home / "results" / "job-3").iterdir()) == ["x"]
+
+
 def test_archiving_twice_keeps_the_first_archive(tmp_path):
     home = tmp_path / "home"
     folder = home / "wt" / "job-1" / "_loop" / "calc"

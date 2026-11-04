@@ -557,6 +557,7 @@ export function normalizeLimits(raw: unknown): SystemLimits {
   const l = isRecord(raw) ? raw : {};
   const ledger = isRecord(l.ledger) ? l.ledger : {};
   return {
+    revision: numOrNull(l.revision),
     leases: listOf(l.leases, (x) => {
       const r = isRecord(x) ? x : {};
       return {

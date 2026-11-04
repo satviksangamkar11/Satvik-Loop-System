@@ -456,11 +456,39 @@ def _contract_problems(name, changes):
     return out
 
 
+LOCKED_KEYS = ("model", "via")
+
+
+def clean_changes(name, changes):
+    """The changes with a locked row's ignored keys removed. A locked row (GET /stages model_selectable false: reviewer_a under test, the
+    inherited stages) shows model and via as null, so a change sending null, or the value it already shows, is accepted and ignored. Any
+    other model or via on a locked row is refused (400 model-not-selectable). Every other change is returned as it was."""
+    locked = {row["stage"]: row for row in stages_view(name)["stages"] if not row["model_selectable"]}
+    cleaned, problems = {}, []
+    for stage, change in changes.items():
+        row = locked.get(stage)
+        if row is None or not isinstance(change, dict):
+            cleaned[stage] = change
+            continue
+        kept = {}
+        for key, value in change.items():
+            if key in LOCKED_KEYS:
+                if value is None or value == row.get(key):
+                    continue
+                problems.append({"code": "model-not-selectable", "stage": stage,
+                                 "message": f"{stage}: {key} cannot be set; this stage's model is not selectable in the {name} profile"})
+            kept[key] = value
+        cleaned[stage] = kept
+    if problems:
+        raise ApiError(400, "model-not-selectable", problems[0]["message"], {"problems": problems})
+    return cleaned
+
+
 def validate_stages(profile, changes):
     """POST /stages/validate: {valid: true, problems: []}; 400 with details.problems otherwise. A change is refused as contract-not-verified when
     its model's required contract is not verified."""
     name = _profile(profile)
-    changes = _as_changes(changes)
+    changes = clean_changes(name, _as_changes(changes))
     problems = stage_problems(name, changes) or _contract_problems(name, changes)
     if problems:
         raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
@@ -484,7 +512,7 @@ def save_stages(profile, revision, changes):
     """PUT /stages: writes the profile's stages block in config/roster.json and bumps the roster revision. Affects future jobs only.
     409 stale-revision when `revision` is not the current one; 400 with the problems when the change cannot be used."""
     name = _profile(profile)
-    changes = _as_changes(changes)
+    changes = clean_changes(name, _as_changes(changes))
     with _CONFIG_LOCK:
         current = _roster_revision()
         if revision != current:

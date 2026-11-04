@@ -1534,7 +1534,7 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     stage_snapshot: the job's frozen stage table (queued with it, stage_config.snapshot), used as its snapshot when it starts; None reads the
     roster at start, as before."""
     name = job["name"]
-    start = launcher.start(name, list(job["files"]), key=key or name)
+    start = launcher.start(name, list(job["files"]), key=key or name, job=job)
     if not start["ok"]:
         return {"name": name, "state": "refused", "reason": start["reason"]}
     job_id, gen, base = start["job_id"], start["gen"], start["base"]

@@ -59,12 +59,6 @@ import { SystemPage } from './pages/SystemPage';
 const LIVE_BASE_URL = 'http://127.0.0.1:8765/api';
 
 /**
- * PUT /system/limits needs `revision`. The contract's GET /system/limits does not send one (Gap C-08),
- * so there is no revision to send and saving stays locked. Never invent one.
- */
-const LIMITS_REVISION: number | null = null;
-
-/**
  * Data mode. `import.meta.env.VITE_DATA_MODE` decides (`npm run dev` = mock, `npm run dev:live` = live).
  * `window.__SATVIK_DATA_MODE__` is an override for debugging only.
  */
@@ -977,7 +971,8 @@ export default function App() {
   }, [apiClient, getOrCreateIdempotencyKey, refreshStages, runProfileRevision, runProfileRows, stageViewProfile, surfaceApiError]);
 
   const handleSaveSystemLimits = useCallback(async () => {
-    const revision = LIMITS_REVISION;
+    // PUT /system/limits needs the revision the editor was loaded at (GET /system/limits). Never invented: no revision, no save.
+    const revision = limits?.revision ?? null;
     if (revision === null) return;
     setPendingAction('put-limits');
     const sandbox = sandboxInput.trim() === '' ? undefined : Number(sandboxInput);
@@ -998,7 +993,10 @@ export default function App() {
       });
       await refreshHealthAndLimits();
     } catch (err) {
+      // 409 stale-revision: someone saved the limits since this page loaded. The notice shows the backend's message (its current revision);
+      // the page reloads the limits so the next save uses that revision. 422 not-applied-by-engine shows the engine's reason in the notice.
       surfaceApiError(err, 'PUT /api/system/limits');
+      if (err instanceof ApiHttpError && err.status === 409) await refreshHealthAndLimits();
     } finally {
       setPendingAction(null);
     }
@@ -1542,7 +1540,7 @@ export default function App() {
               overview={overview}
               sandboxInput={sandboxInput}
               reviewInput={reviewInput}
-              limitsRevision={LIMITS_REVISION}
+              limitsRevision={limits?.revision ?? null}
               pendingAction={pendingAction}
               bgPanel={bgPanel}
               bgSubtle={bgSubtle}
