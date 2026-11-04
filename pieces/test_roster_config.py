@@ -154,7 +154,7 @@ def test_satvik_profile_production_loads_todays_roster_unchanged():
         "writer_a": "dots-studio/dots-3-note-preview:free",
         "writer_b": "xingchen-agi/xing4.0-29b-a4b:free",
         "reviewer_a": "z-ai/glm-5.3-flash",
-        "reviewer_b": "cohere/north-mini-code:free",
+        "reviewer_b": "nvidia/nemotron-3-ultra-550b-a55b:free",   # owner decision I14 2026-11-04: replaces North (16K cap, no verdict, twice)
         "repair": "opus",
         "planner": "opus",
     }
@@ -167,8 +167,9 @@ def test_satvik_profile_production_loads_todays_roster_unchanged():
     assert roles["writer_b"]["settings"] == {"temperature": 0.2, "reasoning": {"max_tokens": 8000}, "max_tokens": 40000, "timeout_s": 1200,
                                              "sampling": {"top_p": 0.95, "repetition_penalty": 1.05}, "retry_max_tokens": 72000, "retry_timeout_s": 1800,
                                              "max_tokens_cap": 72000}
-    assert roles["reviewer_b"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 16000, "timeout_s": 600, "sampling": None,
-                                             "max_tokens_cap": 72000}
+    assert roles["reviewer_b"]["settings"] == {"temperature": 0.1, "reasoning": {"max_tokens": 8000}, "max_tokens": 32000, "timeout_s": 1200,
+                                             "sampling": None, "max_tokens_cap": 72000}
+    assert roles["reviewer_b"]["paid"] is False and roles["reviewer_b"]["provider"] is None and roles["reviewer_b"]["pricing"] is None
     assert roles["reviewer_a"]["settings"] == {"temperature": 0.2, "reasoning": {"effort": "high", "exclude": True}, "max_tokens": 16000,
                                                "timeout_s": 600, "sampling": None,
                                                "max_tokens_cap": 72000}

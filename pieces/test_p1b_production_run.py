@@ -1,5 +1,5 @@
 """P1b wiring (final roster, 2026-11-02): one production job through fix_loop.run_job, with the real Docker sandbox and fake OpenRouter models
-for writer_a (Dots), writer_b (Xing), reviewer_a (GLM, reviews only) and reviewer_b (North). The Opus repair runs only through a fake `claude`
+for writer_a (Dots), writer_b (Xing), reviewer_a (GLM, reviews only) and reviewer_b (Nemotron 3 Ultra, from I14 2026-11-04; it was North). The Opus repair runs only through a fake `claude`
 (pieces/fake_claude.py), and only where a test switches it on; by default it is off and no process starts. No network and no paid call.
 
 The real sandbox needs Docker and the sandbox image. Without them the end-to-end tests are skipped with the reason (never a silent pass)."""

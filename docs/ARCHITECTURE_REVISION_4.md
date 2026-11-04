@@ -36,7 +36,7 @@ This revision records what the code on `main` (`b96063e`) does, against Revision
 | Revision 3 | Now |
 |---|---|
 | GLM is the paid repairer ($0.15 a job) | GLM is the paid **reviewer**, production only ($0.05 a job, $0.50 a day). Repair is a Claude Code role (Opus, switched off). Test has no paid calls |
-| Reviewer North, backup Gemma | Test: `reviewer_b` Nemotron 3.5 Super, `reviewer_a` the non-author writer. Gemma dropped (never answered). Production `reviewer_b` is still North (owner choice pending) |
+| Reviewer North, backup Gemma | Test: `reviewer_b` Nemotron 3.5 Super, `reviewer_a` the non-author writer. Gemma dropped (never answered). Production `reviewer_b` is Nemotron 3 Ultra (`nvidia/nemotron-3-ultra-550b-a55b:free`, owner decision 2026-11-04, I14), replacing North. Settings: max_tokens 32000, reasoning max_tokens 8000, timeout 1200 s, temperature 0.1, cap 72000; free, no pinned provider. Reason: Ultra is verbose (about 28K output tokens a task), and North ran to the 16K cap with no verdict twice |
 | writer_b Xing | Test: Nemotron 3 Ultra (Xing got 429s from the shared pool). Production: Xing |
 | "NVIDIA left out" | Allowed in testing only |
 | Fixed model families | Any role is any OpenRouter model or any Claude Code model (opus, sonnet, haiku, fable; low to max). It is changed in `config/roster.json` only. The test profile allows only haiku at high among Claude Code roles. A new model gets its own one-call gate |
@@ -192,7 +192,10 @@ of the other resolve to the same model. Two stages of the same writer may share 
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
   in the Windows suite (checklist item 7).
-- **I14:** production `reviewer_b` is still North, which does not work. This is an owner decision.
+- **I14:** owner decision 2026-11-04: production `reviewer_b` is Nemotron 3 Ultra (`nvidia/nemotron-3-ultra-550b-a55b:free`), replacing
+  North, which ran to the 16K cap with no verdict twice. Settings: max_tokens 32000, reasoning max_tokens 8000, timeout 1200 s,
+  temperature 0.1, max_tokens_cap 72000 (Ultra is verbose, about 28K output tokens a task; the model's output limit is 65,536). The writers
+  stay Dots and Xing, and reviewer_a stays GLM.
 - **I19:** the code is done (`44fee49`). A real haiku/high verify on the PC is pending, by Local agent 2.
 - **I20:** every OpenRouter catalog contract is still null. Local agent 2 verifies each free catalog model and contract against the real API
   (about 30 free calls) and publishes the results.
