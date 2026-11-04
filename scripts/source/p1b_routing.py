@@ -112,6 +112,11 @@ class QuotaStop(Exception):
     """The adapter raised QuotaExhausted: the day's free requests are used up. The job ends quota-exhausted; no further call is made."""
 
 
+class StopRequested(Exception):
+    """The stop switch (home/STOP) is on. Raised before a new model step or a retry (I38): a call already in flight finishes, nothing new starts.
+    The production runner ends the job "stopped" and restores its files. fix_loop re-exports this class, so one name serves both modules."""
+
+
 
 
 class Lineage:

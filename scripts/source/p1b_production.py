@@ -562,8 +562,9 @@ class Production:
         return sc.begin_call(self.stage_file.parent, role or self._role_of(model), mode, fix=bool(self.fix_findings))
 
     def __init__(self, job, root, client, sandbox, *, protected, acceptance_lock, originals, parse_files, check_path, content_problem,
-                 history=None, scrub_keys=(), repair_ask=None, job_dir=None, claude_ask=None):
+                 history=None, scrub_keys=(), repair_ask=None, job_dir=None, claude_ask=None, stop_check=None):
         self.job, self.root, self.client, self.sandbox = job, Path(root), client, sandbox
+        self.stop_check = stop_check    # the operator's stop switch (fix_loop._stop_switch): raises StopRequested; checked before each new step and retry
         self.job_dir = Path(job_dir) if job_dir is not None else None      # the job folder: CONTRACT_CHECK.md is written here
         self.contract_file = None       # the path of CONTRACT_CHECK.md once it is written (status.json carries it)
         self.files, self.protected, self.acceptance_lock, self.originals = list(job["files"]), protected, acceptance_lock, originals
@@ -675,7 +676,14 @@ class Production:
         except p1b.BadReply as exc:
             return None, str(exc)
 
+    def _check_stop(self):
+        """Raises StopRequested when the stop switch is on. Called before each new model step (_ask, the repair step) and, through the client's
+        wait hook, before each retry or wait (_set_waiting). A call in flight is never interrupted."""
+        if self.stop_check is not None:
+            self.stop_check()
+
     def _ask(self, model, system, user, kind, mode, role=None, slot=None):
+        self._check_stop()
         spec = self._stage_call(model, mode, role)       # the job's snapshot (None: the roster, read now)
         role = role or self._role_of(model)
         via = spec["via"] if spec is not None else oc.roster_state()["VIA"][role]
@@ -799,6 +807,7 @@ class Production:
         """The repair step: one isolated call (opus_repair). Its reply is scrubbed, saved raw to the job's history, and parsed like a writer's
         reply. Its failures end the step: an unavailable call carries the fixed escalation reason; nothing is retried with another model.
         A repair role on OpenRouter (the roster's "via") is one checked repair call through the adapter instead, recorded like a writer's."""
+        self._check_stop()
         self.repair_calls += 1
         number = self.repair_calls
         stage = self._stage_call(p1b.ANTHROPIC, "repair", "repair")    # the job's snapshot (None: the roster, read now)
@@ -1004,6 +1013,8 @@ class Production:
 
     def _set_waiting(self, waiting):
         """The client's wait hook: the wait that began ({why, since, model}) or None when it ended. Written at once, so status.json shows it."""
+        if waiting:
+            self._check_stop()                          # a retry or wait is a new request to the provider: not after a STOP (I38)
         self.waiting = dict(waiting) if waiting else None
         if self._wait_open is not None:                 # a wait that ends, or is replaced by a new one, gets its wait-end first
             self._event("wait-end", **self._wait_open)
@@ -1141,14 +1152,15 @@ def _spec_line(spec_text, test_id, message):
 
 
 def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None):
+        content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None, stop_check=None):
     """Runs the production unit (_run), then releases the lease the job's client took for itself (client.release_job), whatever the outcome.
     frozen_snapshot: the stage table frozen when the job was queued (stage_config.snapshot, saved beside the queue file); None reads the roster
     now, as before."""
     try:
         return _run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                     evidence=evidence, client=client, parse_files=parse_files, check_path=check_path, content_problem=content_problem,
-                    scrub_keys=scrub_keys, repair_ask=repair_ask, claude_ask=claude_ask, frozen_snapshot=frozen_snapshot)
+                    scrub_keys=scrub_keys, repair_ask=repair_ask, claude_ask=claude_ask, frozen_snapshot=frozen_snapshot,
+                    stop_check=stop_check)
     finally:
         release = getattr(client, "release_job", None)
         if release is not None:
@@ -1156,7 +1168,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
 
 
 def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, originals, evidence, client, parse_files, check_path,
-         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None):
+         content_problem, scrub_keys=(), repair_ask=None, claude_ask=None, frozen_snapshot=None, stop_check=None):
     """Runs the production unit. Returns the status dict (the same keys the legacy loop reports). Whatever the outcome, a job that did not
     PASS leaves the originals in the checkout, the authorized candidate under candidate/ (only when a candidate was written), and a status
     with its reason."""
@@ -1185,7 +1197,7 @@ def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, orig
     (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys,
-                       repair_ask=repair_ask, job_dir=status_dir_job, claude_ask=claude_ask)
+                       repair_ask=repair_ask, job_dir=status_dir_job, claude_ask=claude_ask, stop_check=stop_check)
     models.stage_file = stage_file
     lineage = p1b.Lineage()
     try:
@@ -1198,6 +1210,8 @@ def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, orig
                 outcome = mismatch
     except AcceptanceTampered as exc:
         outcome = p1b.Outcome("acceptance-tampered", str(exc))
+    except p1b.StopRequested as exc:                # the stop switch: no new step started; the files are restored by _finish, the state is "stopped"
+        outcome = p1b.Outcome("stopped", f"stop switch is on: {exc}")
     except Exception as exc:                        # any other failure: the job does not pass, its files are restored (see _finish)
         outcome = p1b.Outcome("exception", f"{type(exc).__name__}: {exc}")
     evidence["review_hashes"] = list(models.reviewed_hashes)

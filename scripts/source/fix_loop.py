@@ -977,7 +977,7 @@ def run_job(
         return p1b_production.run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock,
                                   originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root, job),
                                   parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys,
-                                  frozen_snapshot=stage_snapshot)
+                                  frozen_snapshot=stage_snapshot, stop_check=stop_check)
 
     rounds_record: list[dict] = []
     coder_calls = 0
@@ -1485,15 +1485,19 @@ def _ping_cli(name: str, prompt: str) -> tuple[int, str]:
 
 # ---- close-1 wiring (steps 4-8): a launched job runs in its own worktree, through launch.Launcher and the merge queue
 
-class StopRequested(Exception):
-    """The stop switch (home/STOP) was on before a round. The job stops; its files are restored to the base commit."""
+def __getattr__(name):
+    """StopRequested is the production runner's class (p1b_routing.StopRequested), so one exception serves the round loop and the P1b ladder."""
+    if name == "StopRequested":
+        return _p1b().StopRequested
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _stop_switch(home: Path):
-    """A stop_check for run_job: raises StopRequested while home/STOP exists."""
+    """A stop_check for run_job: raises StopRequested while home/STOP exists. It is checked before each round (the round loop) and, for a
+    production job, before each new model step and retry (p1b_production)."""
     def check() -> None:
         if _sibling_module("launch").stop_requested(home):
-            raise StopRequested("stop switch is on")
+            raise _p1b().StopRequested("stop switch is on")
     return check
 
 
@@ -1547,7 +1551,7 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     try:
         try:
             result = (run or run_job)(job, wt, **run_kwargs)
-        except StopRequested:
+        except _p1b().StopRequested:
             restore_files(wt, list(job["files"]))
             result = {"name": name, "state": "stopped", "round": None}
         except BaseException:
