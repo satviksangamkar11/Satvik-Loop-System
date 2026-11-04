@@ -71,9 +71,10 @@ def _profile_name():
     return oc.active_profile()
 
 
-def freeze_stages(changes):
-    """The stage table to freeze with a queued job: the active profile's roster as it stands now, with `changes` on top. Returns the
-    snapshot (stage_config.snapshot) or raises ApiError (400 with the problems, or 422 for a table the engine refuses)."""
+def freeze_stages(changes, paid_ceiling_usd=None):
+    """The stage table to freeze with a queued job: the active profile's roster as it stands now, with `changes` on top, and the job's
+    approved paid ceiling (paid_ceiling_usd, I44: the most USD its paid calls may spend; None when none is approved). Returns the snapshot
+    (stage_config.snapshot) or raises ApiError (400 with the problems, or 422 for a table the engine refuses)."""
     name = _profile_name()
     changes = config_api.clean_changes(name, changes) if changes else changes
     if changes:
@@ -83,10 +84,24 @@ def freeze_stages(changes):
     try:
         data = sc._profile_data(name)[1]
         data["stages"] = sc._merge(sc._stages_block(data), changes or {})
-        snap, _sha = sc.snapshot(data)
+        snap, _sha = sc.snapshot(data, paid_ceiling_usd=paid_ceiling_usd)
     except (oc.RosterRefused, sc.StageRefused) as exc:
         raise ApiError(422, getattr(exc, "code", "roster-refused"), str(exc))
     return snap
+
+
+def approve_paid(changes, paid):
+    """The job's approved paid ceiling in USD (I44). A job whose stages include a paid model, or that states a paid budget above zero, is
+    always validated (config_api.validate_budget): an answer that is not valid (a price is unknown) refuses the job, and a worst case above
+    the budget or the job review ceiling refuses it too. A job with neither is approved for 0."""
+    name = _profile_name()
+    if paid <= 0 and not config_api._paid_stages(name, changes or {}):
+        return 0.0
+    answer = config_api.validate_budget(name, changes or {}, paid)
+    if not answer["valid"]:
+        raise ApiError(422, "budget-unknown", "the paid worst case cannot be priced (an unknown price or model): the job is not queued",
+                       {"problems": answer["problems"]})
+    return float(answer["approved_usd"])
 
 
 def queue_job(body):
@@ -114,9 +129,8 @@ def queue_job(body):
         current = config_api._roster_revision()
         if body["stage_revision"] != current:
             raise ApiError(409, "stale-revision", f"the stage settings are at revision {current}", {"revision": current})
-    if paid > 0:
-        config_api.validate_budget(_profile_name(), changes, paid)
-    snap = freeze_stages(changes)
+    ceiling = approve_paid(changes, paid)                # validated whenever paid calls are possible (I44); 0 when none
+    snap = freeze_stages(changes, paid_ceiling_usd=ceiling)   # the approved ceiling is frozen with the job's stages
     res = fix_loop.try_enqueue(path, home, rerun=rerun, stages=snap)
     if res["queued"]:
         return 201, {"queued": True, "queue_file": Path(res["path"]).name, "stage_snapshot": sc.snapshot_evidence(snap)}
@@ -306,7 +320,9 @@ def approve_plan(plan_id, job_sha256, approve_assumed):
         raise ApiError(422, "assumed-not-approved", "approve the ASSUMED lines first (approve_assumed=true)", {"assumed": rec["assumed"]})
     if (home / "STOP").exists():
         raise ApiError(409, "stop-on", "STOP is on: no new starts")
-    snap = freeze_stages({})
+    declared = (json.loads((plan_dir / "job.json").read_text(encoding="utf-8")).get("budget") or {}).get("review_usd")
+    ceiling = approve_paid({}, float(declared) if isinstance(declared, (int, float)) and not isinstance(declared, bool) else 0.0)
+    snap = freeze_stages({}, paid_ceiling_usd=ceiling)     # the planned job's own declared review budget is its approval (I44)
     res = fix_loop.try_enqueue(plan_dir / "job.json", home, stages=snap)
     if not res["queued"]:
         raise ApiError(409 if res["reason"] != "already-completed" else 422, res["reason"], "the planned job is already queued or completed",

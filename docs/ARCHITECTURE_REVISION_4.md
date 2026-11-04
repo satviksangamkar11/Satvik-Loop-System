@@ -188,6 +188,40 @@ of the other resolve to the same model. Two stages of the same writer may share 
   is used for the probe only, so a pass at one effort is not recorded as tied to that effort.
 - **`planner_json` has no Claude Code check.** A Claude Code model reports it `unverified`, so it is never eligible for the planner stage.
 
+### Paid-call safety (Batch A: I36, I44, I48, I49, I50)
+
+Code: `scripts/source/stage_config.py`, `openrouter_call.py`, `shared_limits.py`, `loop_home.py` (`process_start`), `monitor/actions.py`,
+`monitor/config_api.py`. Tests: `pieces/test_batch_a_paid.py` (22 tests; 19 fail on the code before this batch).
+
+- **I36, billing is the model's.** A stage's paid flag, pin and prices come from `config/models.json` and, where the roster also names the
+  model, the roster must agree. They are frozen in the snapshot as `billing`. `stage_config` refuses a paid model on a non-reviewer stage
+  (`paid-model-stage`), a stage whose role's paid flag differs from its model's (`billing-mismatch`), and a paid model with no pin or prices
+  (`unpriced-paid-model`, `unknown-billing` when the sources disagree). `openrouter_call.call` checks the stage against the allow-list before
+  any reservation or POST. *Limit:* a model that neither the catalog nor the roster names keeps its role's values in a stage. Such a call is
+  refused as not on the allow-list before any send, so nothing is sent.
+- **I44, the approved ceiling.** `POST /jobs` with a paid stage, or with `paid_budget_usd` above zero, always runs `validate_budget`. An
+  unpriced answer (`valid: false`) refuses the job (422 `budget-unknown`). A paid stage with `paid_budget_usd` 0 is refused (400
+  `budget-over-cap`). The approved ceiling, the lower of the budget and the job review ceiling, is frozen as `paid_ceiling_usd` in the stage
+  snapshot. Plan approval approves the planned job's declared `budget.review_usd` the same way. Each paid call reserves against the lower of
+  the job's review budget and that ceiling. The shared ledger also checks the job's booked spend plus open holds, so a restart does not reset
+  it. *Limits:* a direct run with no queued snapshot has no ceiling and keeps its job file's review budget (0.05 in production), as before.
+  The validation estimate uses the model's agreed price. The engine reserves at the higher of that and the live endpoint price, so a call
+  whose live price is higher is refused by the engine, not sent.
+- **I48, the pace.** The account pace is taken inside the model slot, immediately before the POST (`openrouter_call._send`, `_pace`). A free
+  request is counted for the day with `reserve_free_day` before the slot. A pace refusal is not a send: nothing is posted, and a paid hold is
+  released at nothing. *Limit:* a request holds its model slot while it waits for the account pace, bounded by the unit deadline.
+- **I49, the worst case.** The prompt bound is one token per UTF-8 byte plus 512 framing tokens (`prompt_bound_tokens`). It is priced at the
+  higher of the roster's and the live endpoint's per-token price. The endpoint price is read again after 900 s, and an unknown price refuses
+  the call before any POST. *Consequence:* for ASCII code the bound is about three times the old chars/3 estimate, so fewer paid reviews fit
+  under the $0.05 job review ceiling. `test_p1b_review_package` now stops at the sixth reviewer attempt with `budget-exceeded`. *Limit:* the
+  one-token-per-byte bound is assumed, not measured against each provider's tokenizer.
+- **I50, holds.** Each paid reservation is a hold on `SATVIK_HOME/ledger/limits.json`, with a call id, its owner's pid and process start time
+  (Linux; elsewhere the pid alone). Settling it releases that hold. A hold whose owner is dead and older than 300 s, or any hold older than
+  3600 s, is released as spent for its whole amount. Open holds survive the 05:30 IST day change, and the spend booked per job id is kept.
+  *Limits:* the reconciliation is conservative, not exact. A hold for a call that was never sent is booked at its full amount until it is
+  released. The free daily count is never handed back. Without a Linux `/proc`, a reused pid can keep a dead owner's hold open until the
+  one-hour limit.
+
 ### Open items
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
