@@ -29,6 +29,7 @@ from pathlib import Path
 
 import inspect
 
+import atomic_json
 import claude_code as cc
 import event_log
 import openrouter_call as oc
@@ -1161,7 +1162,7 @@ class Production:
         status = {"name": self.job["name"], "schema_version": 1, "state": "running", "profile": "production", "steps": self.steps,
                   "coder_calls": coder_calls, "reviewer_calls": reviewer_calls, "waiting": getattr(self, "waiting", None),
                   "updated": _now()}
-        (self.job_dir / "status.json").write_text(json.dumps(_scrubbed_obj(status, self.scrub_keys), indent=2), encoding="utf-8")
+        atomic_json.write_text_atomic(self.job_dir / "status.json", json.dumps(_scrubbed_obj(status, self.scrub_keys), indent=2))   # I58: never in place
 
 
 def _messages(junit, ids):
@@ -1239,7 +1240,7 @@ def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, orig
     except oc.OpenRouterError as exc:
         kind = "quota-exhausted" if isinstance(exc, oc.QuotaExhausted) else "provider-unavailable"
         return _finish(job, root, status_dir_job, evidence, scrub_keys, None, p1b.Outcome(kind, f"key state: {exc}"), None, originals)
-    (status_dir_job / "status.json").write_text(json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2), encoding="utf-8")
+    atomic_json.write_text_atomic(status_dir_job / "status.json", json.dumps({"name": job["name"], "schema_version": 1, "state": "running", "updated": _now()}, indent=2))
     models = Production(job, root, client, sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                         parse_files=parse_files, check_path=check_path, content_problem=content_problem, history=history, scrub_keys=scrub_keys,
                        repair_ask=repair_ask, job_dir=status_dir_job, claude_ask=claude_ask, stop_check=stop_check)
@@ -1329,7 +1330,7 @@ def _finish(job, root, status_dir_job, evidence, scrub_keys, models, outcome, la
     if models is not None and models.contract_file:
         status["contract_check"] = models.contract_file        # the contract evidence, whatever the end state
     status = _scrubbed_obj(status, scrub_keys)               # the reason can carry a provider's error text: scrub the whole status before it is saved
-    (status_dir_job / "status.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+    atomic_json.write_text_atomic(status_dir_job / "status.json", json.dumps(status, indent=2))   # I58: the final status is replaced, never rewritten in place
     event_log.emit(status_dir_job, "finish", state=state, reason=status["reason"])
     print(f"{name}: {state}")
     return _scrubbed_obj({"name": name, "state": state, "round": len(steps), "tests_passed": tests_passed, "review_verdict": verdict, "rounds": steps,

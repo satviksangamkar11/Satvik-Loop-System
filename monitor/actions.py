@@ -78,7 +78,7 @@ def freeze_stages(changes, paid_ceiling_usd=None):
     name = _profile_name()
     changes = config_api.clean_changes(name, changes) if changes else changes
     if changes:
-        problems = config_api.stage_problems(name, changes)
+        problems = config_api.authoritative_problems(name, changes)     # I45: the same validator as POST /stages/validate
         if problems:
             raise ApiError(400, problems[0]["code"], problems[0]["message"], {"problems": problems})
     try:
@@ -215,7 +215,10 @@ def patch_stage(job_id, stage, change, revision):
         raise ApiError(409, "stale-revision", f"the job's stage table is at revision {snap['revision']}", {"revision": snap["revision"]})
     if not isinstance(change, dict):
         raise ApiError(400, "bad-stages", "change is an object of model, via, effort and settings")
-    res = sc.apply_future_stage(jdir, stage, change)
+    name_of_profile = sc.profile_of(snap)["name"]
+    res = sc.apply_future_stage(jdir, stage, change,
+                                validate=lambda changes: config_api.authoritative_problems(name_of_profile, changes))   # I45
+
     if res["ok"]:
         return {"ok": True, "revision": res["revision"]}
     code = res["code"]

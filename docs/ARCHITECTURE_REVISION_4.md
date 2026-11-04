@@ -245,6 +245,72 @@ Code: `scripts/source/stage_config.py`, `openrouter_call.py`, `shared_limits.py`
   Their historical loaders run with the rule waived (`prod_harness.controller_rule_waived`). A controller change needs a separate trusted
   workflow, which does not exist yet. Remaining limit: the rule covers the job's `files`, not what a reviewer or model may say about them.
 
+### Batch D, Codex audit (I45, I58, I59, I60, I61, I62; 2026-11-04)
+
+- **I45 (one validator).** `config_api.authoritative_problems` is the only stage validator: `POST /stages/validate`, `PUT /stages`,
+  `POST /jobs` (the queued table) and `PATCH /loops/{id}/stages` all run it, so an unverified model gets `contract-not-verified` everywhere
+  (tests: `pieces/test_batch_d_api.py`). Limit: the engine's own `stage_config.apply_future_stage` takes the caller's validator; a caller
+  that uses the engine directly, without the API, does not run the contract rule.
+- **I58 (one atomic writer).** `scripts/source/atomic_json.py` is the single authoritative JSON writer: temp file, fsync, replace. A
+  sharing violation (PermissionError, WinError 5 or 32) is retried 40 times at 50 ms; a target still locked raises `SharingViolation` and
+  the old file stays whole (tests: `pieces/test_i58_atomic_writer.py`). Stage tables, the API store, the loop's shared state and every
+  job's `status.json` use it; `status.json` is replaced, never rewritten in place. Limit: about 2 s of retries; a longer lock fails the write
+  (for a paid job this refuses the step, it does not spend on a write that did not land).
+- **I59 (operation intents).** Each mutation records `started` with its key and request fingerprint before its effects, and its outcome
+  after (`scripts/source/api_idempotency.py`, `OperationStore`). A retry replays a finished outcome for 24 h, answers 409
+  `operation-in-progress` for a started intent with no outcome (never run again; an operator removes the record file to free the key), 422
+  `idempotency-key-reused` for another request, and 409 `idempotency-record-corrupt` for an unreadable record. A 5xx or an exception aborts
+  the intent. Limit: a process that stops mid-action leaves a started record that is not expired automatically; the rule is in
+  `docs/API_CONTRACT.md` (conventions, the Idempotency-Key bullet). The loop's original `IdempotencyStore` keeps the behaviour its loop tests pin; the API does not use it.
+- **I60 (slow verify off the loop and the lock).** Every mutation runs in a worker thread. `verify`, `verify-reasoning` and `refresh` are
+  slow: they hold no effects lock, so STOP and `GET /system/health` answer while a model call is in progress (test with a fake slow verifier,
+  `pieces/test_batch_d_api.py`). Limit: the HTTP request stays open until the verify returns (no status endpoint); two verifies of one model
+  may run together, and the last catalog write wins.
+- **I61 (UI).** A stage model change sends its `via` with the model, and the effort with both; plan polling reads until a settled state with
+  backoff (1 s to 15 s) and no cutoff, and a failed read is retried; the pending plan id is kept in sessionStorage so a reload resumes the
+  wait; a mutation with no response says the outcome is UNKNOWN (tests: `ui/tests/batch_d_ui.test.ts`; the POST /jobs expectation in
+  `ui/tests/contract.test.ts` now includes `via`). Limit: the resume works per browser session only.
+- **I62 (docs).** `docs/UI_ENGINE_HANDOFF.md` carries a status note and marks the 3 Nov gaps that are now closed as HISTORICAL. This
+  section and the matrix below replace the "catalog contracts are null" statement.
+
+### Current capability and verification matrix (2026-11-04)
+
+Routes (`monitor/api.py`, contract in `docs/API_CONTRACT.md`):
+
+| Capability | Route | State |
+|---|---|---|
+| Reads: overview, jobs, job detail and events, results and diff, download, models, stages, limits, health | `GET /api/...` | implemented |
+| Validate job, stages and budget (no change) | `POST /api/jobs/validate`, `/api/stages/validate`, `/api/budget/validate` | implemented (one stage validator, I45) |
+| Queue a job with a frozen stage table | `POST /api/jobs` | implemented (paid budget validated and frozen, I44) |
+| Save stage settings (future jobs) | `PUT /api/stages` | implemented (revision check; the same validator) |
+| Change a running job's future stage | `PATCH /api/loops/{id}/stages` | implemented (not-yet-started stages only; new snapshot revision for that job) |
+| Start loops, global STOP | `POST /api/loops/start`, `POST /api/system/stop` | implemented |
+| Plans: create, read, approve | `POST /api/plans`, `GET /api/plans/{id}`, `POST /api/plans/{id}/approve` | implemented, production only (the planner is a paid call) |
+| Model pool: add, remove, search, refresh prices | `/api/models...` | implemented |
+| Verify a contract, verify reasoning | `POST /api/models/verify`, `/verify-reasoning` | implemented (one free call each for OpenRouter; isolated claude call for Claude Code) |
+| Save limits | `PUT /api/system/limits` | implemented (revision check; `job_review_usd` only at the engine's value) |
+| Resume a failed job, per-job cancel, manual merge | none | not exposed (not in the engine) |
+
+Verification (`config/models.json`, probes in `docs/pilot/model-verify-2026-11-04/`; a contract is used only when it is `verified`):
+
+| Model | Via | writer_file_blocks | repair_edit_blocks | reviewer_verdict |
+|---|---|---|---|---|
+| dots-studio/dots-3-note-preview:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3-ultra-550b-a55b:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3.5-super-vl:free | OpenRouter, free | verified | verified | verified |
+| xingchen-agi/xing4.0-29b-a4b:free | OpenRouter, free | not recorded (429 upstream) | verified | not recorded (429 upstream) |
+| cohere/north-mini-code:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3.5-lightning:free | OpenRouter, free | verified | verified | verified |
+| z-ai/glm-5.3-flash | OpenRouter, paid | unverified (no paid verify until the end) | unverified | unverified |
+| deepseek/deepseek-v4.1-flash-1017 | OpenRouter, paid | unverified | unverified | unverified |
+| qwen/qwen3.8-27b | OpenRouter, paid | unverified | unverified | unverified |
+| haiku (claude_code, high) | subscription | unverified (not recorded) | unverified | verified |
+| opus, sonnet, fable (claude_code) | subscription | unverified | unverified | unverified |
+
+Not verified here: live endpoint prices for the paid models, the production roster's North and GLM behaviour, and any paid call. The Windows
+run and the real-API e2e are in the checklist, not repeated here.
+
 ### Open items
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
@@ -254,6 +320,6 @@ Code: `scripts/source/stage_config.py`, `openrouter_call.py`, `shared_limits.py`
   temperature 0.1, max_tokens_cap 72000 (Ultra is verbose, about 28K output tokens a task; the model's output limit is 65,536). The writers
   stay Dots and Xing, and reviewer_a stays GLM.
 - **I19:** the code is done (`44fee49`). A real haiku/high verify on the PC is pending, by Local agent 2.
-- **I20:** every OpenRouter catalog contract is still null. Local agent 2 verifies each free catalog model and contract against the real API
-  (about 30 free calls) and publishes the results.
+- **I20 (done, historical wording removed):** the free catalog models were probed on 2026-11-04 (19 pass, 0 fail; two Xing contracts were
+  rate-limited and are not recorded). The results are in `config/models.json` and `docs/pilot/model-verify-2026-11-04/`. See the matrix below.
 - **I11:** replies from the PC agents to this session fail with "not found". Git branches are the report channel; there is no fix here.
