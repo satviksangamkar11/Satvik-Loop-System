@@ -24,7 +24,11 @@ def run(home, repo):
         except ValueError as exc:
             print(f"{path.name}: invalid job: {exc}", flush=True)
             continue
-        frozen = fix_loop.read_stages(path)               # the stage table frozen at queue time (None for a job queued without one)
+        try:
+            frozen = fix_loop.frozen_stage_table(path)    # the stage table frozen at queue time (None for a job queued without one)
+        except fix_loop.SnapshotRequired as exc:          # an API-queued job without its table never runs on the current defaults (I43)
+            print(f"{path.name}: refused: {exc}", flush=True)
+            continue
         res = fix_loop.run_launched(job, repo, api, launcher, merge_queue=mq, stage_snapshot=frozen)
         print(job["name"], res["state"], res.get("reason"), flush=True)
         while mq.pending:
