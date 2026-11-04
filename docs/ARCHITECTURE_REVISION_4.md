@@ -75,3 +75,114 @@ This revision records what the code on `main` (`b96063e`) does, against Revision
   - P4: a concurrent pressure test.
 - **Deferred:** production `reviewer_b`, the paid production run, legacy cleanup, streaming abort, a launcher CLI, the December re-check (Dots'
   free access ends 31 Dec).
+
+## As integrated (2026-11-04)
+
+What commit `cc71779` does for the API and the UI, checked against `monitor/`, `scripts/source/` and `ui/`. Where `docs/API_CONTRACT.md`
+and the code differ, this section states the code.
+
+### API (`monitor/`)
+
+**Run it** from the repo root, with one worker only:
+
+```
+SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765 --workers 1
+```
+
+The base URL is `http://127.0.0.1:8765/api`. CORS origins come from `SATVIK_UI_ORIGIN` (default `http://127.0.0.1:5173` and
+`http://localhost:5173`).
+
+**Why one worker.** The mutation lock (`monitor/store.py`, `_MUTATION_LOCK`) and the idempotency store are per process. With two workers,
+two processes could write the same config at once, and a repeated `Idempotency-Key` could run twice.
+
+**Environment**
+- `SATVIK_HOME`: the loop home (`loop_home.home`), which must be outside every git worktree. Unset or refused, the routes that need it
+  answer 503 `engine-unavailable`. `GET /system/health` still answers, with `satvik_home: null`.
+- `SATVIK_REPO`: the repo root (`store.repo()`). It defaults to the checkout that holds `monitor/`. Job paths are resolved against it, and
+  `engine_version` is `git rev-parse --short HEAD` run in it.
+- `SATVIK_PROFILE`: `test` (the default) or `production`, read on each call. Under `test` the planner is refused (422
+  `planner-refused-in-test`), paid roles are refused, and Claude Code verification runs only for haiku at high (422 `not-allowed-in-test`).
+
+**Files are the source of truth.** Job views and events are read from the files on each request: `_loop/<job>/` and `wt/<id>/_loop/`
+while a job runs, `SATVIK_HOME/results/<job_id>/` once it is archived, and the registry, lease and queue files. `SATVIK_HOME/history.db`
+is an index only, and no reader depends on it. `index_ok` is true only when the file exists and answers a read-only query; it is false when
+the file is missing, locked or corrupt. A false value changes where the data came from, not the answer. The engine's finish and merge hooks
+write the index (`job_history.safe_index`, called from `launch.py` and `merge_queue.py`), and `rebuild_index` deletes and rebuilds it. The
+API never builds it.
+
+**Idempotency.** Every mutation that goes through `_run` (queue, start loops, stage edits, plans and their approval, model add, remove and
+verify, stage save, limits, STOP) stores its first final response under its `Idempotency-Key`, in `SATVIK_HOME/api/idempotency/`. A repeat
+with that key returns the stored response and runs nothing. Responses below 500 are stored, 4xx included; a 5xx is not stored, so a retry
+runs again. A mutation sent without a key runs once and is not stored. The three check routes (`/jobs/validate`, `/stages/validate`,
+`/budget/validate`) change nothing and take no key.
+
+**Error envelope.** Every error is `{"error": {"code", "message", "details"}}`. A refusal by a rule is an `ApiError` with its own status and
+code. A body that does not match the request is 400 `invalid-request`, with `details.problems`. An unknown route is 404 `not-found`, any
+other HTTP error is `http-error`, and an unexpected exception is 500 `internal`, whose message is only the exception's type name.
+
+### UI (`ui/`)
+
+- `npm run dev` is the fixture-backed mock. `npm run dev:live` is `vite --mode live`, with `VITE_DATA_MODE=live` from `ui/.env.live`. The
+  UI calls `http://127.0.0.1:8765/api` directly, so the API must be running first. Any value other than `mock` is live (`App.tsx`).
+- **Fixture e2e:** `npm run test:e2e` runs `playwright.config.ts`. It starts `tests/fake_fastapi_server.mjs` and runs the UI in live mode
+  against it: 4 tests on 3 viewports (1440, 768, 320), 12 in all.
+- **Real-API e2e:** `npm run test:e2e:real` runs `playwright.live.config.ts`. First `ui/tests/seed_live_home.py` wipes and seeds a temporary
+  `SATVIK_HOME` and `SATVIK_REPO`: it copies the archived job `ah-budget-20261104-0344-1119` from `origin/ah-run-2026-11-04` with
+  `git show` (fetch that branch first), writes one registry row (`passed`), one expired released lease, and one queued job file. Then it
+  starts uvicorn on 8765 with `SATVIK_PROFILE=test`, and Vite in live mode on 5173. No model call is made. 6 tests on the same 3 viewports,
+  18 in all.
+- **Fail-closed verify.** Only a response `result: "pass"` is shown as verified, and only `fail` as failed. Any other value, or none, is
+  unverified (`ui/src/api/normalizer.ts`). After each verify the pool is reloaded, so the stored state is shown.
+- **Stage eligibility.** A model is offered for a stage only when its `capabilities.contracts[required_contract]` is `verified` and its
+  `verified_at` is set (`ui/src/api/eligibility.ts`). A stage row with no `required_contract` offers no model.
+- **Locked rows are not sent.** `queueJob` sends only the rows with `model_selectable === true` (`ui/src/api/client.ts`). A locked row, such
+  as `reviewer_a` under the test profile, is left out rather than sent as null.
+
+### Decisions (I9, I10)
+
+**Plan approval (I9).** `POST /plans/{id}/approve` takes one boolean, `approve_assumed`, for all the ASSUMED lines of the plan. If the plan
+has any and the value is not `true`, the reply is 422 `assumed-not-approved`, with the lines in `details.assumed`. There are no per-line
+boxes. Approval also queues the job and starts a loop, and `job_sha256` must still match the job file (409 `plan-changed`).
+
+**Fallback write settings (I10).** When Reviewer B writes because Writer B is down (`stage_config._fallback`):
+- the model and via are Reviewer B's;
+- the settings are Reviewer B's role settings for the mode (a repair takes the profile's repair `max_tokens`), then the `reviewer_b` stage's
+  settings, then the Writer B stage's settings (`writer_b_write` or `writer_b_repair`). Writer B's overrides win;
+- the effort is Writer B's stage effort when both stages use the same via. Otherwise a Claude Code Reviewer B keeps its own `reviewer_b` stage
+  effort (I23), and an OpenRouter Reviewer B takes the default effort for the mode;
+- `review_fix_repair` follows the same rule when its current writer is Reviewer B.
+
+**Writers share a model.** `stage_config._problems` refuses with `writers-share-model` when a writer stage of one writer and a writer stage
+of the other resolve to the same model. Two stages of the same writer may share one. Reviewer stages are checked the same way, with
+`reviewer-is-writer` and `reviewers-same-model`.
+
+**waiting-unknown and stale-warning** (`scripts/source/job_history.py`, `monitor/views.py`):
+- `waiting` needs a reason: `status.json` `waiting.why`, or an open wait event. `why` is one of `model-slot`, `account-pace`,
+  `429-backoff` or `retry-backoff`; any other value is shown as null.
+- `waiting-unknown`: the job is alive and waiting, and nothing gives a reason. No reason is invented.
+- `stale-warning`: the lease is released or missing, or its pid is dead, or its heartbeat is older than three heartbeats (`STALE_WARN_S`,
+  90 s). It is a warning, never "dead".
+- `orphan`: only when the heartbeat is older than `loop_home.STALE_S` (300 s) and the pid is dead. It is checked before `stale-warning`.
+
+### Known observations (I31 and others)
+
+- **`index_ok: false` and `engine_version: null` on a fresh seeded home.** The seed writes no `history.db`, so `index_ok` stays false until
+  an engine finish or merge hook indexes a job, or `rebuild_index` is run by hand. The seeded `SATVIK_REPO` is a plain folder, not a git
+  checkout, so `engine_version` is null. Both are expected, and the API answers the same either way.
+- **Archives made before the job file was archived have `spec` and `files` null.** The archive keeps `<name>.job.json` from commit `2cc5c96`
+  (merged in `2c74b35`). The seeded `ah-budget` archive predates it, so its detail shows null for both.
+- **Planner events** are written to the plan folder (`<repo>/_loop/<name>/`, named by the plan record), not to the job's own folders. The
+  view reads them there (I21). They are not in `history.db`, which indexes only the job's own events.
+- **Claude Code verify records per model and contract, not per effort.** `verified_at` is stored for the model and the contract. The effort
+  is used for the probe only, so a pass at one effort is not recorded as tied to that effort.
+- **`planner_json` has no Claude Code check.** A Claude Code model reports it `unverified`, so it is never eligible for the planner stage.
+
+### Open items
+
+- **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
+  in the Windows suite (checklist item 7).
+- **I14:** production `reviewer_b` is still North, which does not work. This is an owner decision.
+- **I19:** the code is done (`44fee49`). A real haiku/high verify on the PC is pending, by Local agent 2.
+- **I20:** every OpenRouter catalog contract is still null. Local agent 2 verifies each free catalog model and contract against the real API
+  (about 30 free calls) and publishes the results.
+- **I11:** replies from the PC agents to this session fail with "not found". Git branches are the report channel; there is no fix here.
