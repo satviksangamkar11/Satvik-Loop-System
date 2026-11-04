@@ -273,6 +273,7 @@ def test_I50_open_holds_survive_the_day_change(home):
     data = _ledger(home)
     data["holds"][call_id]["at"] = boundary - 60
     data["day"] = sl.day_key(boundary - 60)
+    data.pop("epoch", None)   # this test reads the ledger at a fixed 2026-11-02 instant; the epoch written by reserve_review is real time (I57)
     _write_ledger(home, data)
     st = sl._state(home, boundary + 60)
     assert st["day"] != sl.day_key(boundary - 60)
