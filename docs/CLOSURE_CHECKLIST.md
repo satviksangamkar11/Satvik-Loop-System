@@ -31,7 +31,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
    - `GET /system/health.profile`.
    Remove `ui/BACKEND_GAPS.md` or bring it up to date. Done when the UI contract tests and the API contract tests both read the same
    fixtures and pass.
-5. [ ] **Real integration.**
+5. [x] **Done 2026-11-04 (`6b2a0ec`): real-API e2e 18/18 (3 viewports x 6), fixture e2e 12/12, unit 51/51, typecheck and lint clean. Failed verify is fixture-only (a real verify needs a key: I20).** **Real integration.**
    - Start `python -m uvicorn monitor.api:app --port 8765` with a temporary `SATVIK_HOME` seeded from one real archived job (copy a
      `results/<job_id>/` from an evidence branch).
    - Run the UI e2e in LIVE mode against it instead of `tests/fake_fastapi_server.mjs`: add a Playwright project or config that targets the
@@ -75,7 +75,14 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I21 | Planner events go to the repo-root `_loop/<job>/events.jsonl`, but `job_history` / `read_job_events` scan only `results/<id>/` and `wt/<id>/_loop/`, so the API never shows planner events | Make the readers include the plan job's folder (or have `plan_job` write where the job's other events go) | A test: a planned job's view shows its planner attempt |
 | I22 | `test_shared_limits.py::test_pace_sends_at_most_15_in_any_60_seconds_across_processes` takes 60.05 s (a real minute) | Review whether it can use a fake clock across processes; if not, keep it and record it as a by-design timing test | Decided and recorded |
 | I23 | Production: validating a Claude Code `reviewer_b` change is refused with `bad-effort` on `review_fix_repair` (an engine rule found by the issues agent) | Investigate in `stage_config.validate`: an inherited-model stage should not fail effort validation because of another stage's model change | A test: a valid Claude Code `reviewer_b` change validates |
-| I24 | The B5 integration subagent stopped at the usage limit with uncommitted work in its worktree (`.claude/worktrees/agent-a769e14f201efa8b2`, branch `b5-integration`: seed script, live Playwright config, real-API spec) | Resume it, or commit its work and continue it in a fresh Haiku 5.5 medium subagent on the same worktree | B5 done |
+| I24 ✅ (`6b2a0ec`) | The B5 integration subagent stopped at the usage limit with uncommitted work in its worktree (`.claude/worktrees/agent-a769e14f201efa8b2`, branch `b5-integration`: seed script, live Playwright config, real-API spec) | Resume it, or commit its work and continue it in a fresh Haiku 5.5 medium subagent on the same worktree | B5 done |
+| I25 | `attempt-end.status` is the raw HTTP code, not ok/failed/rejected (found by B5) | API derives the attempt status (subagent `api-mismatch`) | A test |
+| I26 | `attempt-end` rows lack stage/role/mode/model/via/effort | Fill from the matching attempt-start (`api-mismatch`) | A test |
+| I27 | A locked stage row sent unchanged (model null) is refused 400 bad-model | Accept it unchanged; a changed model gives model-not-selectable (`api-mismatch`) | A test |
+| I28 | job_review_usd: in-range values other than 0.05 must give not-applied-by-engine (I15 wording) | `api-mismatch` | A test |
+| I29 | Archived job detail has spec/files null: the archive lacks `<name>.job.json` | Archive copies the job file (`api-mismatch`) | A test |
+| I30 | Contract prose puts contracts/reasoning_mode at Model level; example, fixture and API nest them under capabilities | Fix the prose (`api-mismatch`) | Doc fixed |
+| I31 | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
