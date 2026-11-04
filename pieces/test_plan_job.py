@@ -436,6 +436,111 @@ def test_a_missing_control_source_is_refused(repo, tmp_path, monkeypatch):
     assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
 
 
+# ---------------------------------------------------------------- I52: the approval covers the whole plan (Codex audit)
+
+class FakeLease:
+    def keep_alive(self, job_id, gen):
+        return lambda: None
+
+
+class FakeApi:
+    def __init__(self, home):
+        self.home, self.lease = home, FakeLease()
+
+
+class FakeLauncher:
+    def __init__(self, repo, wt):
+        self.repo, self.wt, self.started, self.finished = repo, wt, [], []
+
+    def start(self, name, files, key=None, job=None):
+        self.started.append(name)
+        return {"ok": True, "job_id": f"{name}-1", "gen": 1, "base": "HEAD", "worktree": str(self.wt)}
+
+    def finish(self, job_id, gen, state, base, extra=None):
+        self.finished.append(state)
+
+
+def planned_and_approved(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    rec = {"job_sha256": pj.file_sha256(plan_dir / "job.json"),
+           "plan_sha256": pj.package_sha256(pj.package_members(plan_dir))}
+    return plan_dir, {"plan_dir": str(plan_dir), "job_sha256": rec["job_sha256"], "plan_sha256": rec["plan_sha256"]}
+
+
+def test_the_plan_package_hashes_every_file_and_read_package_refuses_any_change(repo, tmp_path, monkeypatch):
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    members = pj.read_package(plan_dir, approved["plan_sha256"])
+    assert set(members) == {"job.json", "PLAN.md", "SPEC.md", "expected_lines.json", "files/" + ACCEPT, "files/" + CONTROL}
+    for rel in ("SPEC.md", "PLAN.md", "expected_lines.json", "files/" + ACCEPT, "files/" + CONTROL):
+        original = (plan_dir / rel).read_bytes()
+        (plan_dir / rel).write_bytes(original + b"# changed" + chr(10).encode())
+        with pytest.raises(pj.PlanChanged):
+            pj.read_package(plan_dir, approved["plan_sha256"])
+        (plan_dir / rel).write_bytes(original)
+    pj.read_package(plan_dir, approved["plan_sha256"])                    # restored: the approval holds again
+
+
+def test_a_changed_spec_after_planning_is_refused_at_launch_and_nothing_starts(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    (plan_dir / "SPEC.md").write_text("- KNOWN: something else entirely." + chr(10), encoding="utf-8")
+    launcher = FakeLauncher(repo, tmp_path / "wt")
+    res = fl.run_launched(fl.load_job(plan_dir / "job.json"), repo, FakeApi(tmp_path / "home"), launcher, run=lambda *a, **k: 1 / 0,
+                          plan=approved)
+    assert res["state"] == "refused" and res["reason"].startswith("plan-changed") and launcher.started == []
+
+
+def test_the_approved_plan_is_installed_into_the_worktree_before_the_run(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    seen = {}
+
+    def run(job, root, **kwargs):
+        seen["spec"] = (root / job["spec"]).read_text(encoding="utf-8")
+        seen["acceptance"] = (root / ACCEPT).read_text(encoding="utf-8")
+        seen["control"] = (root / CONTROL).read_text(encoding="utf-8")
+        return {"name": job["name"], "state": "passed", "round": 1}
+    monkeypatch.setattr(fl, "write_change_doc", lambda *a, **k: None)
+    launcher = FakeLauncher(repo, wt)
+    res = fl.run_launched(fl.load_job(plan_dir / "job.json"), repo, FakeApi(tmp_path / "home"), launcher, run=run, plan=approved)
+    assert res["state"] == "passed", res
+    assert seen["spec"] == (plan_dir / "SPEC.md").read_text(encoding="utf-8")
+    assert seen["acceptance"] == (plan_dir / "files" / ACCEPT).read_text(encoding="utf-8")
+    assert seen["control"] == (plan_dir / "files" / CONTROL).read_text(encoding="utf-8")
+
+
+def test_a_changed_acceptance_file_refuses_the_queued_job_and_nothing_starts(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    queued = fl.enqueue(plan_dir / "job.json", home, plan=approved)
+    assert fl.read_plan(queued) == approved
+    queued.write_bytes(queued.read_bytes() + b" ")                       # the queued copy changes after approval
+    launcher = FakeLauncher(repo, tmp_path / "wt")
+    out = fl.drain_queue(FakeApi(home), launcher, run=lambda *a, **k: 1 / 0)
+    assert out == [(queued.name, "plan-changed")] and launcher.started == []
+
+
+def test_an_approval_with_a_changed_test_file_is_409_plan_changed(repo, tmp_path, monkeypatch, profile):
+    from monitor import actions
+    from monitor.store import ApiError
+    profile("production")
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SATVIK_REPO", str(repo))
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    rec = {"plan_id": "p2", "name": "calc", "request": "r", "files": [], "state": "planned", "job_sha256": approved["job_sha256"],
+           "plan_sha256": approved["plan_sha256"], "assumed": [], "reason": None, "plan_dir": str(plan_dir)}
+    actions._save_plan(tmp_path / "home", rec)
+    (plan_dir / "files" / ACCEPT).write_text("def test_sums_two_prices():" + chr(10) + "    assert 1 == 1" + chr(10), encoding="utf-8")
+    with pytest.raises(ApiError) as changed:
+        actions.approve_plan("p2", approved["job_sha256"], False)
+    assert changed.value.status == 409 and changed.value.code == "plan-changed"
+
+
 # ---------------------------------------------------------------- what is written, and that the job is then fixed
 
 def test_the_plan_folder_holds_the_plan_spec_job_and_files_and_the_job_is_read_only(repo, tmp_path, monkeypatch):

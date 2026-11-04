@@ -1527,19 +1527,65 @@ def _write_job_copy(wt: Path, name: str, job: dict) -> None:
         pass
 
 
+def approved_package(plan: dict, job: dict) -> dict:
+    """The approved plan's package (plan_job.read_package), read once and checked against the hash it was approved with. Raises ValueError
+    (plan-changed) when the plan folder changed since approval, or when the job file is not the approved one."""
+    import hashlib
+    pj = _sibling_module("plan_job")
+    try:
+        members = pj.read_package(plan["plan_dir"], plan.get("plan_sha256"))
+    except pj.PlanChanged as exc:
+        raise ValueError(f"plan-changed: {exc}") from exc
+    if hashlib.sha256(members["job.json"]).hexdigest() != plan.get("job_sha256"):
+        raise ValueError("plan-changed: the planned job file is not the approved one")
+    return members
+
+
+def install_plan(wt: Path, job: dict, members: dict) -> None:
+    """Writes the approved plan's spec and controller-owned files into the job's worktree, before run_job validates the job's inputs: the
+    job names them by repo path (spec, acceptance_tests, negative-control sources), and the run reads them there. Only those paths are written."""
+    allowed = set(job.get("acceptance_tests") or [])
+    allowed |= {src for c in (job.get("negative_controls") or []) for src in (c.get("replace") or {}).values()}
+    named = [key[len("files/"):] for key in members if key.startswith("files/")]
+    stray = [rel for rel in named if rel not in allowed]
+    if stray:                                            # checked before the first write
+        raise ValueError(f"plan files not named by the job: {stray}")
+    spec = Path(wt) / job["spec"]
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_bytes(members["SPEC.md"])
+    for rel in named:
+        target = Path(wt) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(members["files/" + rel])
+
+
 def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, stage_snapshot: dict | None = None,
-                 **run_kwargs) -> dict:
+                 plan: dict | None = None, **run_kwargs) -> dict:
     """Start one job in its own worktree (Launcher.start: limits, request lookup, claims), run it there with the lease kept alive, record the
     finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised.
     stage_snapshot: the job's frozen stage table (queued with it, stage_config.snapshot), used as its snapshot when it starts; None reads the
-    roster at start, as before."""
+    roster at start, as before. plan: the approved plan ({plan_dir, job_sha256, plan_sha256}) of a planned job: its package is checked
+    before the start (a changed plan is refused, nothing starts) and installed into the worktree before the run (I52)."""
     name = job["name"]
+    package = None
+    if plan is not None:
+        try:
+            package = approved_package(plan, job)
+        except ValueError as exc:
+            return {"name": name, "state": "refused", "reason": str(exc)}
     start = launcher.start(name, list(job["files"]), key=key or name, job=job)
     if not start["ok"]:
         return {"name": name, "state": "refused", "reason": start["reason"]}
     job_id, gen, base = start["job_id"], start["gen"], start["base"]
     stop_beat = api.lease.keep_alive(job_id, gen)
     wt = Path(start["worktree"])
+    try:
+        if package is not None:
+            install_plan(wt, job, package)               # before run_job validates the job's inputs
+    except BaseException:
+        stop_beat()
+        launcher.finish(job_id, gen, "error", base)
+        raise
     _write_job_copy(wt, name, job)                       # the job file as it was run (the API shows its spec and files), beside the job folder
     run_kwargs.setdefault("stop_check", _stop_switch(api.home))
     if stage_snapshot is not None:
@@ -1614,20 +1660,46 @@ def _write_json_atomic(path: Path, data) -> None:
     os.replace(tmp, path)
 
 
-def enqueue(job_path: Path, home: Path, stages: dict | None = None) -> Path:
+PLAN_SUFFIX = ".plan"              # queue/<file>.plan: an approved plan ({plan_dir, job_sha256, plan_sha256}); not *.json, so the queue globs never see it
+
+
+def plan_file(queued: Path) -> Path:
+    """The approved-plan sidecar of a queued or taken job file (queue/<file>.plan, or taken/<file>.plan once taken)."""
+    queued = Path(queued)
+    return queued.with_name(queued.name + PLAN_SUFFIX)
+
+
+def read_plan(queued: Path) -> dict | None:
+    """The approved plan of a queued or taken job file, or None for a job that was not a planned job."""
+    try:
+        data = json.loads(plan_file(queued).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def enqueue(job_path: Path, home: Path, stages: dict | None = None, plan: dict | None = None) -> Path:
     """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename). With `stages` (a frozen
-    stage snapshot), its sidecar is written first, so a job that appears in the queue always has its table beside it."""
+    stage snapshot) or `plan` (an approved plan), their sidecars are written first, so a job that appears in the queue always has them beside it."""
     folder = queue_dir(home)
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
     if stages is not None:
         _write_json_atomic(stages_file(dest), stages)
+    if plan is not None:
+        _write_json_atomic(plan_file(dest), plan)
     tmp = dest.with_suffix(".tmp")
     try:
         tmp.write_bytes(Path(job_path).read_bytes())
         os.replace(tmp, dest)
     except BaseException:
         stages_file(dest).unlink(missing_ok=True)
+        plan_file(dest).unlink(missing_ok=True)
         tmp.unlink(missing_ok=True)
         raise
     return dest
@@ -1645,7 +1717,7 @@ def read_stages(queued: Path) -> dict | None:
 COMPLETED = ("passed", "merged")      # a job in one of these states runs again only with rerun=True
 
 
-def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | None = None) -> dict:
+def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | None = None, plan: dict | None = None) -> dict:
     """enqueue() with a duplicate check, for callers that need a structured answer (the UI). Under the queue lock (queue/.lock), so two
     identical requests at once leave one pending file. A job is a duplicate only while it is ACTIVE: the same job file (sha-256) pending in
     queue/, or its name running in the registry with a held lease (claimed or started). A finished job's old queue/taken/ file is history,
@@ -1675,7 +1747,7 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
             return {"queued": False, "reason": "duplicate-running", "job": row.get("job")}
         if row and row.get("state") in COMPLETED and not rerun:
             return {"queued": False, "reason": "already-completed", "job": row.get("job")}
-        return {"queued": True, "path": str(enqueue(job_path, home, stages=stages))}
+        return {"queued": True, "path": str(enqueue(job_path, home, stages=stages, plan=plan))}
 
 
 def take_next(home: Path) -> Path | None:
@@ -1691,12 +1763,12 @@ def take_next(home: Path) -> Path | None:
             os.replace(path, taken / path.name)
         except OSError:
             continue
-        side = stages_file(path)
-        if side.is_file():
-            try:
-                os.replace(side, stages_file(taken / path.name))
-            except OSError:
-                pass
+        for side, dest in ((stages_file(path), stages_file(taken / path.name)), (plan_file(path), plan_file(taken / path.name))):
+            if side.is_file():
+                try:
+                    os.replace(side, dest)
+                except OSError:
+                    pass
         return taken / path.name
     return None
 
@@ -1716,7 +1788,11 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
             out.append((path.name, "invalid"))
             continue
         frozen = read_stages(path)                  # the table frozen at queue time; None for a job queued without one
-        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run,
+        approved = read_plan(path)                  # the approved plan of a planned job; None otherwise
+        if approved is not None and _file_sha256(path) != approved.get("job_sha256"):
+            out.append((path.name, "plan-changed"))  # the queued copy is not the approved job file: nothing starts
+            continue
+        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run, plan=approved,
                            **({"stage_snapshot": frozen} if frozen is not None else {}))
         out.append((path.name, res["state"]))
 
@@ -1736,9 +1812,11 @@ def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner
     except ValueError as exc:
         return {"name": name, "state": "job-invalid", "reason": str(exc)}
     state = "awaiting-approval" if planned["assumed"] else "validated"
-    _atomic_write(plan_dir / "STATE.json", json.dumps({"state": state, "job_sha256": planned["job_sha256"], "assumed": planned["assumed"]}, indent=2))
+    _atomic_write(plan_dir / "STATE.json", json.dumps({"state": state, "job_sha256": planned["job_sha256"], "plan_sha256": planned["plan_sha256"],
+                                                       "assumed": planned["assumed"]}, indent=2))
     if state == "awaiting-approval":
-        return {"name": name, "state": state, "reason": None, "assumed": planned["assumed"], "job_sha256": planned["job_sha256"]}
+        return {"name": name, "state": state, "reason": None, "assumed": planned["assumed"], "job_sha256": planned["job_sha256"],
+                "plan_sha256": planned["plan_sha256"]}
     return _start_planned(name, root, api, launcher, merge_queue, run)
 
 
@@ -1761,9 +1839,15 @@ def _start_planned(name: str, root: Path, api, launcher, merge_queue, run) -> di
     if _sibling_module("plan_job").file_sha256(plan_dir / "job.json") != recorded["job_sha256"]:
         return {"name": name, "state": "refused", "reason": "job-changed"}
     job = load_job(plan_dir / "job.json")
-    approved = {"job_sha256": recorded["job_sha256"], "assumed": recorded["assumed"], "approved": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+    plan = {"plan_dir": str(plan_dir), "job_sha256": recorded["job_sha256"], "plan_sha256": recorded.get("plan_sha256")}
+    try:
+        approved_package(plan, job)                      # the whole plan must still be the approved one before anything is recorded (I52)
+    except ValueError as exc:
+        return {"name": name, "state": "refused", "reason": str(exc)}
+    approved = {"job_sha256": recorded["job_sha256"], "plan_sha256": recorded.get("plan_sha256"), "assumed": recorded["assumed"],
+                "approved": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     _atomic_write(plan_dir / "APPROVED.json", json.dumps(approved, indent=2))
-    res = run_launched(job, root, api, launcher, merge_queue=merge_queue, run=run)
+    res = run_launched(job, root, api, launcher, merge_queue=merge_queue, run=run, plan=plan)     # the package is checked again and installed
     if res["state"] != "refused":
         _atomic_write(plan_dir / "STATE.json", json.dumps(dict(recorded, state="started", result=res["state"]), indent=2))
     return res

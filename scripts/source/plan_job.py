@@ -396,11 +396,52 @@ def _write(answer, plan_dir):
     return _summary(plan_dir)
 
 
+PACKAGE_TEXT = ("job.json", "PLAN.md", "SPEC.md", "expected_lines.json")     # the plan's own files; the acceptance and control files sit under files/
+
+
+class PlanChanged(Exception):
+    """The plan folder does not hold the package it was approved with (a file changed, went missing or was added)."""
+
+
+def package_members(plan_dir):
+    """Every file of a planned job, as {name: bytes}: job.json, PLAN.md, SPEC.md, expected_lines.json and each file under files/ (its acceptance
+    tests and negative-control sources, by repo path). The approval hashes all of it, not only the job file (I52)."""
+    plan_dir = Path(plan_dir)
+    members = {name: (plan_dir / name).read_bytes() for name in PACKAGE_TEXT}
+    base = plan_dir / "files"
+    if base.is_dir():
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                members["files/" + path.relative_to(base).as_posix()] = path.read_bytes()
+    return members
+
+
+def package_sha256(members):
+    """The hash of a package: the SHA-256 of the sorted (name, SHA-256 of its bytes) pairs."""
+    digest = {name: hashlib.sha256(data).hexdigest() for name, data in sorted(members.items())}
+    return hashlib.sha256(json.dumps(digest, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def read_package(plan_dir, expected_sha256):
+    """The plan folder's package, read once, when it still hashes to `expected_sha256` (the hash the plan was approved with). Raises
+    PlanChanged otherwise (also when no hash was recorded), so an approved plan that changed is never queued or started."""
+    if not expected_sha256:
+        raise PlanChanged("no package hash was recorded for this plan")
+    try:
+        members = package_members(plan_dir)
+    except OSError as exc:
+        raise PlanChanged(f"the plan folder is incomplete: {exc}") from exc
+    if package_sha256(members) != expected_sha256:
+        raise PlanChanged("the planned job, its spec or its acceptance and control files changed since the plan was made")
+    return members
+
+
 def _summary(plan_dir):
     spec = (plan_dir / "SPEC.md").read_text(encoding="utf-8")
     assumed = [line.split(":", 1)[1].strip() for line in spec.splitlines() if re.match(r"^\s*(?:[-*]\s+)?ASSUMED:", line)]
-    return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"), "assumed": assumed}
+    return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"),
+            "plan_sha256": package_sha256(package_members(plan_dir)), "assumed": assumed}
 
 
 def _outcome(state, reason):
-    return {"state": state, "reason": reason, "job_sha256": None, "assumed": []}
+    return {"state": state, "reason": reason, "job_sha256": None, "plan_sha256": None, "assumed": []}
