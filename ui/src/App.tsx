@@ -348,10 +348,13 @@ export default function App() {
   const loadResult = useCallback(
     async (jobId: string, signal?: AbortSignal) => {
       try {
-        const [r, files] = await Promise.all([
-          apiClient.getResult(jobId, signal),
-          apiClient.getResultDiff(jobId, signal).catch(() => [] as Array<{ path: string; unified_diff: string }>),
-        ]);
+        const r = await apiClient.getResult(jobId, signal);
+        // The diff is requested only when the result says one exists (diff_available). Otherwise the API answers 404, and that
+        // is not a diff to load: the Results page says so instead.
+        const files =
+          r.diff_available === true
+            ? await apiClient.getResultDiff(jobId, signal).catch(() => [] as Array<{ path: string; unified_diff: string }>)
+            : [];
         setResult(r);
         setDiffFiles(files);
       } catch (err) {
