@@ -13,9 +13,9 @@
     {"model_id": "qwen/qwen3.8-27b", "hosting_provider": null, "paid": true, "price_in_usd_per_mtok": null, "price_out_usd_per_mtok": null, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null}
   ],
   "claude_code": [
-    {"model": "opus", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null},
-    {"model": "sonnet", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null},
-    {"model": "haiku", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null},
-    {"model": "fable", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null}
+    {"model": "opus", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
+    {"model": "sonnet", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
+    {"model": "haiku", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
+    {"model": "fable", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null}
   ]
 }

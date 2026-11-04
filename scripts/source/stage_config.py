@@ -405,7 +405,8 @@ def _spec(data, table, stage, role, entry):
 
 def _fallback(data, table, stage, role, mode):
     """reviewer_b writing (or repairing as the author) when writer_b is down: reviewer_b's model and via; its own settings with the writer_b
-    stage's settings overrides on top; the writer_b stage's effort when both have the same via, else the default for the mode."""
+    stage's settings overrides on top; the writer_b stage's effort when both have the same via. Otherwise a Claude Code reviewer_b keeps its
+    own stage's effort (that is the effort its model is called with), and an OpenRouter one takes the default for the mode."""
     rb = table["reviewer_b"]
     writer_stage = "writer_b_write" if mode == "write" else "writer_b_repair"
     override = _stages_block(data).get(writer_stage) or {}
@@ -414,6 +415,8 @@ def _fallback(data, table, stage, role, mode):
     settings.update(override.get("settings") or {})
     if table[writer_stage]["via"] == rb["via"]:
         effort = table[writer_stage]["effort"]
+    elif rb["via"] == "claude_code":
+        effort = rb["effort"]
     else:
         effort = _default_effort(data, rb["via"], data["roles"]["reviewer_b"], mode)
     return _spec(data, table, stage, "reviewer_b", dict(rb, settings=settings, effort=effort))

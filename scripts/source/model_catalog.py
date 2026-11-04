@@ -26,7 +26,7 @@ CONTRACT_KIND = {"writer_file_blocks": "writer", "repair_edit_blocks": "repair",
 OPENROUTER_KEYS = ("model_id", "hosting_provider", "paid", "price_in_usd_per_mtok", "price_out_usd_per_mtok", "context_tokens",
                    "max_output_tokens", "reasoning", "temperature", "contracts", "structured_outputs", "verified_at", "metadata_at")
 REASONING_KEYS = ("on_off", "efforts", "token_budget")
-CLAUDE_CODE_KEYS = ("model", "via", "efforts", "cost")
+CLAUDE_CODE_KEYS = ("model", "via", "efforts", "cost", "contracts", "verified_at")   # contracts and verified_at: as an OpenRouter entry's, by POST /models/verify
 TEMPERATURE_RANGE = {"min": 0.0, "max": 2.0}   # OpenRouter's documented temperature range, used when /models lists temperature
 CALL_MAX_TOKENS = 16000             # a catalog model that is not on the roster: its output allowance per call (lowered to its max output when known)
 CALL_TIMEOUT_S = 600
@@ -139,6 +139,13 @@ def _check_claude_code(i, entry):
         raise CatalogError("claude_code", f"{where}: efforts must be claude_code.EFFORTS ({', '.join(cc.EFFORTS)})")
     if entry["cost"] is not None:
         raise CatalogError("claude_code_cost", f"{where}: cost is null (a subscription has no per-call USD price)")
+    contracts = entry["contracts"]
+    if not isinstance(contracts, dict) or set(contracts) != set(CONTRACTS) or not all(_bool_or_null(v) for v in contracts.values()):
+        raise CatalogError("contracts", f"{where}: contracts needs exactly {', '.join(CONTRACTS)}, each true, false or null")
+    stamps = entry["verified_at"]
+    if stamps is not None and (not isinstance(stamps, dict) or not set(stamps) <= set(CONTRACTS)
+                               or not all(isinstance(v, str) and v for v in stamps.values())):
+        raise CatalogError("verified_at", f"{where}: verified_at must be null or {{contract: time}}")
 
 
 def validate_catalog(data):
@@ -338,6 +345,30 @@ def verify_model(client, model_id, contract, path=None, clock=time.time):
 
 
 # ---- what a UI may show
+
+def verify_claude_code_model(model_id, contract, effort, path=None, clock=time.time):
+    """The same contract check for a Claude Code model: one isolated `claude -p` call at `effort` through claude_code.ask_role (the CLI's
+    own reply check for the contract's kind), then the same repo parser as verify_model. A reply that fails either check records false; a
+    call that never gave a reply (switched off, usage limit, timeout, a failed process) records nothing and raises its ClaudeFailed.
+    Records true or false and its time under the entry's contracts and verified_at. Returns {"model_id", "contract", "passed", "reason"}."""
+    if contract not in CONTRACTS:
+        raise CatalogError("unknown_contract", f"{contract!r} is not one of {', '.join(CONTRACTS)}")
+    if not any(e["model"] == model_id for e in load_catalog(path)["claude_code"]):
+        raise CatalogError("unknown_model", f"{model_id!r} is not a Claude Code model in the catalog")
+    cc = _claude_models()
+    spec = {"via": "claude_code", "model": model_id, "effort": effort, "settings": {"timeout_s": VERIFY_TIMEOUT_S}}
+    try:
+        text = cc.ask_role("verify", VERIFY_SYSTEM, VERIFY_USER[contract], CONTRACT_KIND[contract], spec=spec)
+        reason = contract_problem(contract, text)
+    except cc.ClaudeBadReply as exc:
+        reason = str(exc)
+    catalog = load_catalog(path)            # read again: another check may have written since
+    entry = next(e for e in catalog["claude_code"] if e["model"] == model_id)
+    entry["contracts"][contract] = reason is None
+    entry["verified_at"] = dict(entry["verified_at"] or {}, **{contract: _now(clock)})
+    save_catalog(catalog, path)
+    return {"model_id": model_id, "contract": contract, "passed": reason is None, "reason": reason}
+
 
 def capabilities(model_id, path=None):
     """Only the controls a UI may offer for a model: its reasoning modes (off/on, the efforts the adapter sends, a token budget), the

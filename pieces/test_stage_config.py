@@ -354,6 +354,25 @@ def test_allowed_changes_validate_clean():
     assert _with_stage("test", "reviewer_reask", {"effort": "medium", "settings": {"max_tokens": 9000}}) == []
 
 
+CLAUDE_REVIEWER_B = {"model": "haiku", "via": "claude_code", "effort": "high"}
+
+
+def test_a_valid_claude_code_reviewer_b_change_validates_under_production_and_test():
+    """I23: review_fix_repair inherits reviewer_b's model when writer_b is down. Its fallback spec took the roster reviewer_b's effort (none,
+    the roster role is OpenRouter), so a valid Claude Code reviewer_b was refused with bad-effort on review_fix_repair."""
+    assert _with_stage("production", "reviewer_b", CLAUDE_REVIEWER_B) == []
+    assert _with_stage("test", "reviewer_b", CLAUDE_REVIEWER_B) == []
+
+
+def test_the_inherited_fallback_of_a_claude_code_reviewer_b_uses_its_own_stage_effort():
+    data = dict(sc._profile_data("production")[1])
+    data["stages"] = sc._merge(sc._stages_block(data), {"reviewer_b": CLAUDE_REVIEWER_B})
+    spec = sc.call_spec(data, "review_fix_repair", "reviewer_b")
+    assert (spec["model"], spec["via"], spec["effort"]) == ("haiku", "claude_code", "high")
+    no_effort = sc.validate({"reviewer_b": {"model": "haiku", "via": "claude_code"}}, "production")
+    assert "bad-effort" in codes(no_effort)                                 # a Claude Code reviewer_b still needs its own effort
+
+
 def test_resolve_stages_raises_a_roster_refusal_with_the_code(roster):
     roster(lambda data: stages_of(data, "test").update(reviewer_b={"model": roles_of("test")["writer_a"]["model"]}))
     with pytest.raises(sc.StageRefused) as caught:

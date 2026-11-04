@@ -1,5 +1,6 @@
 """Tests for scripts/source/shared_limits.py (package E). Real OS processes share one ledger under SATVIK_HOME; no model call, no network.
-The 60-second pace test is real time: 16 sends from 4 processes, so exactly one waits for the window to clear."""
+The pace test runs 16 sends from 4 processes against the real ledger and lock, on a virtual clock shared by the processes (it runs in
+seconds, not a real minute)."""
 import json
 import os
 import subprocess
@@ -18,12 +19,27 @@ import shared_limits as sl  # noqa: E402
 
 WORKER = r'''
 import json, sys, time
+from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import loop_home as lh
 import shared_limits as sl
 cmd, job, gen, n, p = sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), json.loads(sys.argv[6])
 for name, value in p.get("set", {}).items():
     setattr(sl, name, value)
+
+class VirtualClock:
+    """A clock every worker process shares: a JSON file holds the time, read and moved only under one OS lock. sleep moves it forward."""
+    def __init__(self, path):
+        self.path = path
+        self.lock = path.with_name(path.name + ".lock")
+    def now(self):
+        with lh._os_lock(self.lock):
+            return json.loads(self.path.read_text(encoding="utf-8"))["now"]
+    def sleep(self, seconds):
+        with lh._os_lock(self.lock):
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data["now"] += seconds
+            self.path.write_text(json.dumps(data), encoding="utf-8")
 
 def outcome(fn):
     try:
@@ -43,7 +59,9 @@ if cmd == "free":
 elif cmd == "review":
     print(json.dumps([outcome(lambda: sl.reserve_review(job, gen, p["usd"])) for _ in range(n)]), flush=True)
 elif cmd == "pace":
-    print(json.dumps([sl.pace() for _ in range(n)]), flush=True)
+    clock = VirtualClock(Path(p["clock"])) if "clock" in p else None
+    kw = {} if clock is None else {"clock": clock.now, "sleep": clock.sleep}
+    print(json.dumps([sl.pace(**kw) for _ in range(n)]), flush=True)
 elif cmd == "hold":
     with sl.model_slot(p["model"], gen, p["timeout"]):
         print("in", flush=True)
@@ -247,12 +265,18 @@ def test_a_live_cap_stands_across_days_while_the_count_resets(shared_home):
     assert st["free_used"] == 0 and sl.free_cap_of(st) == (5, "live")
 
 
-# ---------------------------------------------------------------- pace: real 60 seconds
+# ---------------------------------------------------------------- pace: 15 a minute, on a virtual clock
 def test_pace_sends_at_most_15_in_any_60_seconds_across_processes(shared_home, worker_file, procs):
-    spawned = [start(worker_file, shared_home, "pace", n=4) for _ in range(4)]
+    # Deliberately on a virtual clock (I22): the processes, the ledger and its lock are real; the minute is not. Every send that is not
+    # blocked happens at the same virtual time, so exactly one (the 16th) must wait the full window before it may go.
+    t0 = 1_800_000_000.0
+    clock = worker_file.parent / "clock.json"
+    clock.write_text(json.dumps({"now": t0}), encoding="utf-8")
+    spawned = [start(worker_file, shared_home, "pace", n=4, clock=str(clock)) for _ in range(4)]
     procs.extend(spawned)
     sends = sorted(t for row in finish(spawned) for t in row)
     assert len(sends) == 16
-    assert sends[15] - sends[0] >= sl.WINDOW_S - 1e-6              # the 16th send waited for the first to leave the window
+    assert sends[:15] == [t0] * 15 and sends[15] == pytest.approx(t0 + sl.WINDOW_S)  # the 16th waited for the first 15 to leave the window
     for i in range(len(sends) - 15):
         assert sends[i + 15] - sends[i] >= sl.WINDOW_S - 1e-6
+    assert json.loads(clock.read_text(encoding="utf-8"))["now"] == pytest.approx(t0 + sl.WINDOW_S)

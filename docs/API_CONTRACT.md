@@ -52,7 +52,7 @@ and a repeat with the same key could run twice. The run command above pins `--wo
 - `contract_state`: `verified`, `failed`, `unverified`, `not-applicable`. A model is eligible for a stage only when that stage's contract is `verified`.
   - Claude Code models use `text_validated` instead: the reply is checked with the same text parsers, and there is never `native_structured_output`.
     A Claude Code model reports every text contract as `unverified` (with `text_validated` true) until a real `POST /models/verify` result is
-    recorded for that model and contract. That call takes catalog (OpenRouter) models only, so today every Claude Code contract is `unverified`.
+    recorded for that model and contract (in its catalog entry, as an OpenRouter entry). `planner_json` has no Claude Code check yet, so it stays `unverified`.
 - `reasoning_mode`: `optional` (on/off verified), `mandatory` (it cannot be turned off), `unsupported`, `unknown`. Show only the switch states the mode allows.
 - `start_refusal`: `stop-file`, `provider-unavailable`, `free-requests`, `review-spend`, `request-running`, `no-sandbox-slot`, `claim-conflict`,
   `no-budget-snapshot`.
@@ -175,7 +175,7 @@ stages) and `fallback_contract` (`repair_whole_file` for a repair stage, else `n
 | Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range`, 422 `not-applied-by-engine` (`job_review_usd` other than the engine's 0.05, which the production gate requires) | no job running for slots | edits config; applies to new starts only | v1 |
 | Validate stage settings | `POST /stages/validate` | `{"profile", "changes": [...]}` | `{"valid": true, "problems": []}` | 400 with `problems[{code, stage, message}]`; `contract-not-verified` when a changed stage's model lacks its required contract | always | none | v1 |
 | Save stage settings | `PUT /stages` | `{"profile", "revision", "changes": [...]}` | `{"revision": n+1}` | 409 `stale-revision`, 400 validation | always | affects **future jobs only**; running jobs keep their snapshot | v1 |
-| Verify model | `POST /models/verify` | `{"model_id", "contract"}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, 503 provider | key present | 1 free call | v1 |
+| Verify model | `POST /models/verify` | `{"model_id", "contract", "effort"?}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, `not-allowed-in-test` (test profile: only haiku at high), 400 `bad-effort`, 503 provider | OpenRouter: key present; Claude Code: none (a claude call, `effort` default `high`) | OpenRouter: 1 free call; Claude Code: 1 isolated claude call | v1 |
 | Refresh prices and metadata | `POST /models/refresh` | `{}` | `{"updated": n, "metadata_at"}` | 503 | key present | 1 GET to OpenRouter | v1 |
 | Global STOP | `POST /system/stop` | `{"on": true\|false}` | `{"stop": true}` | — | always | no new starts, no next round. **A model call in flight is not interrupted** | v1 |
 | Download results | `GET /results/{id}/download` | — | a zip of `results/<job_id>/` | 404 `not-archived` | after finish | none | v1 |

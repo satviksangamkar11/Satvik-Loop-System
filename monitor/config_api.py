@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import job_history
+import claude_code as cc
 from api_budget import worst_case_usd
 import limits_config
 import model_catalog as mc
@@ -75,11 +76,15 @@ def _reasoning_records(home):
     return read_json(Path(home) / "api" / "reasoning_verified.json", {}) or {}
 
 
-def _claude_code_contracts():
-    """A Claude Code model's contracts. text_validated is true (its reply goes through the same text parsers), but a contract is verified only
-    by a recorded POST /models/verify result for that model and contract. That call takes catalog (OpenRouter) models only and refuses a Claude
-    Code model as not-in-catalog, so no such result exists and every text contract reads unverified."""
-    return {**{c: "unverified" for c in TEXT_CONTRACTS}, "native_structured_output": "not-applicable"}
+def _claude_code_contracts(entry):
+    """A Claude Code model's contracts. text_validated is true (its reply goes through the same text parsers), and a contract is verified only
+    by a recorded POST /models/verify result for that model and contract (the catalog entry's contracts, as an OpenRouter entry's). The
+    planner_json contract has no check for a Claude Code model yet, so it stays unverified; repair_whole_file follows writer_file_blocks, as
+    it does for OpenRouter."""
+    c = entry["contracts"]
+    return {"planner_json": "unverified", "writer_file_blocks": _state(c["writer_file_blocks"]),
+            "repair_edit_blocks": _state(c["repair_edit_blocks"]), "repair_whole_file": _state(c["writer_file_blocks"]),
+            "reviewer_verdict": _state(c["reviewer_verdict"]), "native_structured_output": "not-applicable"}
 
 
 def _openrouter_contracts(entry):
@@ -95,12 +100,13 @@ def model_shape(entry, home=None, reasoning=None):
     """One Model (contract section 2) from a catalog entry (OpenRouter or Claude Code). Unknown stays null; efforts show only what the
     model's capabilities list; the reasoning mode and verified efforts come from POST /models/verify-reasoning when it has run."""
     if "model" in entry:                                   # a Claude Code entry: subscription, no USD, text-checked contracts
+        stamps = entry["verified_at"] or {}
         return {"model_id": entry["model"], "via": "claude_code", "hosting_provider": None, "paid": None, "price_in_usd_per_mtok": None,
                 "price_out_usd_per_mtok": None, "context_tokens": None, "max_output_tokens": None, "endpoint": None,
                 "capabilities": {"reasoning_on_off": None, "efforts": list(entry["efforts"]), "token_budget": None, "temperature": None,
-                                 "structured_outputs": None, "contracts": _claude_code_contracts(),
+                                 "structured_outputs": None, "contracts": _claude_code_contracts(entry),
                                  "reasoning_mode": "unknown", "text_validated": True},
-                "verified_at": None, "metadata_at": None, "note": "subscription: no USD"}
+                "verified_at": max(stamps.values()) if stamps else None, "metadata_at": None, "note": "subscription: no USD"}
     rec = (reasoning if reasoning is not None else _reasoning_records(home).get(entry["model_id"])) or {}
     r = entry["reasoning"]
     efforts = list(rec.get("efforts_verified") or r["efforts"])
@@ -241,12 +247,33 @@ def _with_client(home, label, fn):
         client.release_job()
 
 
-def verify_contract(home, model_id, contract):
-    """POST /models/verify: one free call for one contract. {result: pass|fail, verified_at}."""
+def verify_contract(home, model_id, contract, effort=None):
+    """POST /models/verify: one call for one contract. An OpenRouter model: one free call. A Claude Code model (catalog claude_code): one
+    isolated claude call at `effort` (default high). {result: pass|fail, verified_at}."""
     if contract not in mc.CONTRACTS:
         raise ApiError(400, "unknown-contract", f"contract must be one of {', '.join(mc.CONTRACTS)}")
+    if any(e["model"] == model_id for e in mc.load_catalog()["claude_code"]):
+        return _verify_claude_code(model_id, contract, effort)
     outcome = _with_client(home, "api-verify", lambda client: mc.verify_model(client, model_id, contract))
     stamp = (mc.entry_of(mc.load_catalog(), model_id)["verified_at"] or {}).get(contract)
+    return {"result": "pass" if outcome["passed"] else "fail", "verified_at": stamp}
+
+
+def _verify_claude_code(model_id, contract, effort):
+    """A Claude Code model's contract check: the probe runs through claude_code.ask_role (the roster is not read; the model and effort are the
+    request's). The test profile allows only claude_code.TEST_ONLY (haiku at high) and refuses anything else before a call is made. A call
+    that never gave a reply is 503 and records nothing."""
+    effort = "high" if effort is None else effort
+    if effort not in cc.EFFORTS:
+        raise ApiError(400, "bad-effort", f"effort must be one of {', '.join(cc.EFFORTS)}")
+    if _profile(None) == "test" and (model_id, effort) != cc.TEST_ONLY:
+        raise ApiError(422, "not-allowed-in-test",
+                       f"the test profile verifies only {cc.TEST_ONLY[0]} at effort {cc.TEST_ONLY[1]}; {model_id} at effort {effort} is refused")
+    try:
+        outcome = mc.verify_claude_code_model(model_id, contract, effort)
+    except cc.ClaudeFailed as exc:
+        raise ApiError(503, "provider-unavailable", f"the claude call gave no reply: {exc}")
+    stamp = (next(e for e in mc.load_catalog()["claude_code"] if e["model"] == model_id)["verified_at"] or {}).get(contract)
     return {"result": "pass" if outcome["passed"] else "fail", "verified_at": stamp}
 
 
@@ -417,7 +444,8 @@ def _contract_problems(name, changes):
             continue
         required = sc.CONTRACT_OF[stage][0]
         if via == "claude_code":
-            states = _claude_code_contracts()
+            cc_entry = next((e for e in catalog["claude_code"] if e["model"] == model), None)
+            states = _claude_code_contracts(cc_entry) if cc_entry is not None else {}
         else:
             entry = mc.entry_of(catalog, model)
             states = _openrouter_contracts(entry) if entry is not None else {}
