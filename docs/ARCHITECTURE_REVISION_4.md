@@ -176,6 +176,12 @@ of the other resolve to the same model. Two stages of the same writer may share 
   API answers the same either way.
 - **Archives made before the job file was archived have `spec` and `files` null.** The archive keeps `<name>.job.json` from commit `2cc5c96`
   (merged in `2c74b35`). The seeded `ah-budget` archive predates it, so its detail shows null for both.
+- **Older merged jobs show Unknown end state, tests and review verdict (I35).** Their folders hold no finish event, status.json or tests or
+  review event, so nothing in the files can give them. The registry row is overwritten by the merge outcome (state `merged`, with head
+  and attempts), so the run's own end state is gone from it, and the worktree is removed at finish. The view reads these facts only from
+  events.jsonl, status.json and results/ (the archive), so it shows Unknown, and it never infers them from the merge. A job whose evidence
+  was recovered into results/ (fl-top on the PC) shows them. Its finish time comes from the registry row (I35), which for a merged job is
+  the merge time.
 - **Planner events** are written to the plan folder (`<repo>/_loop/<name>/`, named by the plan record), not to the job's own folders. The
   view reads them there (I21). They are not in `history.db`, which indexes only the job's own events.
 - **Claude Code verify records per model and contract, not per effort.** `verified_at` is stored for the model and the contract. The effort
