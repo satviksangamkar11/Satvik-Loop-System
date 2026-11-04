@@ -12,7 +12,9 @@ export default defineConfig({
       '@': path.resolve(uiDir, './src'),
     },
   },
+  // Bind 127.0.0.1 explicitly: the e2e configs poll http://127.0.0.1:5173, and a default bind is localhost (::1 on some Windows machines) (I71).
   server: {
+    host: '127.0.0.1',
     port: 5173,
     // MOCK mode imports the canonical fixtures from the repository's monitor/fixtures folder.
     fs: {

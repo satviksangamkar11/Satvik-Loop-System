@@ -241,6 +241,17 @@ def client_for(root, job, keys=None):
     return client
 
 
+def read_text_exact(path) -> str:
+    """The file's text exactly as its bytes are (utf-8, no newline translation). Text mode would turn \\r\\n into \\n on Windows and so
+    drop bytes the hashes count (I69)."""
+    return Path(path).read_bytes().decode("utf-8")
+
+
+def write_text_exact(path, text) -> None:
+    """Writes the text as exactly its utf-8 bytes. Text mode would write \\r\\n on Windows, so the disk would not hash to the text (I69)."""
+    Path(path).write_bytes(text.encode("utf-8"))
+
+
 def restore_files(root, originals):
     """Puts every job file back to its original text; a file that did not exist before the job is removed."""
     for rel, text in (originals or {}).items():
@@ -250,7 +261,7 @@ def restore_files(root, originals):
                 path.unlink()
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            write_text_exact(path, text)
 
 
 GREEN_DIR = "green"                 # job folder/green/checkpoint.json: the last green run's files on disk, before any repair (I56)
@@ -275,7 +286,7 @@ def write_green_checkpoint(folder, files_text: dict, tested_hash: str) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / GREEN_FILE
     tmp = folder / f".{GREEN_FILE}.{os.getpid()}.{time.time_ns()}.tmp"
-    tmp.write_text(json.dumps({"tested_hash": tested_hash, "files": files_text}, indent=2, sort_keys=True), encoding="utf-8")
+    write_text_exact(tmp, json.dumps({"tested_hash": tested_hash, "files": files_text}, indent=2, sort_keys=True))   # exact bytes (I69)
     os.replace(tmp, target)
     return target
 
@@ -1017,7 +1028,7 @@ class Production:
         for rel, text in reply.items():
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            write_text_exact(path, text)
 
     def restore(self):
         restore_files(self.root, self.originals)
@@ -1057,7 +1068,7 @@ class Production:
         if green:
             self.tested_hash = gates.combined_hash(self.root, self.files)
             self.green_junit = result.junit
-            self.green_files = {rel: (self.root / rel).read_text(encoding="utf-8") if (self.root / rel).is_file() else None for rel in self.files}
+            self.green_files = {rel: read_text_exact(self.root / rel) if (self.root / rel).is_file() else None for rel in self.files}
             if self.job_dir is not None:                # the checkpoint goes to disk now, before any repair can change the files (I56)
                 write_green_checkpoint(self.job_dir / GREEN_DIR, self.green_files, self.tested_hash)
         self._step("sandbox", "tests", "green" if green else f"red: {len(failing)} failing")

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import fix_loop as fl
 import launch
 import loop_home
+import pytest
 from wp3_repos import make_repos
 
 OK_BUDGET = {"free_requests": 1000, "review_spend_usd": 0.0}
@@ -113,6 +114,8 @@ def test_a_claimed_job_whose_owner_died_is_recovered_to_the_queue(tmp_path):
 
 
 def test_a_reused_pid_is_a_dead_owner(tmp_path):
+    if loop_home.process_start(os.getpid()) is None:
+        pytest.skip("this platform gives no process start identity (Linux and Windows do), so a reused pid cannot be told apart here")
     env = env_for(tmp_path)
     queued = enqueue(tmp_path, env, "alpha")
     taken = fl.take_next(env.home)

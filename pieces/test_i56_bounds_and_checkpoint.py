@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import p0_gates as gates
 import p1b_production as pm
 import sandbox_runner as sr
 from test_p1b_production_run import _production_profile, _repair_only_production  # noqa: F401  (the production profile fixture)
@@ -47,6 +48,35 @@ def test_restore_green_refuses_a_damaged_checkpoint(tmp_path):
     models.green_files = None
     with pytest.raises(AssertionError, match="before any green run"):
         models.restore_green()
+
+
+def test_a_green_run_with_crlf_files_is_captured_restored_and_hashed_the_same_bytes(tmp_path):
+    """I69: the green files are captured, checkpointed and restored as their exact bytes. Text mode dropped the \\r of a CRLF file (on Windows
+    it also wrote \\r\\n for every \\n), so the restored files did not hash to the green run. Keys are posix relative paths."""
+    root = tmp_path / "repo"
+    rel = "pieces/sub/calc.py"
+    raw = b"x = 1\r\ny = 2\r\n"
+    (root / "pieces" / "sub").mkdir(parents=True)
+    (root / rel).write_bytes(raw)
+    green = {rel: pm.read_text_exact(root / rel)}                        # captured the way the green run captures its files
+    assert green[rel] == raw.decode("utf-8")
+    tested = gates.combined_hash(root, [rel])
+    assert pm._texts_hash(green) == tested                                # the checkpoint hashes what is on disk
+    folder = tmp_path / "green"
+    pm.write_green_checkpoint(folder, green, tested)
+    pm.write_text_exact(root / rel, "x = 'damaged'\n")
+    cp = pm.read_green_checkpoint(folder)
+    assert cp is not None
+    pm.restore_files(root, cp["files"])
+    assert (root / rel).read_bytes() == raw
+    assert gates.combined_hash(root, [rel]) == cp["tested_hash"] == tested
+
+
+def test_restored_files_are_written_as_their_exact_bytes_on_every_platform(tmp_path):
+    """Text mode writes \\r\\n for \\n on Windows; the restore must not (I69)."""
+    pm.restore_files(tmp_path, {"pieces/a.py": "one\ntwo\n", "pieces/b.py": "x\r\n"})
+    assert (tmp_path / "pieces" / "a.py").read_bytes() == b"one\ntwo\n"
+    assert (tmp_path / "pieces" / "b.py").read_bytes() == b"x\r\n"
 
 
 def test_captured_output_is_kept_to_its_head_and_tail(tmp_path):

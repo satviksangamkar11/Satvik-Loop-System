@@ -136,9 +136,47 @@ def pid_alive(pid) -> bool:
     return True
 
 
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _win_kernel32():
+    """kernel32 with the prototypes the start-time read needs (Windows only; ctypes is stdlib)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    u64_ptr = ctypes.POINTER(ctypes.c_uint64)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetProcessTimes.restype = wintypes.BOOL
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE, u64_ptr, u64_ptr, u64_ptr, u64_ptr]
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return k32
+
+
+def _windows_process_start(pid, k32=None):
+    """The creation time of a Windows process (GetProcessTimes, a FILETIME as one 64-bit count of 100 ns), as a string; None when the
+    process cannot be opened or queried (no such pid, or no access). `k32` is injectable so the path can be tested without Windows."""
+    import ctypes
+    if k32 is None:
+        k32 = _win_kernel32()
+    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        created, exited, kernel, user = (ctypes.pointer(ctypes.c_uint64(0)) for _ in range(4))
+        if not k32.GetProcessTimes(handle, created, exited, kernel, user):
+            return None
+        return str(created.contents.value) if created.contents.value else None
+    finally:
+        k32.CloseHandle(handle)
+
+
 def process_start(pid):
-    """An identity for a process's start, so a reused pid is not taken for its old owner: the kernel's start time on Linux (/proc), else
-    None (only the pid is then known). Stdlib only; no subprocess."""
+    """An identity for a process's start, so a reused pid is not taken for its old owner: the kernel's creation time on Windows
+    (GetProcessTimes) and the start time on Linux (/proc). None on other systems (only the pid is then known). Stdlib only; no subprocess."""
+    if os.name == "nt":
+        return _windows_process_start(pid)
     try:
         text = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii", errors="replace")
     except (OSError, ValueError):
