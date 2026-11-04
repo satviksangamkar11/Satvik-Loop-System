@@ -18,6 +18,7 @@ import fix_loop as fl  # noqa: E402
 import job_history as jh  # noqa: E402
 import loop_home  # noqa: E402
 import merge_queue as mq  # noqa: E402
+import plan_job  # noqa: E402
 import openrouter_call as oc  # noqa: E402
 import p1b_production as pm  # noqa: E402
 import p1b_routing as p1b  # noqa: E402
@@ -206,6 +207,31 @@ def test_a_stopped_launch_adds_its_own_finish_and_a_merge_lands_in_the_archive(t
     assert [e["type"] for e in events].count("finish") == 1                # the launcher saw the run's own passed finish
     assert jh.job_view(env.home, job_id)["derived_state"] == "merged:merged"
     assert rows(env.home)["results"][0][7] == "merged"
+
+
+def test_a_planned_jobs_view_shows_its_planner_attempt_from_the_plan_folder(tmp_path):
+    """I21: plan_job writes the planner's events to <repo>/_loop/<name>/events.jsonl (beside the plan), not to the job's folders. The job view
+    reads them through the plan record (api/plans), first in its attempts; the job's own events and finish are unchanged."""
+    env = env_for(tmp_path)
+    job_id = fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=writes_events("passed"))["job_id"]
+    own_count = len(event_log.read_job_events(env.home, job_id))
+    before = jh.job_view(env.home, job_id)
+    assert [a["stage"] for a in before["attempts"]] == ["writer_a_write"]          # no plan record yet: no planner attempt
+    plan_dir = env.repo / "_loop" / JOB["name"] / "plan"
+    with plan_job._planner_attempt(plan_dir, "haiku", "claude_code", "high") as attempt:
+        attempt["raw"] = json.dumps({"result": "{}", "is_error": False})
+    (env.home / "api" / "plans").mkdir(parents=True)
+    (env.home / "api" / "plans" / "p1.json").write_text(json.dumps({"plan_id": "p1", "name": JOB["name"], "state": "planned",
+                                                                    "plan_dir": str(plan_dir)}), encoding="utf-8")
+    view = jh.job_view(env.home, job_id)
+    assert [a["stage"] for a in view["attempts"]] == ["planner", "writer_a_write"]
+    planner = view["attempts"][0]
+    assert (planner["model"], planner["via"], planner["effort"], planner["status"], planner["failed"]) == ("haiku", "claude_code", "high", "ok", False)
+    assert view["stages"] == ["planner", "writer_a_write"]
+    assert view["events"]["count"] == own_count                                    # the count is the job's own events
+    assert view["finish"] == before["finish"] and view["derived_state"] == before["derived_state"]
+    assert jh.job_view(env.home, job_id)["source"] == "archive"
+    assert jh.planner_events(env.home, "some-other-job") == []
 
 
 def test_rebuild_index_gives_the_same_rows_and_a_corrupt_index_changes_no_answer(tmp_path):

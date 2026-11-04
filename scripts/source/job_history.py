@@ -322,6 +322,28 @@ def _derive(reg, lease, status, s, merge, queued):
     return "running", None
 
 
+def planner_events(home, name):
+    """The planner's attempt events (stage planner) of the planned job `name`. plan_job writes them to <repo>/_loop/<name>/events.jsonl, the
+    folder beside the plan (plan_dir is <repo>/_loop/<name>/plan), not to the job's own folders: the launched job's id is only given when it
+    starts, after its plan was made, so the view reads the plan folder the plan record names (api/plans/<plan_id>.json, name and plan_dir).
+    [] when no plan has that name. Only the view reads these: history.db indexes the job's own events alone, so their seq numbers never mix."""
+    if not isinstance(name, str) or not name:
+        return []
+    out, seen = [], set()
+    for path in sorted((Path(home) / "api" / "plans").glob("*.json")):
+        rec = _read_json(path) or {}
+        plan_dir = rec.get("plan_dir")
+        if rec.get("name") != name or not isinstance(plan_dir, str) or not plan_dir:
+            continue
+        events_path = Path(plan_dir).parent / event_log.FILE
+        if events_path in seen:
+            continue
+        seen.add(events_path)
+        out += [e for e in event_log.read_events(events_path)
+                if e.get("type") in ("attempt-start", "attempt-end") and e.get("stage") == "planner"]
+    return out
+
+
 def job_view(home, job_id, now=None, _rows=None, _index_ok=None):
     """One reconciled dict for a job id (or a pending queue file's id): derived_state and why, and the facts it was derived from. It reads
     the files only (never history.db), so its answer does not depend on the index; index_ok says whether the index is usable."""
@@ -340,11 +362,13 @@ def job_view(home, job_id, now=None, _rows=None, _index_ok=None):
     _check(job_id)
     events = event_log.read_job_events(home, job_id)
     source = "archive" if any((home / "results" / job_id).glob("*/" + event_log.FILE)) else "worktree" if events else None
-    s = summarize(events)
+    status = _status(home, job_id)
+    start_event = summarize(events)["start"] or {}
+    name = start_event.get("name") or (status or {}).get("name")
+    s = summarize(planner_events(home, name) + events)     # the planner's attempts come first: the job's own events stay the last
     rows = _registry_rows(home) if _rows is None else _rows
     reg = _registry_row(home, job_id, rows)
     lease = _lease(home, job_id, now)
-    status = _status(home, job_id)
     merge = _merge_json(home, job_id)
     derived, why = _derive(reg, lease, status, s, merge, False)
     start = s["start"] or {}
