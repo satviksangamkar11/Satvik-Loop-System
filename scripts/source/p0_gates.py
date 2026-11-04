@@ -4,7 +4,6 @@ Every check FAILS CLOSED: an unreadable input, a parse error or an unexpected sh
 from __future__ import annotations
 
 import ast
-import fnmatch
 import hashlib
 import posixpath
 import sys
@@ -18,12 +17,11 @@ TEST_CONFIG_NAMES = {"conftest.py", "pytest.ini", "pyproject.toml", "setup.cfg",
 STARTUP_NAMES = {"sitecustomize", "usercustomize", "pytest", "_pytest", "pluggy", "py", "conftest"}
 NEVER_INCLUDED = {"_moss", "_loop", "secrets", ".git"}
 
-# the loop's own control files (lower case, repo-relative, fnmatch patterns): a production job may never edit them
-PROTECTED_CONTROL_FILES = (
-    "scripts/source/fix_loop.py", "scripts/source/p1b_*.py", "scripts/source/openrouter_call.py", "scripts/source/sandbox_runner.py",
-    "scripts/source/p0_gates.py", "scripts/source/opus_repair.py", "scripts/source/claude_code.py", "scripts/source/plan_job.py", "scripts/source/loop_home.py",
-    "scripts/source/launch.py", "scripts/source/merge_queue.py", "scripts/source/shared_limits.py", "config/roster.json", "tools/sandbox/*",
-)
+# The loop's own controller and configuration paths: a production job may never write them. They are protected by DIRECTORY rule, not by a
+# hand list (I53, 2026-11-04): every .py directly in scripts/source/ is imported or executed on the host, and every file under monitor/,
+# config/ and tools/sandbox/ (any depth) either runs on the host or decides what a run means (roster, stage table, model catalog, sandbox image).
+PROTECTED_SOURCE_DIR = "scripts/source"          # only the .py files directly in it (a subfolder is not a host module)
+PROTECTED_TREES = ("monitor", "config", "tools/sandbox")   # every file under these folders, at any depth
 
 
 # ---------------------------------------------------------------- review acceptance
@@ -107,8 +105,13 @@ def normal_repo_path(rel: str) -> str:
 
 
 def is_protected_control_file(rel: str) -> bool:
+    """True for every host-executed controller or configuration path (see PROTECTED_SOURCE_DIR and PROTECTED_TREES). The check runs on the
+    normalized spelling, so ./, backslashes, case, doubled slashes and '..' inside the repo cannot get past it."""
     n = normal_repo_path(rel)
-    return any(fnmatch.fnmatchcase(n, pat) for pat in PROTECTED_CONTROL_FILES)
+    parts = n.split("/")
+    if len(parts) == 3 and "/".join(parts[:2]) == PROTECTED_SOURCE_DIR and parts[2].endswith(".py"):
+        return True
+    return any(n.startswith(tree + "/") for tree in PROTECTED_TREES)
 
 
 def production_job_problems(job: dict, profile: str | None = None) -> list:

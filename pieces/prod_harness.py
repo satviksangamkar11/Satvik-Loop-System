@@ -1,5 +1,6 @@
 """Test support for production runs (P1b wiring, 2026-11-02): a scripted OpenRouter transport, so every model call goes through the real
 openrouter_call adapter and no network is used. Each POST pops the next reply queued for its roster model. Not a test module (no test_ prefix)."""
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -53,6 +54,21 @@ class Provider:
 
     def models(self):
         return [model for model, _ in self.calls]
+
+
+@contextlib.contextmanager
+def controller_rule_waived():
+    """The directory rule that refuses a job editing a host-executed module (p0_gates.is_protected_control_file, I53) is off inside the block.
+    For the HISTORICAL pilot jobs under docs/pilot/: they were run before I53, and each edits a scripts/source module. The tests read them for
+    their spec, negative controls and loading; the refusal itself is tested in pieces/test_p0_protected_files.py (and through the API in
+    pieces/test_api_contract.py). Nothing else about the job is waived."""
+    import p0_gates
+    saved = p0_gates.is_protected_control_file
+    p0_gates.is_protected_control_file = lambda rel: False
+    try:
+        yield
+    finally:
+        p0_gates.is_protected_control_file = saved
 
 
 def client(tmp_path, provider, budget=None):
