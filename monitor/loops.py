@@ -11,10 +11,20 @@ import loop_home
 import merge_queue
 
 
+def _drain_pending(mq):
+    """Merges the durable queue holds (I40): entries a crash left behind are reconciled and merged before new work starts."""
+    while mq.pending:
+        try:
+            print("merge", mq.drain(), flush=True)
+        except loop_home.LockTimeout:
+            time.sleep(20)                                # the other loop holds the merge lock: the pending merge is kept
+
+
 def run(home, repo):
     api = launch.real_api(home)
     launcher = launch.Launcher(repo, api, budget=fix_loop.ledger_budget, wait_s=0)
     mq = merge_queue.MergeQueue(repo, api, launcher)
+    _drain_pending(mq)
     while not launch.stop_requested(home):
         path = fix_loop.take_next(home)
         if path is None:
@@ -31,11 +41,7 @@ def run(home, repo):
             continue
         res = fix_loop.run_launched(job, repo, api, launcher, merge_queue=mq, stage_snapshot=frozen)
         print(job["name"], res["state"], res.get("reason"), flush=True)
-        while mq.pending:
-            try:
-                print("merge", mq.drain(), flush=True)
-            except loop_home.LockTimeout:
-                time.sleep(20)                            # the other loop holds the merge lock: the pending merge is kept
+        _drain_pending(mq)
     print("stop switch on" if launch.stop_requested(home) else "queue empty", flush=True)
 
 

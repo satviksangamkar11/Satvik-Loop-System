@@ -24,7 +24,7 @@ FILE = "events.jsonl"
 TYPES = ("job-start", "attempt-start", "attempt-end", "wait-start", "wait-end", "tests", "review", "restore-green", "finish", "merge")
 STAGES = ("planner", "writer_a_write", "writer_a_repair", "writer_b_write", "writer_b_repair", "reviewer_b", "reviewer_a", "reviewer_reask",
           "specialist_repair", "review_fix_repair", "fallback_write")
-MERGE_STATES = frozenset({"merged", "merge-conflict", "tests-failed", "main-moved", "push-failed"})   # the states only a merge ends in
+MERGE_STATES = frozenset({"merged", "merge-conflict", "tests-failed", "main-moved", "push-failed", "merge-error"})   # the states only a merge ends in
 _LOCK = threading.Lock()            # one appender at a time in this process (the job's lease keeps other processes out)
 
 

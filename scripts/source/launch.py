@@ -111,7 +111,7 @@ def run_rounds(api, job_id, gen, rounds, do_round, restore, home_dir):
     return "done"
 
 
-KEEP_WORKTREE = {"passed", "merge-conflict"}      # passed waits for the merge queue; merge-conflict stays for the owner
+KEEP_WORKTREE = {"passed", "merge-conflict", "merge-error"}   # passed waits for the merge queue; merge-conflict and merge-error stay for the owner
 ARCHIVE_SKIP = ("openrouter", ".gitignore")        # never archived: the OpenRouter key snapshots (_loop/openrouter) and _loop/.gitignore (`*`, event_log),
                                                    # which would make the published evidence git-ignored
 _copytree = shutil.copytree                        # a hook for tests (an archive copy that fails)
