@@ -878,8 +878,9 @@ def run_job(
         pytest_runner = run_pytest
     if status_dir is None:
         status_dir = root / "_loop"
-    if scrub_keys is None:
-        scrub_keys = []
+    # The loaded key VALUES (I65). A {slot: key} dict contributes its values, never its slot names (iterating it did, before this fix); the
+    # values are the same list redact.scrub and the production path use, so every scrub in this run sees the same keys.
+    scrub_keys = _sibling_module("redact").values_of(scrub_keys)
 
     global nemotron_code_for_loop
     if nemotron_code_for_loop is None:
@@ -995,9 +996,7 @@ def run_job(
     stuck_set = None
 
     def _scrub(text: str) -> str:
-        for k in scrub_keys:
-            text = text.replace(k, "[REDACTED]")
-        return text
+        return _sibling_module("redact").scrub(text, scrub_keys)     # the loaded values and the credential shapes (I65)
 
     def _write_status(round_no: int | str, coder_status: str, files_ok: bool, tests_passed_: bool, reason: str | None):
         nonlocal state, review_verdict
