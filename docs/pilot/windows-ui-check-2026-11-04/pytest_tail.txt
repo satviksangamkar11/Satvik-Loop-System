@@ -1,0 +1,63 @@
+................................                                         [100%]
+================================== FAILURES ===================================
+_ test_rebuild_index_gives_the_same_rows_and_a_corrupt_index_changes_no_answer _
+
+tmp_path = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1603/test_rebuild_index_gives_the_s0')
+
+    def test_rebuild_index_gives_the_same_rows_and_a_corrupt_index_changes_no_answer(tmp_path):
+        env = env_for(tmp_path)
+        ids = [fl.run_launched(JOB, env.repo, env.api, env.launcher, merge_queue=FakeMerge(), run=writes_events(state))["job_id"]
+               for state in ("escalate", "review-open")]
+        before = rows(env.home)
+        views = jh.list_jobs(env.home)
+        assert views["index_ok"] is True and {v["job_id"] for v in views["jobs"]} == set(ids)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                (env.home / (jh.DB_NAME + suffix)).unlink()
+            except FileNotFoundError:
+                pass
+        assert jh.list_jobs(env.home)["index_ok"] is False                    # missing: still answered from the files
+        assert sorted(jh.rebuild_index(env.home)) == sorted(ids)
+        assert rows(env.home) == before
+        assert jh.rebuild_index(env.home) and rows(env.home) == before         # repeat-safe
+    
+        for suffix in ("-wal", "-shm"):
+            try:
+                (env.home / (jh.DB_NAME + suffix)).unlink()
+            except FileNotFoundError:
+                pass
+        (env.home / jh.DB_NAME).write_bytes(b"this is not a database" * 100)
+        broken = jh.list_jobs(env.home)
+        assert broken["index_ok"] is False
+        strip = lambda listing: [{k: v for k, v in view.items() if k not in ("index_ok", "lease")} for view in listing["jobs"]]   # noqa: E731
+        assert strip(broken) == strip(views)
+        assert jh.job_view(env.home, ids[0])["derived_state"] == "finished:escalate"
+        assert jh.safe_index(env.home, ids[0]) is None                         # the hook never raises on a broken index
+>       jh.rebuild_index(env.home)
+
+pieces\test_p1_events.py:266: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\source\job_history.py:189: in rebuild_index
+    (home / (DB_NAME + suffix)).unlink()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1603/test_rebuild_index_gives_the_s0/home/history.db')
+missing_ok = False
+
+    def unlink(self, missing_ok=False):
+        """
+        Remove this file or link.
+        If the path is a directory, use rmdir() instead.
+        """
+        try:
+>           os.unlink(self)
+E           PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1603\\test_rebuild_index_gives_the_s0\\home\\history.db'
+
+C:\Python314\Lib\pathlib\__init__.py:1042: PermissionError
+=========================== short test summary info ===========================
+FAILED pieces/test_p1_events.py::test_rebuild_index_gives_the_same_rows_and_a_corrupt_index_changes_no_answer
+1 failed, 1317 passed, 3 skipped, 7 subtests passed in 295.88s (0:04:55)
+pytest exit=1
+
+--- I13 target, run on its own (python -m pytest pieces/test_plan_job.py -k the_plan_folder_holds_the_plan_spec_job_and_files_and_the_job_is_read_only) ---
+1 passed, 27 deselected in 6.17s

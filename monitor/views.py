@@ -160,7 +160,9 @@ def summary(home, view, x=None):
         heartbeat = int(round(lease["heartbeat_age_s"]))
     budget = ((x["status"] or {}).get("evidence") or {}).get("budget") or {}
     finish = view.get("finish") or {}
-    finished_at = finish.get("ts") or (view.get("merge") or {}).get("ts")
+    # The finish event, the merge outcome, else the registry row's `finished` (the time the job's last record was written: the merge outcome
+    # for a merged job). That row is written for every job, so a job whose folders lack the events still has its time.
+    finished_at = finish.get("ts") or (view.get("merge") or {}).get("ts") or iso((view.get("registry") or {}).get("finished"))
     return {
         "job_id": view.get("job_id") or view.get("queue_id"),
         "name": view.get("name") or x["name"],

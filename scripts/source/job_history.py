@@ -66,15 +66,19 @@ def connect(home):
     path = Path(home) / DB_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=BUSY_S, isolation_level=None)
-    conn.execute(f"PRAGMA busy_timeout = {int(BUSY_S * 1000)}")
-    for _ in range(50):                       # two processes creating the file at once: the WAL switch can lose once, then it is set
-        try:
-            conn.execute("PRAGMA journal_mode = WAL")
-            break
-        except sqlite3.OperationalError:
-            time.sleep(0.05)
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.executescript(SCHEMA)
+    try:                                      # a corrupt file raises here: the connection must not stay open (Windows keeps the file locked)
+        conn.execute(f"PRAGMA busy_timeout = {int(BUSY_S * 1000)}")
+        for _ in range(50):                   # two processes creating the file at once: the WAL switch can lose once, then it is set
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+                break
+            except sqlite3.OperationalError:
+                time.sleep(0.05)
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.executescript(SCHEMA)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

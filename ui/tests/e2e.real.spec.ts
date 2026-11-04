@@ -33,6 +33,18 @@ function catalogIds(): string[] {
   return [...catalog.openrouter.map((m) => m.model_id), ...catalog.claude_code.map((m) => m.model)];
 }
 
+/** The contracts config/models.json records for a catalog model (OpenRouter `model_id` or Claude Code `model`). */
+function contractsOf(modelId: string): Record<string, boolean | null> {
+  const catalog = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'config', 'models.json'), 'utf8')) as {
+    openrouter: Array<{ model_id: string; contracts: Record<string, boolean | null> }>;
+    claude_code: Array<{ model: string; contracts: Record<string, boolean | null> }>;
+  };
+  const entry =
+    catalog.openrouter.find((m) => m.model_id === modelId) ?? catalog.claude_code.find((m) => m.model === modelId);
+  if (!entry) throw new Error(`${modelId} is not in config/models.json`);
+  return entry.contracts;
+}
+
 /** Lines in the archived events.jsonl: the number of events the timeline must show. */
 function archivedEventCount(): number {
   return fs.readFileSync(ARCHIVED_EVENTS, 'utf8').split('\n').filter((line) => line.trim().length > 0).length;
@@ -180,20 +192,43 @@ test.describe('Satvik Loop Control Center (LIVE mode, real backend)', () => {
   });
 
   test('a model with an unverified contract is not offered as selectable', async ({ page }) => {
+    // Real catalog facts (config/models.json): a paid OpenRouter model and a Claude Code model, neither with a verified writer contract.
+    const unverified = ['deepseek/deepseek-v4.1-flash-1017', 'opus'];
+    for (const id of unverified) {
+      expect(contractsOf(id).writer_file_blocks, id).not.toBe(true);
+    }
+
     await page.goto('/');
     await goToPage(page, 'nav-stages');
     await page.getByTestId('stage-row-writer_a_write').click();
 
-    // config/models.json holds no verified contract with a recorded verification time: the OpenRouter entries are unverified, and
-    // the Claude Code entries say `verified` with verified_at null (no probe ran). So no model may be selectable for the writer stage.
     const select = page.getByTestId('stage-model-select');
     const selectable = await select.locator('option:not([disabled])').evaluateAll((els) =>
       els.map((el) => (el as HTMLOptionElement).value)
     );
-    expect(selectable).toEqual([]);
-
     const offered = await select.locator('option').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
-    expect(offered).not.toContain('nvidia/nemotron-3-ultra-550b-a55b:free');
-    expect(offered).not.toContain('opus');
+
+    for (const id of unverified) {
+      expect(selectable).not.toContain(id);
+      expect(offered).not.toContain(id);
+    }
+    // Not vacuous: the stage does offer models, and each one it marks selectable holds the writer contract as verified.
+    expect(selectable.length).toBeGreaterThan(0);
+    for (const id of selectable) {
+      expect(contractsOf(id).writer_file_blocks, id).toBe(true);
+    }
+  });
+
+  test('a model whose writer contract is verified is offered and selectable', async ({ page }) => {
+    const verified = 'dots-studio/dots-3-note-preview:free';
+    expect(contractsOf(verified).writer_file_blocks).toBe(true);
+
+    await page.goto('/');
+    await goToPage(page, 'nav-stages');
+    await page.getByTestId('stage-row-writer_a_write').click();
+
+    const option = page.getByTestId('stage-model-select').locator('option').filter({ hasText: verified });
+    await expect(option).toHaveCount(1);
+    expect(await option.evaluate((el) => (el as HTMLOptionElement).disabled)).toBe(false);
   });
 });

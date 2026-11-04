@@ -1,0 +1,44 @@
+[
+  {
+    "page": "/dashboard",
+    "screenshot": "screens/dashboard.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/jobs/new",
+    "screenshot": "screens/jobs-new.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/loops",
+    "screenshot": "screens/loops.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/models",
+    "screenshot": "screens/models.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/stages",
+    "screenshot": "screens/stages.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/results",
+    "screenshot": "screens/results.png",
+    "http_status": 200,
+    "console_errors": []
+  },
+  {
+    "page": "/system",
+    "screenshot": "screens/system.png",
+    "http_status": 200,
+    "console_errors": []
+  }
+]

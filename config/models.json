@@ -1,21 +1,340 @@
 {
   "schema_version": 1,
   "openrouter": [
-    {"model_id": "dots-studio/dots-3-note-preview:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "nvidia/nemotron-3-ultra-550b-a55b:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "nvidia/nemotron-3.5-super-vl:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "xingchen-agi/xing4.0-29b-a4b:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "cohere/north-mini-code:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "nvidia/nemotron-3.5-lightning:free", "hosting_provider": null, "paid": false, "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "z-ai/glm-5.3-flash", "hosting_provider": {"name": "Z.AI", "slug": "z-ai"}, "paid": true, "price_in_usd_per_mtok": 0.15, "price_out_usd_per_mtok": 0.5, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "deepseek/deepseek-v4.1-flash-1017", "hosting_provider": null, "paid": true, "price_in_usd_per_mtok": null, "price_out_usd_per_mtok": null, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null},
-    {"model_id": "qwen/qwen3.8-27b", "hosting_provider": null, "paid": true, "price_in_usd_per_mtok": null, "price_out_usd_per_mtok": null, "context_tokens": null, "max_output_tokens": null, "reasoning": {"on_off": null, "efforts": [], "token_budget": null}, "temperature": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "structured_outputs": null, "verified_at": null, "metadata_at": null}
+    {
+      "model_id": "dots-studio/dots-3-note-preview:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:04:33Z",
+        "repair_edit_blocks": "2026-11-04T06:04:42Z",
+        "reviewer_verdict": "2026-11-04T06:04:54Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:05:01Z",
+        "repair_edit_blocks": "2026-11-04T06:05:07Z",
+        "reviewer_verdict": "2026-11-04T06:05:23Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3.5-super-vl:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:05:28Z",
+        "repair_edit_blocks": "2026-11-04T06:05:34Z",
+        "reviewer_verdict": "2026-11-04T06:05:39Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "xingchen-agi/xing4.0-29b-a4b:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": null
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "repair_edit_blocks": "2026-11-04T06:13:20Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "cohere/north-mini-code:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:20:44Z",
+        "repair_edit_blocks": "2026-11-04T06:20:50Z",
+        "reviewer_verdict": "2026-11-04T06:20:56Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:21:02Z",
+        "repair_edit_blocks": "2026-11-04T06:21:13Z",
+        "reviewer_verdict": "2026-11-04T06:21:20Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3.5-lightning:free",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": true,
+        "repair_edit_blocks": true,
+        "reviewer_verdict": true
+      },
+      "structured_outputs": null,
+      "verified_at": {
+        "writer_file_blocks": "2026-11-04T06:21:29Z",
+        "repair_edit_blocks": "2026-11-04T06:21:43Z",
+        "reviewer_verdict": "2026-11-04T06:21:52Z"
+      },
+      "metadata_at": null
+    },
+    {
+      "model_id": "z-ai/glm-5.3-flash",
+      "hosting_provider": {
+        "name": "Z.AI",
+        "slug": "z-ai"
+      },
+      "paid": true,
+      "price_in_usd_per_mtok": 0.15,
+      "price_out_usd_per_mtok": 0.5,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "structured_outputs": null,
+      "verified_at": null,
+      "metadata_at": null
+    },
+    {
+      "model_id": "deepseek/deepseek-v4.1-flash-1017",
+      "hosting_provider": null,
+      "paid": true,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "structured_outputs": null,
+      "verified_at": null,
+      "metadata_at": null
+    },
+    {
+      "model_id": "qwen/qwen3.8-27b",
+      "hosting_provider": null,
+      "paid": true,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "reasoning": {
+        "on_off": null,
+        "efforts": [],
+        "token_budget": null
+      },
+      "temperature": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "structured_outputs": null,
+      "verified_at": null,
+      "metadata_at": null
+    }
   ],
   "claude_code": [
-    {"model": "opus", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
-    {"model": "sonnet", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
-    {"model": "haiku", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null},
-    {"model": "fable", "via": "claude_code", "efforts": ["low", "medium", "high", "xhigh", "max"], "cost": null, "contracts": {"writer_file_blocks": null, "repair_edit_blocks": null, "reviewer_verdict": null}, "verified_at": null}
+    {
+      "model": "opus",
+      "via": "claude_code",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "verified_at": null
+    },
+    {
+      "model": "sonnet",
+      "via": "claude_code",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "verified_at": null
+    },
+    {
+      "model": "haiku",
+      "via": "claude_code",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": true
+      },
+      "verified_at": {
+        "reviewer_verdict": "2026-11-04T06:22:40Z"
+      }
+    },
+    {
+      "model": "fable",
+      "via": "claude_code",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "cost": null,
+      "contracts": {
+        "writer_file_blocks": null,
+        "repair_edit_blocks": null,
+        "reviewer_verdict": null
+      },
+      "verified_at": null
+    }
   ]
 }
