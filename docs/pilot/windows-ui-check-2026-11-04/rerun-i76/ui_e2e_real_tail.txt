@@ -1,0 +1,30 @@
+[WebServer] INFO:     Started server process [58320]
+[WebServer] INFO:     Waiting for application startup.
+[WebServer] INFO:     Application startup complete.
+[WebServer] INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+
+Running 21 tests using 1 worker
+
+  ok  1 [desktop-1440] › tests\e2e.real.spec.ts:74:3 › Satvik Loop Control Center (LIVE mode, real backend) › all 7 pages render real data and log no console errors (2.0s)
+  ok  2 [desktop-1440] › tests\e2e.real.spec.ts:117:3 › Satvik Loop Control Center (LIVE mode, real backend) › the archived job shows merged, with its attempt timeline from events.jsonl (624ms)
+  ok  3 [desktop-1440] › tests\e2e.real.spec.ts:137:3 › Satvik Loop Control Center (LIVE mode, real backend) › queueing the same job twice shows the 409 duplicate message (1.2s)
+  ok  4 [desktop-1440] › tests\e2e.real.spec.ts:167:3 › Satvik Loop Control Center (LIVE mode, real backend) › STOP toggles on and off, and SATVIK_HOME/STOP follows (741ms)
+  ok  5 [desktop-1440] › tests\e2e.real.spec.ts:183:3 › Satvik Loop Control Center (LIVE mode, real backend) › the Models page lists the catalog from config/models.json (574ms)
+  ok  6 [desktop-1440] › tests\e2e.real.spec.ts:194:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model with an unverified contract is not offered as selectable (659ms)
+  ok  7 [desktop-1440] › tests\e2e.real.spec.ts:222:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model whose writer contract is verified is offered and selectable (597ms)
+  ok  8 [tablet-768] › tests\e2e.real.spec.ts:74:3 › Satvik Loop Control Center (LIVE mode, real backend) › all 7 pages render real data and log no console errors (2.1s)
+  ok  9 [tablet-768] › tests\e2e.real.spec.ts:117:3 › Satvik Loop Control Center (LIVE mode, real backend) › the archived job shows merged, with its attempt timeline from events.jsonl (665ms)
+  ok 10 [tablet-768] › tests\e2e.real.spec.ts:137:3 › Satvik Loop Control Center (LIVE mode, real backend) › queueing the same job twice shows the 409 duplicate message (948ms)
+  ok 11 [tablet-768] › tests\e2e.real.spec.ts:167:3 › Satvik Loop Control Center (LIVE mode, real backend) › STOP toggles on and off, and SATVIK_HOME/STOP follows (699ms)
+  ok 12 [tablet-768] › tests\e2e.real.spec.ts:183:3 › Satvik Loop Control Center (LIVE mode, real backend) › the Models page lists the catalog from config/models.json (674ms)
+  ok 13 [tablet-768] › tests\e2e.real.spec.ts:194:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model with an unverified contract is not offered as selectable (698ms)
+  ok 14 [tablet-768] › tests\e2e.real.spec.ts:222:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model whose writer contract is verified is offered and selectable (588ms)
+  ok 15 [mobile-320] › tests\e2e.real.spec.ts:74:3 › Satvik Loop Control Center (LIVE mode, real backend) › all 7 pages render real data and log no console errors (2.0s)
+  ok 16 [mobile-320] › tests\e2e.real.spec.ts:117:3 › Satvik Loop Control Center (LIVE mode, real backend) › the archived job shows merged, with its attempt timeline from events.jsonl (685ms)
+  ok 17 [mobile-320] › tests\e2e.real.spec.ts:137:3 › Satvik Loop Control Center (LIVE mode, real backend) › queueing the same job twice shows the 409 duplicate message (916ms)
+  ok 18 [mobile-320] › tests\e2e.real.spec.ts:167:3 › Satvik Loop Control Center (LIVE mode, real backend) › STOP toggles on and off, and SATVIK_HOME/STOP follows (741ms)
+  ok 19 [mobile-320] › tests\e2e.real.spec.ts:183:3 › Satvik Loop Control Center (LIVE mode, real backend) › the Models page lists the catalog from config/models.json (651ms)
+  ok 20 [mobile-320] › tests\e2e.real.spec.ts:194:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model with an unverified contract is not offered as selectable (716ms)
+  ok 21 [mobile-320] › tests\e2e.real.spec.ts:222:3 › Satvik Loop Control Center (LIVE mode, real backend) › a model whose writer contract is verified is offered and selectable (826ms)
+
+  21 passed (26.6s)

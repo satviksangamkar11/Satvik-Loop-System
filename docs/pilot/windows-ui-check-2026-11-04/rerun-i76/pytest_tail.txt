@@ -1,0 +1,31 @@
+........................................................................ [  4%]
+........................................................................ [  9%]
+............................s........................................... [ 14%]
+........................................................................ [ 18%]
+........................................................................ [ 23%]
+........................................................................ [ 28%]
+.s.ss................................................................... [ 32%]
+.....................................ss................................. [ 37%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 51%]
+........................................................................ [ 56%]
+........................................................................ [ 61%]
+........................................................................ [ 65%]
+........................................................................ [ 70%]
+........................................................................ [ 75%]
+........................................................................ [ 79%]
+...............................................s........................ [ 84%]
+........................................................................ [ 89%]
+........................................................................ [ 93%]
+................................................................. [ 98%]
+...........................                                              [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] pieces\test_batch_a_paid.py:308: no /proc on this platform
+SKIPPED [1] pieces\test_guards.py:103: pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:117: docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:128: no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)
+SKIPPED [1] pieces\test_i68_process_identity.py:69: no /proc on this platform
+SKIPPED [1] pieces\test_i68_process_identity.py:78: no /proc on this platform
+SKIPPED [1] pieces\test_plan_job.py:573: this OS refuses to create the symlink ([WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1628\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1628\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'); the refusal is only testable where symlinks can be made
+1525 passed, 7 skipped, 7 subtests passed in 395.53s (0:06:35)

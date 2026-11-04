@@ -5,9 +5,10 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 
 **Rules:**
 - Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
-- Local work goes to Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) only. **Do not use Local agent 1** (`session_016GQpGGyAsk3SytLChxhEfL`), owner's instruction 2026-11-04.
+- Local work goes to Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) only. Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`) works only on the owner's own tasks (owner 2026-11-04 evening: complete the given work, including the anime studio work; no other paid work). The coordinator monitors and checks its tests.
 - No other sessions. No UI redesign.
-- **No paid calls and no Opus calls until the very end**, anywhere: no paid OpenRouter model (GLM etc.), no Opus in the loop (production repair and planner stay unused), no paid verify. `SATVIK_PROFILE=test`, $0; only free models and Haiku.
+- **Owner 2026-11-04 (evening): paid GLM review calls are now allowed** (production reviewer_a GLM 5.3 flash, capped by the job's $0.05 review budget; reviewer_b Nemotron 3 Ultra). **Opus stays off.** Local agent 1's branch `owner-free-review-opus-low-2026-11-04` in loop_p0 (old code) is not merged.
+- Earlier rule, now superseded for GLM only: **No paid calls and no Opus calls until the very end**, anywhere: no paid OpenRouter model (GLM etc.), no Opus in the loop (production repair and planner stay unused), no paid verify. `SATVIK_PROFILE=test`, $0; only free models and Haiku.
 
 ## A. Already done (evidence)
 - [x] **P1 events, stage snapshots, model catalog:** PR #38 → `main` `8a1fe46`. Suite: 1164 passed, plus the root-only failure.
@@ -123,7 +124,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I64 ✅ (`299cc73`, merged `3f96af5`) | (I52 limit) a planned job's installed spec/acceptance/control files are untracked; `write_change_doc` commits only `job.files`, so the merge does not carry them | Commit them with the change (batch C2) | A test: a merged planned job carries its acceptance tests |
 | I65 ✅ (`113f24c`, merged `3f96af5`) | (I55 limit) the legacy non-production `run_job` path scrubs with `for k in scrub_keys` over the `{slot: key}` dict (slot names, not values) | Use `redact.scrub` there too (batch C2) | A test |
 
-| I66 | (I49 consequence) The byte-based worst case is ~3x the old estimate, so fewer paid GLM reviews fit under the $0.05 job review ceiling (p0_gates pins 0.05) | Owner decision: raise the ceiling or accept fewer reviews | Decided |
+| I66 (owner: keep GLM flash as reviewer_a with the $0.05 cap; fewer reviews accepted for now) | (I49 consequence) The byte-based worst case is ~3x the old estimate, so fewer paid GLM reviews fit under the $0.05 job review ceiling (p0_gates pins 0.05) | Owner decision: raise the ceiling or accept fewer reviews | Decided |
 | I67 | (I53 consequence) Loop jobs can no longer edit `scripts/source/*.py`, `monitor/`, `config/`, `tools/sandbox/`; the pilot jobs under docs/pilot are now refused (historical loaders waived in tests). A controller change needs a trusted workflow that does not exist yet | Owner decision: accept, or design the trusted workflow | Decided |
 
 | I68 ✅ cloud (`a860626`, merged `1934ce6`); Windows ✅ (`7bc27a0`) | Windows: `process_start` reads only /proc, so reused-pid detection (I41, I57) does nothing on Windows; 4 tests fail there (`b6ada87`) | Windows start identity via ctypes GetProcessTimes (branch `windows-fixes`) | Passes on Windows |
@@ -136,7 +137,9 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I74 ✅ cloud (`f1185a3`, merged `ab13cdf`); Windows ✅ (`e866507`) | Windows, production bug: `fix_loop._prepare_job_folder` saves originals as `\r\r\n` and kill-recovery restores doubled newlines, so a killed job restarts from corrupted originals | Exact-bytes save and restore (`crlf-fixes`) | Passes on Windows |
 | I75 ✅ cloud (`8d23881`, merged `ab13cdf`); Windows ✅ (`e866507`) | Sweep every text-mode read/write of file contents that is compared, hashed or restored | One exact-bytes helper everywhere, plus a guard test (`crlf-fixes`) | Windows suite 0 failures |
 
-| I76 ✅ cloud (`d87389d`, merged `2716a1d`); Windows rerun pending | Windows: the round-0 append-only check compares the coder's LF reply with the CRLF original bytes, so any pre-existing CRLF test file escalates (`test_groq_files`, `e866507`) | Reply-vs-original comparisons ignore line endings; locked-file hashes stay byte-exact (branch `crlf-round0`) | Windows suite 0 failures |
+| I76 ✅ (`d87389d`; Windows `4665bea`: 1525 passed, 0 failed) | Windows: the round-0 append-only check compares the coder's LF reply with the CRLF original bytes, so any pre-existing CRLF test file escalates (`test_groq_files`, `e866507`) | Reply-vs-original comparisons ignore line endings; locked-file hashes stay byte-exact (branch `crlf-round0`) | Windows suite 0 failures |
+
+| I77 (job `ps-duration` prepared and validated with no calls, `554b1c1`, merged `31b098e`; paid run pending on Local agent 2) | First real production run (paid GLM, Opus off): a small smoke job (branch `prod-smoke`) run by Local agent 2 after the I76 Windows rerun | Prepare and validate the job with no calls, then run it on the PC | Evidence on `prod-smoke-run-2026-11-04`, job merged or its outcome explained |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.

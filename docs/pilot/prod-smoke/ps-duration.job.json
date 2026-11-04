@@ -1,0 +1,61 @@
+{
+ "name": "ps-duration",
+ "profile": "production",
+ "visibility": "public",
+ "spec": "docs/pilot/prod-smoke/SPEC.md",
+ "files": [
+  "scripts/prod_smoke/duration_text.py",
+  "pieces/test_ps_duration.py"
+ ],
+ "tests": [
+  "pieces/test_ps_duration.py"
+ ],
+ "acceptance_tests": [
+  "tests/acceptance/ps_duration_acceptance.py"
+ ],
+ "negative_controls": [
+  {
+   "name": "unpadded",
+   "replace": {
+    "scripts/prod_smoke/duration_text.py": "tests/controls/ps_duration_unpadded.py"
+   },
+   "must_fail": [
+    "tests/acceptance/ps_duration_acceptance.py::test_zero_is_all_zero",
+    "tests/acceptance/ps_duration_acceptance.py::test_one_hour_two_minutes_five_seconds",
+    "tests/acceptance/ps_duration_acceptance.py::test_under_a_minute_keeps_zero_hours_and_minutes",
+    "tests/acceptance/ps_duration_acceptance.py::test_hours_are_not_capped_or_padded",
+    "tests/acceptance/ps_duration_acceptance.py::test_negative_is_refused",
+    "tests/acceptance/ps_duration_acceptance.py::test_non_whole_numbers_are_refused"
+   ]
+  },
+  {
+   "name": "no-refusal",
+   "replace": {
+    "scripts/prod_smoke/duration_text.py": "tests/controls/ps_duration_no_refusal.py"
+   },
+   "must_fail": [
+    "tests/acceptance/ps_duration_acceptance.py::test_negative_is_refused",
+    "tests/acceptance/ps_duration_acceptance.py::test_non_whole_numbers_are_refused"
+   ]
+  }
+ ],
+ "acceptance_baseline_fail": [
+  "tests/acceptance/ps_duration_acceptance.py::test_zero_is_all_zero",
+  "tests/acceptance/ps_duration_acceptance.py::test_one_hour_two_minutes_five_seconds",
+  "tests/acceptance/ps_duration_acceptance.py::test_under_a_minute_keeps_zero_hours_and_minutes",
+  "tests/acceptance/ps_duration_acceptance.py::test_hours_are_not_capped_or_padded",
+  "tests/acceptance/ps_duration_acceptance.py::test_negative_is_refused",
+  "tests/acceptance/ps_duration_acceptance.py::test_non_whole_numbers_are_refused"
+ ],
+ "fixers": [
+  "writer_a",
+  "writer_b"
+ ],
+ "reviewers": "by_lineage",
+ "budget": {
+  "free_requests": 40,
+  "review_usd": 0.05,
+  "paid_usd": 0
+ },
+ "deadline_min": 60
+}
