@@ -1,0 +1,446 @@
+{
+  "models": [
+    {
+      "model_id": "dots-studio/dots-3-note-preview:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3.5-super-vl:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "xingchen-agi/xing4.0-29b-a4b:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "cohere/north-mini-code:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "nvidia/nemotron-3.5-lightning:free",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": false,
+      "price_in_usd_per_mtok": 0,
+      "price_out_usd_per_mtok": 0,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null
+    },
+    {
+      "model_id": "z-ai/glm-5.3-flash",
+      "via": "openrouter",
+      "hosting_provider": "Z.AI",
+      "paid": true,
+      "price_in_usd_per_mtok": 0.15,
+      "price_out_usd_per_mtok": 0.5,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": "z-ai",
+      "note": "paid: reviewer-only, production only"
+    },
+    {
+      "model_id": "deepseek/deepseek-v4.1-flash-1017",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": true,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null,
+      "note": "paid: reviewer-only, production only"
+    },
+    {
+      "model_id": "qwen/qwen3.8-27b",
+      "via": "openrouter",
+      "hosting_provider": null,
+      "paid": true,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "not-applicable",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "unverified"
+        },
+        "reasoning_mode": "unknown"
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "endpoint": null,
+      "note": "paid: reviewer-only, production only"
+    },
+    {
+      "model_id": "opus",
+      "via": "claude_code",
+      "hosting_provider": null,
+      "paid": null,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "endpoint": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "unverified",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "not-applicable"
+        },
+        "reasoning_mode": "unknown",
+        "text_validated": true
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "note": "subscription: no USD"
+    },
+    {
+      "model_id": "sonnet",
+      "via": "claude_code",
+      "hosting_provider": null,
+      "paid": null,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "endpoint": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "unverified",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "not-applicable"
+        },
+        "reasoning_mode": "unknown",
+        "text_validated": true
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "note": "subscription: no USD"
+    },
+    {
+      "model_id": "haiku",
+      "via": "claude_code",
+      "hosting_provider": null,
+      "paid": null,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "endpoint": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "unverified",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "not-applicable"
+        },
+        "reasoning_mode": "unknown",
+        "text_validated": true
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "note": "subscription: no USD"
+    },
+    {
+      "model_id": "fable",
+      "via": "claude_code",
+      "hosting_provider": null,
+      "paid": null,
+      "price_in_usd_per_mtok": null,
+      "price_out_usd_per_mtok": null,
+      "context_tokens": null,
+      "max_output_tokens": null,
+      "endpoint": null,
+      "capabilities": {
+        "reasoning_on_off": null,
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "token_budget": null,
+        "temperature": null,
+        "structured_outputs": null,
+        "contracts": {
+          "planner_json": "unverified",
+          "writer_file_blocks": "unverified",
+          "repair_edit_blocks": "unverified",
+          "repair_whole_file": "unverified",
+          "reviewer_verdict": "unverified",
+          "native_structured_output": "not-applicable"
+        },
+        "reasoning_mode": "unknown",
+        "text_validated": true
+      },
+      "verified_at": null,
+      "metadata_at": null,
+      "note": "subscription: no USD"
+    }
+  ],
+  "index_ok": true
+}
