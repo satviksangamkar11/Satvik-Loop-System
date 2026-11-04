@@ -134,6 +134,17 @@ def pid_alive(pid) -> bool:
     return True
 
 
+def process_start(pid):
+    """An identity for a process's start, so a reused pid is not taken for its old owner: the kernel's start time on Linux (/proc), else
+    None (only the pid is then known). Stdlib only; no subprocess."""
+    try:
+        text = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii", errors="replace")
+    except (OSError, ValueError):
+        return None
+    fields = text.rsplit(")", 1)[-1].split()        # after the command name: field 3 (state) is index 0, starttime (22) is index 19
+    return fields[19] if len(fields) > 19 else None
+
+
 _THREAD_LOCKS = {}                         # POSIX fcntl locks do not exclude threads of one process; one thread lock per lock file
 _THREAD_LOCKS_GUARD = threading.Lock()
 

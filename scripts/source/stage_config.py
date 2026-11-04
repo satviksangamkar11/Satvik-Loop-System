@@ -29,6 +29,7 @@ Importing this module calls no model and reads no file."""
 import copy
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -78,7 +79,8 @@ IDENTITY = {"writer_a": "writer_a_write", "writer_b": "writer_b_write", "reviewe
 REPAIR_OF = {"writer_a": "writer_a_repair", "writer_b": "writer_b_repair", "repair": "specialist_repair"}
 CODES = ("unknown-stage", "unknown-key", "bad-stages", "model-not-selectable", "bad-model", "bad-via", "bad-effort", "role-rules",
          "test-profile-paid", "test-profile-claude-code", "paid-model-override", "reviewer-is-writer", "reviewers-same-model",
-         "writers-share-model", "no-snapshot", "stage-started", "bad-revision")
+         "writers-share-model", "no-snapshot", "stage-started", "bad-revision",
+         "unknown-billing", "billing-mismatch", "paid-model-stage", "unpriced-paid-model", "bad-ceiling")
 
 
 class StageRefused(oc.RosterRefused):
@@ -251,8 +253,29 @@ def _entry_problems(name, data, stage, entry, role_spec, overridden_model):
         out.append(_problem("bad-effort", stage, f"{stage}: an OpenRouter effort is null, off, low, medium or high"))
     if out:
         return out
-    spec = {"model": entry["model"], "provider": role_spec["provider"], "paid": role_spec["paid"], "pricing": role_spec["pricing"],
-            "settings": entry["settings"], "via": via}
+    paid, provider, pricing = role_spec["paid"], role_spec["provider"], role_spec["pricing"]
+    billed_ok = True
+    if via == "openrouter" and entry["model"] not in oc.SENTINELS:                # I36: the billing is the model's, not the role's
+        billed = _billing(data, entry["model"])
+        if billed is None:
+            out.append(_problem("unknown-billing", stage, f"{stage}: {entry['model']} has no billing that config/models.json and the roster agree on"))
+            billed_ok = False
+        elif billed is not UNNAMED:
+            paid, provider, pricing = billed
+            if paid != role_spec["paid"]:                  # a role (or a stage on it) may not claim another billing class than its model's
+                out.append(_problem("billing-mismatch", stage, f"{stage}: {entry['model']} is {'paid' if paid else 'free'} in config/models.json "
+                                                               f"and the roster, but this stage's role is {'paid' if role_spec['paid'] else 'free'}"))
+            if paid and STAGES[stage][1] not in ("review", "review-reask"):
+                out.append(_problem("paid-model-stage", stage, f"{stage}: a paid model is for a reviewer stage only; {stage} is a {STAGES[stage][1]} stage"))
+            if paid and (provider is None or pricing is None):
+                out.append(_problem("unpriced-paid-model", stage, f"{stage}: {entry['model']} is paid and has no pinned provider and prices"))
+    if overridden_model and role_spec["paid"] and via == "openrouter" and entry["model"] not in oc.SENTINELS:
+        out.append(_problem("paid-model-override", stage, f"{stage}: a paid OpenRouter role keeps its roster model (its pin and prices belong to it)"))
+    if name == "test" and (paid or role_spec["paid"]):
+        out.append(_problem("test-profile-paid", stage, f"{stage}: the test profile refuses paid roles"))
+    if out or not billed_ok:
+        return out
+    spec = {"model": entry["model"], "provider": provider, "paid": paid, "pricing": pricing, "settings": entry["settings"], "via": via}
     if via == "claude_code":
         spec["effort"] = effort
     try:
@@ -260,14 +283,10 @@ def _entry_problems(name, data, stage, entry, role_spec, overridden_model):
     except oc.RosterRefused as exc:
         return [_problem("role-rules", stage, str(exc))]
     if name == "test":
-        if role_spec["paid"]:
-            out.append(_problem("test-profile-paid", stage, f"{stage}: the test profile refuses paid roles"))
         if via == "claude_code":
             problem = oc._claude_code().test_profile_problem(f"{name}/{stage}", spec)
             if problem:
                 out.append(_problem("test-profile-claude-code", stage, problem))
-    if overridden_model and role_spec["paid"] and via == "openrouter" and entry["model"] not in oc.SENTINELS:
-        out.append(_problem("paid-model-override", stage, f"{stage}: a paid OpenRouter role keeps its roster model (its pin and prices belong to it)"))
     return out
 
 
@@ -359,17 +378,21 @@ def resolve_stages(profile=None):
 
 # ---------------------------------------------------------------- the per-job snapshot
 
-def snapshot(profile=None):
+def snapshot(profile=None, paid_ceiling_usd=None):
     """(snapshot dict, sha256): everything a job's model calls need, frozen at job start. It holds the profile's roles, effort_by_mode,
-    repair_max_tokens and stages block, the resolved table, the roster's revision, and its own revision (1). The sha256 is over its canonical
-    JSON. Raises StageRefused (or RosterRefused) when the table cannot be used: the job then makes no call."""
+    repair_max_tokens and stages block, the resolved table, the roster's revision, and its own revision (1). It also freezes the billing of
+    every OpenRouter model it names (billing: paid, pin and prices, from config/models.json and the roster) and, when given, the job's approved
+    paid ceiling (paid_ceiling_usd: the most USD its paid calls may spend, I44). The sha256 is over its canonical JSON. Raises StageRefused
+    (or RosterRefused) when the table cannot be used: the job then makes no call."""
     name, data = _profile_data(profile)
     table = resolve_stages(dict(data, name=name))
     snap = {"schema_version": SNAPSHOT_SCHEMA, "revision": 1, "profile": name, "roster_revision": data.get("roster_revision", 0),
             "taken": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "roster": {"roles": data["roles"], "effort_by_mode": data["effort_by_mode"], "repair_max_tokens": data["repair_max_tokens"],
                        "stages": _stages_block(data)},
-            "resolved": thaw(table)}
+            "resolved": thaw(table), "billing": _billing_map(dict(data, name=name), table)}
+    if paid_ceiling_usd is not None:
+        snap["paid_ceiling_usd"] = _ceiling(paid_ceiling_usd)
     return snap, _sha256(snap)
 
 
@@ -377,7 +400,8 @@ def profile_of(snap):
     """The profile dict a snapshot resolves from."""
     roster = snap["roster"]
     return {"name": snap["profile"], "roles": roster["roles"], "effort_by_mode": roster["effort_by_mode"],
-            "repair_max_tokens": roster["repair_max_tokens"], "stages": roster.get("stages") or {}}
+            "repair_max_tokens": roster["repair_max_tokens"], "stages": roster.get("stages") or {},
+            "billing": snap.get("billing") or {}, "paid_ceiling_usd": snap.get("paid_ceiling_usd")}
 
 
 def ladder_roles(snap):
@@ -396,11 +420,63 @@ def ladder_roles(snap):
     return view
 
 
+UNNAMED = object()      # _billing's answer for a model that config/models.json and the roster do not name at all
+
+
+def _billing(data, model):
+    """(paid, provider, pricing) of an OpenRouter model (I36): the billing the snapshot froze for it (data["billing"]) when it holds the model,
+    else what config/models.json and the roster name now (openrouter_call.model_billing). None when they disagree (the caller refuses). UNNAMED
+    when no source names the model: the caller uses the stage's role values for it, and the call itself is refused, since the adapter sends
+    only allow-listed models. The billing belongs to the model, never to the role that names it."""
+    frozen = (data.get("billing") or {}).get(model)
+    if frozen is not None:
+        return frozen["paid"], frozen["provider"], frozen["pricing"]
+    billed = oc.model_billing(model, data.get("roles"))
+    if billed is None and not oc.model_named(model, data.get("roles")):
+        return UNNAMED
+    return billed
+
+
+def _billing_map(data, table):
+    """{model: {paid, provider, pricing}} for every OpenRouter model a table or a role names (the snapshot freezes it, so a catalog edit
+    during a job changes no call of that job). Raises StageRefused unknown-billing for a model its sources disagree on."""
+    out = {}
+    names = [entry.get("model") for entry in table.values() if entry.get("via") == "openrouter"]
+    names += [spec.get("model") for spec in data["roles"].values() if oc.via_of(spec) == "openrouter"]
+    for model in names:
+        if not isinstance(model, str) or model in oc.SENTINELS or model in out:
+            continue
+        billed = _billing(data, model)
+        if billed is None:
+            raise StageRefused("unknown-billing", f"{model} has no billing that config/models.json and the roster agree on")
+        if billed is not UNNAMED:
+            out[model] = {"paid": billed[0], "provider": billed[1], "pricing": billed[2]}
+    return out
+
+
+def _ceiling(value):
+    """The approved paid ceiling of a job in USD (None: none approved, the job's own review budget applies), a number of at least 0."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise StageRefused("bad-ceiling", "the paid ceiling is a number of USD of at least 0")
+    return float(value)
+
+
 def _spec(data, table, stage, role, entry):
-    """A plain call spec: the stage's resolved values plus the role's paid flag, pin and prices."""
+    """A plain call spec: the stage's resolved values, with the billing of its model (paid flag, pin and prices, I36) and the job's approved
+    paid ceiling (ceiling_usd, None when the snapshot approves none)."""
     spec = data["roles"][role]
+    paid, provider, pricing = spec["paid"], spec["provider"], spec["pricing"]
+    if entry["via"] == "openrouter" and entry["model"] not in oc.SENTINELS:
+        billed = _billing(data, entry["model"])
+        if billed is None:
+            raise StageRefused("unknown-billing", f"{stage}: {entry['model']} has no billing that config/models.json and the roster agree on", stage)
+        if billed is not UNNAMED:
+            paid, provider, pricing = billed
     return {"stage": stage, "role": role, "model": entry["model"], "via": entry["via"], "effort": entry["effort"],
-            "settings": dict(entry["settings"]), "paid": spec["paid"], "provider": spec["provider"], "pricing": spec["pricing"]}
+            "settings": dict(entry["settings"]), "paid": paid, "provider": provider, "pricing": pricing,
+            "ceiling_usd": data.get("paid_ceiling_usd")}
 
 
 def _fallback(data, table, stage, role, mode):
@@ -722,6 +798,7 @@ def apply_future_stage(job_dir, stage, change):
         fresh = dict(snap, revision=snap["revision"] + 1, updated=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         fresh["roster"] = dict(snap["roster"], stages=data["stages"])
         fresh["resolved"] = thaw(freeze(_table(data)))
+        fresh["billing"] = _billing_map(data, _table(data))           # the models the change names are frozen too (I36)
         fresh.setdefault("changes", [])
         fresh["changes"] = list(fresh["changes"]) + [{"revision": fresh["revision"], "stage": stage, "change": change}]
         _atomic_json(job_dir / SNAPSHOT_FILE, fresh)

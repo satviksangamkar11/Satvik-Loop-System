@@ -532,40 +532,60 @@ def save_stages(profile, revision, changes):
 
 # ---------------------------------------------------------------- paid budget: POST /budget/validate
 
-def _paid_stages(name, stages):
-    """The stages whose model the catalog lists as paid (their calls cost USD), in stage order."""
+def _billed_stages(name, stages):
+    """{stage: (paid, prices per million tokens or None)} for each OpenRouter stage of the table, from the model's billing (config/models.json
+    and the roster agree on it, I36). A model with no agreed billing maps to None: the budget refuses it (fail closed)."""
     data = _roster_stages_now(name)
     table = sc._table(dict(data, stages=sc._merge(sc._stages_block(data), stages)))
-    paid = {e["model_id"] for e in mc.load_catalog()["openrouter"] if e["paid"]}
-    return [stage for stage in STAGE_ORDER if table[stage]["via"] == "openrouter" and table[stage]["model"] in paid]
-
-
-def _worst_case(name, stages):
-    """(worst_case_usd or None, problems, the table) for a stage change under the active profile. Uses api_budget.worst_case_usd."""
-    data = _roster_stages_now(name)
-    table = sc._table(dict(data, stages=sc._merge(sc._stages_block(data), stages)))
-    catalog_entries = {e["model_id"]: e for e in mc.load_catalog()["openrouter"]}
-    catalog = {mid: {"paid": e["paid"], "price_in_usd_per_mtok": e["price_in_usd_per_mtok"],
-                     "price_out_usd_per_mtok": e["price_out_usd_per_mtok"]} for mid, e in catalog_entries.items()}
-    calls, paid_test = {}, []
+    out = {}
     for stage in STAGE_ORDER:
         e = table[stage]
         if e["via"] != "openrouter" or e["model"] in oc.SENTINELS or not isinstance(e["model"], str):
             continue                                       # subscription (claude_code) and sentinels cost no USD
-        entry = catalog.get(e["model"]) or {}
-        if entry.get("paid") and name == "test":
+        billed = oc.model_billing(e["model"], data["roles"])
+        out[stage] = None if billed is None else (billed[0], billed[2])
+    return out
+
+
+def _paid_stages(name, stages):
+    """The stages whose model is paid (their calls cost USD), in stage order. A stage whose billing cannot be agreed counts as paid."""
+    billed = _billed_stages(name, stages)
+    return [stage for stage in STAGE_ORDER if stage in billed and (billed[stage] is None or billed[stage][0])]
+
+
+def _worst_case(name, stages):
+    """(worst case, paid_test) for a stage change under the active profile. Uses api_budget.worst_case_usd. The price is the model's agreed
+    price (config/models.json and the roster); the engine also reads the pinned endpoint's price at each call and reserves at the higher of
+    the two, so a call whose live price is higher is refused by the engine rather than sent over this estimate."""
+    data = _roster_stages_now(name)
+    table = sc._table(dict(data, stages=sc._merge(sc._stages_block(data), stages)))
+    billed = _billed_stages(name, stages)
+    catalog_entries = {e["model_id"]: e for e in mc.load_catalog()["openrouter"]}
+    calls, catalog, paid_test = {}, {}, []
+    for stage in STAGE_ORDER:
+        if stage not in billed:
+            continue
+        model = table[stage]["model"]
+        if billed[stage] is None:          # no agreed billing: the model is absent from the catalog below, so worst_case_usd names it unknown
+            calls[stage] = {"model": model, "max_tokens": 0, "prompt_tokens": 0}
+            continue
+        paid, prices = billed[stage]
+        catalog[model] = {"paid": paid, "price_in_usd_per_mtok": prices["prompt"] * 1e6 if prices else None,
+                          "price_out_usd_per_mtok": prices["completion"] * 1e6 if prices else None}
+        if paid and name == "test":
             paid_test.append(stage)
-        tokens = e["settings"].get("max_tokens")
+        tokens = table[stage]["settings"].get("max_tokens")
         if not isinstance(tokens, int):                    # no max_tokens set: the catalog's output limit, else the adapter's own cap
-            tokens = (catalog_entries.get(e["model"]) or {}).get("max_output_tokens") or mc.CALL_MAX_TOKENS
-        calls[stage] = {"model": e["model"], "max_tokens": tokens, "prompt_tokens": PROMPT_TOKENS_ASSUMED}
+            tokens = (catalog_entries.get(model) or {}).get("max_output_tokens") or mc.CALL_MAX_TOKENS
+        calls[stage] = {"model": model, "max_tokens": tokens, "prompt_tokens": PROMPT_TOKENS_ASSUMED}
     return worst_case_usd(calls, catalog), paid_test
 
 
 def validate_budget(profile, stages, paid_budget_usd):
     """POST /budget/validate: the worst-case USD of the stages' paid calls (the prompt priced at PROMPT_TOKENS_ASSUMED, the whole output
-    allowance at the catalog or roster price). 422 paid-in-test under the test profile; 400 budget-over-cap when the worst case is above the
-    paid budget or the job review ceiling (limits.job_review_usd). Reads only."""
+    allowance at the model's agreed price). 422 paid-in-test under the test profile; 400 budget-over-cap when the worst case is above the
+    paid budget or the job review ceiling (limits.job_review_usd). valid False (no raise) when the worst case cannot be priced. The answer's
+    approved_usd is the ceiling the job is approved for: the lower of the paid budget and the job review ceiling. Reads only."""
     name = _profile(profile)
     if isinstance(paid_budget_usd, bool) or not isinstance(paid_budget_usd, (int, float)) or paid_budget_usd < 0:
         raise ApiError(400, "bad-budget", "paid_budget_usd is a number of at least 0")
@@ -579,12 +599,14 @@ def validate_budget(profile, stages, paid_budget_usd):
     worst, _paid = _worst_case(name, changes)
     cap = limits_config.job_review_usd()
     if worst["worst_case_usd"] is None:
-        return {"valid": False, "worst_case_usd": None, "problems": worst["problems"], "assumptions": {"prompt_tokens": PROMPT_TOKENS_ASSUMED}}
+        return {"valid": False, "worst_case_usd": None, "approved_usd": None, "problems": worst["problems"],
+                "assumptions": {"prompt_tokens": PROMPT_TOKENS_ASSUMED}}
     limit = min(float(paid_budget_usd), cap)
     if worst["worst_case_usd"] > limit + 1e-12:
         raise ApiError(400, "budget-over-cap", f"worst case ${worst['worst_case_usd']:.4f} is above ${limit:.4f}",
                        {"worst_case_usd": worst["worst_case_usd"], "paid_budget_usd": float(paid_budget_usd), "job_review_usd": cap})
-    return {"valid": True, "worst_case_usd": worst["worst_case_usd"], "problems": [], "assumptions": {"prompt_tokens": PROMPT_TOKENS_ASSUMED}}
+    return {"valid": True, "worst_case_usd": worst["worst_case_usd"], "approved_usd": limit, "problems": [],
+            "assumptions": {"prompt_tokens": PROMPT_TOKENS_ASSUMED}}
 
 
 # ---------------------------------------------------------------- limits: PUT /system/limits

@@ -30,6 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import namedtuple
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -62,6 +63,9 @@ FILE_BLOCK = re.compile(r"^(?:#{1,6}[ \t]*)?(?:\*\*FILE:\*\*|FILE:)[ \t]*(\S+)",
 VERDICT_LINE = re.compile(r"^## Verdict: (READY|FIX FIRST)$")
 SECRET_SHAPES = re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}|Bearer\s+\S+|(?i:authorization)[\"']?\s*[:=]\s*[^\r\n,}\"']+")
 FAILURE_CHARS = 2000                # the first characters of a failed call's message that are kept (after redaction)
+PROMPT_FRAMING_TOKENS = 512         # the chat template's own tokens, added to a paid call's prompt bound (I49)
+ENDPOINT_MAX_AGE_S = 900.0          # a paid model's pinned endpoint price is read again after this long: a paid call never uses an older one (I49)
+_Hold = namedtuple("_Hold", "amount call_id")   # one paid reservation: its USD amount and, on the shared ledger, its call id (None otherwise); free: (0.0, None)
 
 
 def _shared_limits():
@@ -85,6 +89,59 @@ def _claude_code():
 def via_of(spec):
     """How a roster role is called: its "via", openrouter when it has none."""
     return spec.get("via", "openrouter")
+
+
+def _catalog():
+    """scripts/source/model_catalog.py, imported on first use (the same path rule as _shared_limits)."""
+    source = str(REPO / "scripts" / "source")
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    import model_catalog
+    return model_catalog
+
+
+def _same_price(a, b):
+    return a is not None and b is not None and math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=1e-15)
+
+
+def model_named(model, roles=None):
+    """True when config/models.json or a roster role in `roles` names the OpenRouter model (whatever its billing)."""
+    try:
+        if _catalog().entry_of(_catalog().load_catalog(), model) is not None:
+            return True
+    except Exception:
+        return True                                           # an unreadable catalog may name it: treat as named (conflicts fail closed)
+    return any(isinstance(spec, dict) and spec.get("model") == model and via_of(spec) == "openrouter" for spec in (roles or {}).values())
+
+
+def model_billing(model, roles=None):
+    """(paid, pin, prices) of an OpenRouter model, from where the model is named: its config/models.json entry (paid, hosting_provider, and
+    the prices per token, prompt and completion) and, when a roster role in `roles` ({role: spec}) names the same model, that role's own
+    values, which must agree. None when no source names the model, the two disagree, or the catalog cannot be read: the caller then refuses
+    the model. `prices` is {"prompt", "completion"} per token, or None when unknown. Reads config/models.json at each call."""
+    try:
+        entry = _catalog().entry_of(_catalog().load_catalog(), model)
+    except Exception:                                         # an unreadable catalog names no model: fail closed
+        entry = None
+    found = None
+    if entry is not None:
+        prices = None                                          # a free model has no prices, as a free roster role has none
+        if entry["paid"] and entry["price_in_usd_per_mtok"] is not None and entry["price_out_usd_per_mtok"] is not None:
+            prices = {"prompt": entry["price_in_usd_per_mtok"] / 1e6, "completion": entry["price_out_usd_per_mtok"] / 1e6}
+        pin = dict(entry["hosting_provider"]) if entry["hosting_provider"] is not None else None
+        found = (bool(entry["paid"]), pin, prices)
+    for spec in (roles or {}).values():
+        if not isinstance(spec, dict) or spec.get("model") != model or via_of(spec) != "openrouter":
+            continue
+        role = (bool(spec["paid"]), spec.get("provider"), spec.get("pricing"))
+        if found is None:
+            found = role
+            continue
+        same_prices = (found[2] is None and role[2] is None) or (found[2] and role[2] and _same_price(found[2]["prompt"], role[2]["prompt"])
+                                                                and _same_price(found[2]["completion"], role[2]["completion"]))
+        if found[0] != role[0] or found[1] != role[1] or not same_prices:
+            return None
+    return found
 
 
 def _loop_home():
@@ -152,6 +209,10 @@ class ReviewBudgetExceeded(BudgetExceeded):
 
 class ProviderUnavailable(OpenRouterError):
     """Timeouts, upstream busy, 5xx, a model that answered as another model, a dropped model, or retries spent."""
+
+
+class _NotSent(ProviderUnavailable):
+    """Refused before the POST (no model slot or no send pace before the deadline): nothing was sent, so a paid hold is released at nothing."""
 
 
 class AccountBlocked(OpenRouterError):
@@ -492,10 +553,16 @@ def check_reply(kind, requested, data):
     return text
 
 
+def prompt_bound_tokens(system, user):
+    """An upper bound on the prompt tokens of one chat call (I49): one token per UTF-8 byte, since a byte-level tokenizer never needs more
+    tokens than bytes (chars/3 is not a bound for dense or non-Latin text), plus the chat template's framing."""
+    return len((system + user).encode("utf-8", "surrogatepass")) + PROMPT_FRAMING_TOKENS
+
+
 def review_reservation(system, user, max_tokens, prices):
-    """The worst case of one paid call: the prompt at about 3 characters a token (deliberately high) at the roster's prompt price, plus the
-    whole output allowance at the roster's completion price. `prices` is {"prompt", "completion"} in USD per token."""
-    return math.ceil(len(system + user) / 3) * prices["prompt"] + max_tokens * prices["completion"]
+    """The worst case of one paid call: the prompt bound (prompt_bound_tokens) at the prompt price, plus the whole output allowance at the
+    completion price. `prices` is {"prompt", "completion"} in USD per token: the higher of the roster's and the live endpoint's."""
+    return prompt_bound_tokens(system, user) * prices["prompt"] + max_tokens * prices["completion"]
 
 
 def _reported_cost(data):
@@ -527,12 +594,15 @@ class JobBudget:
         if self.free_used >= self.free_requests:
             raise BudgetExceeded("free requests for this job are used up")
 
-    def check_review(self, estimate):
-        if self.review_spent + self.review_reserved + estimate > self.review_usd + 1e-12:
-            raise ReviewBudgetExceeded(f"the review worst case ${estimate:.6f} would pass the job's review ceiling ${self.review_usd:.2f}; not sent")
+    def check_review(self, estimate, ceiling=None):
+        """Refuses a reservation that would pass the job's review ceiling, or the approved paid ceiling of its snapshot (`ceiling`, when given:
+        the lower of the two applies, I44)."""
+        limit = self.review_usd if ceiling is None else min(self.review_usd, ceiling)
+        if self.review_spent + self.review_reserved + estimate > limit + 1e-12:
+            raise ReviewBudgetExceeded(f"the review worst case ${estimate:.6f} would pass the job's review ceiling ${limit:.6f}; not sent")
 
-    def reserve_review(self, estimate):
-        self.check_review(estimate)
+    def reserve_review(self, estimate, ceiling=None):
+        self.check_review(estimate, ceiling)
         self.review_reserved += estimate
 
     def settle_review(self, reserved, spent):
@@ -624,6 +694,7 @@ class OpenRouter:
         self.clock, self.sleep, self.rand = clock, sleep, rand
         self.approved_private = frozenset(approved_private)
         self._endpoints = {}
+        self._endpoint_at = {}              # model -> the clock time its pinned endpoint was read (ENDPOINT_MAX_AGE_S)
         self.failed_attempts = []           # every failed attempt: model, HTTP status (None for a network error), first 2000 chars of its message, reply_facts
         self.requests = []                  # every request sent, failed or not: model, status, failed, seconds, reply_facts (production writes each as call_NN.json)
         self.retry_log = []                 # every retry: model, the attempt it starts, the wait in seconds, the error (scrubbed); the job's status keeps it
@@ -750,11 +821,30 @@ class OpenRouter:
         return [f for f in self.failed_attempts if f["model"] == model]
 
 
+    def _worst_prices(self, model):
+        """The prices a paid reservation is priced at (I49): the higher of the roster's (or the snapshot's) and the live endpoint's, per token.
+        Refuses (nothing is sent) when either is unknown: a paid call is never priced at a guess."""
+        roster = self._pricing_of(model)
+        if not isinstance(roster, dict) or roster.get("prompt") is None or roster.get("completion") is None:
+            raise self._err(ModelRefused, f"{model} has no known prices in the roster or snapshot; nothing is sent")
+        live = self.endpoint(model)
+        return {"prompt": max(float(roster["prompt"]), live["prompt"]), "completion": max(float(roster["completion"]), live["completion"])}
+
+    def _known_prices(self, model):
+        """The prices already read for a paid model (the roster's and, when read, the pinned endpoint's): used to book a reply that reports no
+        cost. Never a network read, so it cannot fail after a call was sent."""
+        prices = dict(self._pricing_of(model) or {})
+        live = self._endpoints.get(model)
+        if live is not None:
+            prices = {"prompt": max(float(prices.get("prompt") or 0.0), live["prompt"]), "completion": max(float(prices.get("completion") or 0.0), live["completion"])}
+        return prices
+
     def endpoint(self, model):
-        """The paid model's Z.AI endpoint, read live once per job: per-token prices and the slug the requests are pinned to.
+        """The paid model's Z.AI endpoint, read live (once per ENDPOINT_MAX_AGE_S): per-token prices and the slug the requests are pinned to.
         A reply from any other provider is refused in call()."""
-        if model in self._endpoints:
+        if model in self._endpoints and self.clock() - self._endpoint_at.get(model, 0.0) < ENDPOINT_MAX_AGE_S:
             return self._endpoints[model]
+        self._endpoints.pop(model, None)
         pin = self._pin_of(model)
         if pin is None:
             raise self._err(ModelRefused, f"{model} has no pinned provider in the roster; nothing is sent")
@@ -781,6 +871,7 @@ class OpenRouter:
         if pinned is None:
             raise self._err(ProviderUnavailable, f"no priced {pin['name']} endpoint for {model}; the review is refused (no other provider is used)")
         self._endpoints[model] = pinned
+        self._endpoint_at[model] = self.clock()
         return pinned
 
     def _key_payload(self, slot):
@@ -851,6 +942,7 @@ class OpenRouter:
             raise ModelRefused(f"{name} is {stage.get('model')!r} in the job's stage snapshot, not a model: nothing is called")
         if stage.get("via", "openrouter") != "openrouter":
             raise ModelRefused(f"{name} is a {stage.get('via')} stage in the job's snapshot: it is not called through OpenRouter")
+        self._check_stage_billing(name, stage)
         self._stage = stage
         try:
             return self._call(name, system, user, kind, private, max_tokens, timeout_s, effort)
@@ -888,15 +980,18 @@ class OpenRouter:
                 raise self._err(ProviderUnavailable,
                                 f"{model} dropped for this job after {BREAKER_LIMIT} provider errors in a row; last: {self._last_failures(model)}")
             attempts += 1
-            reserved = self._reserve(model, slot, system, user, tokens)
+            hold = self._reserve(model, slot, system, user, tokens)
             sent = self.clock()
             try:
                 status, headers, raw = self._send(model, slot, system, user, tokens, private, timeout, effort)
+            except _NotSent:                                        # nothing was posted: a paid hold is released at what it cost (nothing)
+                self._settle_unsent(slot, model, hold)
+                raise
             except (OSError, http.client.HTTPException) as exc:       # refused, reset, timed out (socket.timeout is an OSError)
                 self._keep_request(model, None, self.clock() - sent)
                 self._note(model, None, f"{type(exc).__name__}: {exc}")
                 self.breaker.failed(model)
-                self._settle(slot, model, reserved, None)
+                self._settle(slot, model, hold, None)
                 self._wait_before_retry(model, retries, self._backoff_s(retries, None), f"{type(exc).__name__}: {exc}", attempts + 1)
                 retries += 1
                 continue
@@ -905,7 +1000,7 @@ class OpenRouter:
             self._keep_request(model, http_status, self.clock() - sent, data)
             if kind in ("writer", "repair", "reviewer"):
                 self.requests[-1].update(reply_texts(data))   # the raw texts, kept before check_reply so a rejected reply (a review with no verdict line too) is still on record
-            spent = self._settle(slot, model, reserved, data)
+            spent = self._settle(slot, model, hold, data)
             if status == 200:
                 if data is None:
                     self._note(model, 200, f"malformed reply: not a JSON object: {message}")
@@ -973,63 +1068,94 @@ class OpenRouter:
             self._note(model, http_status, message)
             raise self._err(OpenRouterError, f"{model}: HTTP {status}: {message[:200]}")
 
+    def _ceiling(self):
+        """The approved paid ceiling of the call in progress (its stage snapshot's paid_ceiling_usd), None for a roster call or a snapshot
+        without one (then the job's own review budget is the only limit)."""
+        if self._stage is None:
+            return None
+        return self._stage.get("ceiling_usd")
+
+    def _check_stage_billing(self, name, stage):
+        """A stage's billing class, pin and prices must be the selected model's (I36), as config/models.json and the roster name them. Refused
+        before any reservation or request: a stage that says free for a paid model, or the reverse, or a pin or price the model does not have,
+        nothing is sent."""
+        model = stage["model"]
+        ro = roster_state()
+        if model not in ro["PAID"] and model not in ro["ALLOWED"]:
+            raise self._err(ModelRefused, f"{name}: {model} is not on the allow-list (roster or config/models.json); nothing is sent")
+        paid_now = model in ro["PAID"]
+        if bool(stage.get("paid")) != paid_now:
+            raise self._err(ModelRefused, f"{name}: the stage says paid={bool(stage.get('paid'))} but {model} is paid={paid_now}; nothing is sent")
+        if not paid_now:
+            return
+        pin = ro["PINS"].get(model)
+        if pin is None or stage.get("provider") != pin:
+            raise self._err(ModelRefused, f"{name}: the stage's provider pin does not match {model}'s pinned provider; nothing is sent")
+        prices = stage.get("pricing")
+        if not isinstance(prices, dict) or not all(isinstance(prices.get(k), (int, float)) and prices[k] >= 0 for k in ("prompt", "completion")):
+            raise self._err(ModelRefused, f"{name}: the stage has no usable prices for {model}; nothing is sent")
+
     def _reserve(self, model, slot, system, user, tokens):
-        """Takes this attempt's budget before anything is sent. Free: the job count, then the account ledger (waiting out the minute window).
-        Paid: the endpoint estimate."""
+        """Takes this attempt's budget before anything is sent (a _Hold). Free: the job count, then the account's daily count on the shared
+        ledger; the minute pace is taken later, right before the POST, inside the model slot (_pace). Paid: the worst case at the higher of
+        the roster's and the live endpoint's prices, refused when it would pass the job's review budget or the approved ceiling (I44, I49)."""
         if slot == "free" and self.shared is None:      # solo, probe and tests: a job on the loop home, so the call counts on the shared ledger
             self.own_job("openrouter-client", self.ledger_dir)
         if self.shared is not None:
             return self._reserve_shared(model, slot, system, user, tokens)
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, self._pricing_of(model))
-            self.budget.check_review(estimate)          # refused before the endpoint is read or anything is sent
-            self.endpoint(model)
-            self.budget.reserve_review(estimate)
-            return estimate
+            return self._reserve_paid(model, system, user, tokens)
         raise AssertionError("unreachable: a free call always takes the shared ledger")
 
+    def _reserve_paid(self, model, system, user, tokens):
+        """The paid worst case (the endpoint is read first; a refused price read sends nothing). The cheap check on the roster price comes
+        before the endpoint is read, as before."""
+        ceiling = self._ceiling()
+        self.budget.check_review(review_reservation(system, user, tokens, self._pricing_of(model)), ceiling)   # refused before any read
+        estimate = review_reservation(system, user, tokens, self._worst_prices(model))
+        self.budget.reserve_review(estimate, ceiling)
+        return _Hold(estimate, None)
+
     def _reserve_shared(self, model, slot, system, user, tokens):
-        """The account ledger (package E). A wait for the minute window or the pace counts against the unit deadline: it is cut off there."""
+        """The account ledger (package E). Free: the job's count and the day's count. Paid: the job's budget, then one hold on the ledger under
+        its own call id (reserve_review), which settle or reconciliation releases."""
         sl = _shared_limits()
         job_id, gen = self.shared
         home = self.shared_home
         if slot == "paid":
-            estimate = review_reservation(system, user, tokens, self._pricing_of(model))
-            self.budget.check_review(estimate)
-            self.endpoint(model)
-            self.budget.reserve_review(estimate)
+            ceiling = self._ceiling()
+            self.budget.check_review(review_reservation(system, user, tokens, self._pricing_of(model)), ceiling)
+            estimate = review_reservation(system, user, tokens, self._worst_prices(model))
+            self.budget.reserve_review(estimate, ceiling)
             try:
-                sl.reserve_review(job_id, gen, estimate, home_dir=home)
+                call_id = sl.reserve_review(job_id, gen, estimate, home_dir=home, ceiling_usd=ceiling)
             except sl.ReviewCapReached as exc:
                 self.budget.settle_review(estimate, 0.0)
                 raise self._err(ReviewBudgetExceeded, str(exc))
-            try:
-                with self.waiting("account-pace", model):
-                    sl.pace(timeout_s=self._deadline_left(), home_dir=home)
-            except TimeoutError as exc:
-                sl.settle_review(job_id, gen, estimate, 0.0, home_dir=home)
-                self.budget.settle_review(estimate, 0.0)
-                raise self._err(ProviderUnavailable, f"{model}: no send pace before the unit deadline ({exc})")
-            return estimate
+            return _Hold(estimate, call_id)
         self.budget.check_free()
-        while True:
-            try:
-                sl.reserve_free(job_id, gen, home_dir=home)
-                break
-            except sl.DailyCapReached as exc:
-                raise self._err(QuotaExhausted, str(exc))
-            except sl.MinuteFull:
-                left = self._deadline_left()
-                if left is not None and left <= 0:
-                    raise self._err(ProviderUnavailable, f"{model}: the account minute window stayed full until the unit deadline")
-                with self.waiting("account-pace", model):
-                    self.sleep(1.0 if left is None else min(1.0, left))
+        try:
+            sl.reserve_free_day(job_id, gen, home_dir=home)
+        except sl.DailyCapReached as exc:
+            raise self._err(QuotaExhausted, str(exc))
         self.budget.free_used += 1
-        return 0.0
+        return _Hold(0.0, None)
+
+    def _pace(self, model, slot):
+        """The account's send pace, taken immediately before the POST (I48): the pace record is written at the send, not when the call
+        queued. A wait that would pass the unit deadline is refused as not sent."""
+        sl = _shared_limits()
+        try:
+            with self.waiting("account-pace", model):
+                sl.pace(timeout_s=self._deadline_left(), home_dir=self.shared_home)
+        except TimeoutError as exc:
+            what = "the account minute window stayed full until the unit deadline" if slot == "free" else "no send pace before the unit deadline"
+            raise self._err(_NotSent, f"{model}: {what} ({exc})")
 
     def _send(self, model, slot, system, user, tokens, private, timeout_s, effort=None):
-        """_post, inside the model's slot on the account ledger when the client is on it. The wait for the slot is bounded by the unit
-        deadline, so it counts against the job's time."""
+        """_post, inside the model's slot on the account ledger when the client is on it, and the account pace taken after the slot is held and
+        right before the POST. The waits for the slot and the pace are bounded by the unit deadline, so they count against the job's time. A
+        refusal here raises _NotSent: nothing was posted."""
         if self.shared is None:
             return self._post(model, slot, system, user, tokens, private, timeout_s, effort)
         sl = _shared_limits()
@@ -1040,31 +1166,42 @@ class OpenRouter:
             raise self._err(ModelDenied, str(exc))
         left = self._deadline_left()
         if left is not None and left <= 0:
-            raise self._err(ProviderUnavailable, f"{model}: the unit deadline passed before a slot was free")
+            raise self._err(_NotSent, f"{model}: the unit deadline passed before a slot was free")
         slot_cm = sl.model_slot(model, gen, timeout_s if left is None else left, home_dir=self.shared_home)
         try:
             with self.waiting("model-slot", model):           # cleared the moment the slot is acquired, before the request is sent
                 slot_cm.__enter__()
         except TimeoutError as exc:
-            raise self._err(ProviderUnavailable, f"{model}: no free model slot before the unit deadline ({exc})")
+            raise self._err(_NotSent, f"{model}: no free model slot before the unit deadline ({exc})")
         try:
+            self._pace(model, slot)
             return self._post(model, slot, system, user, tokens, private, timeout_s, effort)
         finally:
             slot_cm.__exit__(None, None, None)
 
-    def _settle(self, slot, model, reserved, data):
-        """A free attempt costs what its reply reports (0 when it reports nothing). A GLM attempt releases its reservation and keeps what the
-        reply costs; with no reply, the whole reservation is kept as spent."""
+    def _settle(self, slot, model, hold, data):
+        """A free attempt costs what its reply reports (0 when it reports nothing). A paid attempt releases its hold and keeps what the reply
+        costs (at the known prices when the reply reports no cost); with no reply, the whole hold is kept as spent."""
         if slot == "free":
             return _reported_cost(data) or 0.0
-        spent = review_cost(data, self._pricing_of(model)) if data is not None else None
+        spent = review_cost(data, self._known_prices(model)) if data is not None else None
         if spent is None:
-            spent = reserved
-        self.budget.settle_review(reserved, spent)
+            spent = hold.amount
+        self.budget.settle_review(hold.amount, spent)
         if self.shared is not None:
             job_id, gen = self.shared
-            _shared_limits().settle_review(job_id, gen, reserved, spent, home_dir=self.shared_home)
+            _shared_limits().settle_review(job_id, gen, hold.amount, spent, home_dir=self.shared_home, call_id=hold.call_id)
         return spent
+
+    def _settle_unsent(self, slot, model, hold):
+        """A paid hold whose call was never posted (the slot or the pace was refused): released at nothing spent. A free attempt keeps its
+        daily count (conservative: the count is never handed back)."""
+        if slot != "paid":
+            return
+        self.budget.settle_review(hold.amount, 0.0)
+        if self.shared is not None:
+            job_id, gen = self.shared
+            _shared_limits().settle_review(job_id, gen, hold.amount, 0.0, home_dir=self.shared_home, call_id=hold.call_id)
 
     def _post(self, model, slot, system, user, tokens, private, timeout_s, effort=None):
         settings = self._settings_of(model)
