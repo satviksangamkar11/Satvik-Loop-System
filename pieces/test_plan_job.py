@@ -567,7 +567,10 @@ def test_a_secret_shaped_file_name_is_refused(repo, tmp_path, monkeypatch, rel):
 def test_a_symlink_into_secrets_is_refused(repo, tmp_path, monkeypatch):
     (repo / "secrets").mkdir()
     (repo / "secrets" / "notes.txt").write_text("x" + chr(10), encoding="utf-8")
-    (repo / "pieces" / "notes.py").symlink_to(repo / "secrets" / "notes.txt")
+    try:
+        (repo / "pieces" / "notes.py").symlink_to(repo / "secrets" / "notes.txt")
+    except OSError as exc:                  # Windows without the symlink privilege (WinError 1314): the check cannot be exercised here
+        pytest.skip(f"this OS refuses to create the symlink ({exc}); the refusal is only testable where symlinks can be made")
     log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
     result = plan(repo, files=["pieces/notes.py"])
     assert result["state"] == "planner-refused" and calls(log) == []
