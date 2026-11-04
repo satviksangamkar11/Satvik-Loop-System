@@ -5,7 +5,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 
 **Rules:**
 - Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
-- Local work goes to Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) only. **Do not use Local agent 1** (`session_016GQpGGyAsk3SytLChxhEfL`), owner's instruction 2026-11-04.
+- Local work goes to Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) only. Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`) works only on the owner's own tasks (owner 2026-11-04 evening: complete the given work, including the anime studio work; no other paid work). The coordinator monitors and checks its tests.
 - No other sessions. No UI redesign.
 - **Owner 2026-11-04 (evening): paid GLM review calls are now allowed** (production reviewer_a GLM 5.3 flash, capped by the job's $0.05 review budget; reviewer_b Nemotron 3 Ultra). **Opus stays off.** Local agent 1's branch `owner-free-review-opus-low-2026-11-04` in loop_p0 (old code) is not merged.
 - Earlier rule, now superseded for GLM only: **No paid calls and no Opus calls until the very end**, anywhere: no paid OpenRouter model (GLM etc.), no Opus in the loop (production repair and planner stay unused), no paid verify. `SATVIK_PROFILE=test`, $0; only free models and Haiku.
