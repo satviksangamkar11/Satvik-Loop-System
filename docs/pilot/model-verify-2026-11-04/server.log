@@ -1,0 +1,28 @@
+INFO:     Started server process [60196]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58476 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60219 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60220 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60255 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60293 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59504 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59539 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59561 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56407 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56171 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49686 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49688 - "POST /api/models/verify HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:53834 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54295 - "POST /api/models/verify HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:61258 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61377 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61415 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61473 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61520 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61613 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61705 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61832 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60497 - "POST /api/models/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60617 - "GET /api/models HTTP/1.1" 200 OK
