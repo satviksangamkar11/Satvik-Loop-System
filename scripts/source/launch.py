@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import event_log
 import job_history
+import limits_config
 import loop_home
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
@@ -35,6 +36,14 @@ SANDBOX_SLOTS = 4             # sandbox gate capacity (owner decision: matches t
 def git(args, cwd, check=True):
     """Run git in cwd. Returns the CompletedProcess (stdout and stderr captured)."""
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=check)
+
+
+def _sandbox_slots():
+    """The sandbox gate capacity from config/limits.json (limits_config), read at each start; SANDBOX_SLOTS when unreadable."""
+    try:
+        return limits_config.sandbox_slots()
+    except Exception:
+        return SANDBOX_SLOTS
 
 
 def real_api(home_dir):
@@ -55,6 +64,14 @@ def new_job_id(name, exists=lambda job_id: False, now=None):
             return job_id
 
 
+def _review_cap_usd():
+    """The daily review cap a start is refused at: config/limits.json (limits_config), read at each call; REVIEW_SPEND_CAP_USD when unreadable."""
+    try:
+        return limits_config.review_usd_daily_cap()
+    except Exception:
+        return REVIEW_SPEND_CAP_USD
+
+
 def start_refusal(stop_present, running, recent_states, budget):
     """The first start limit that blocks, or None. recent_states is newest first (registry.recent). budget is the day's figures
     ({free_requests, review_spend_usd}) or None when there is no budget snapshot. The sandbox slot is checked by Launcher.start."""
@@ -67,7 +84,7 @@ def start_refusal(stop_present, running, recent_states, budget):
         return "no-budget-snapshot" if running >= 1 else None         # without figures, one loop at a time
     if budget["free_requests"] < RESERVE_BASE + RESERVE_PER_JOB * running:
         return "free-requests"
-    if budget["review_spend_usd"] >= REVIEW_SPEND_CAP_USD:
+    if budget["review_spend_usd"] >= _review_cap_usd():
         return "review-spend"
     return None
 
@@ -95,14 +112,33 @@ def run_rounds(api, job_id, gen, rounds, do_round, restore, home_dir):
 
 
 KEEP_WORKTREE = {"passed", "merge-conflict"}      # passed waits for the merge queue; merge-conflict stays for the owner
-ARCHIVE_SKIP = ("openrouter",)                     # never archived: the OpenRouter key snapshots (_loop/openrouter)
+ARCHIVE_SKIP = ("openrouter", ".gitignore")        # never archived: the OpenRouter key snapshots (_loop/openrouter) and _loop/.gitignore (`*`, event_log),
+                                                   # which would make the published evidence git-ignored
 _copytree = shutil.copytree                        # a hook for tests (an archive copy that fails)
 
 
-def archive_job(home, job_id):
-    """Copies the job's evidence (wt/<job_id>/_loop, without ARCHIVE_SKIP) to results/<job_id>/: first into a temporary folder, then one
-    rename, so a reader sees all of it or none. Repeat-safe: an existing archive is kept. Returns "archived", "kept", "none" (no _loop to
-    keep) or "failed: <why>"; it never raises, so finishing a job is never blocked by it."""
+def _write_job_file(folder, job):
+    """results/<job_id>/<name>.job.json: the job file the run used (its spec and files), for the API. The run's own copy (fix_loop writes it
+    into _loop when it starts) is kept when it is there, so the archive holds the file as it ran; without one, the job the launcher started is
+    written from. Best effort, like the run's copy: a file that cannot be written never fails the archive."""
+    if not isinstance(job, dict):
+        return
+    name = job.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}", name):
+        return
+    target = Path(folder) / f"{name}.job.json"
+    if target.exists():
+        return
+    try:
+        target.write_text(json.dumps(job, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def archive_job(home, job_id, job=None):
+    """Copies the job's evidence (wt/<job_id>/_loop, without ARCHIVE_SKIP) to results/<job_id>/, and its job file (_write_job_file, from job when
+    given): first into a temporary folder, then one rename, so a reader sees all of it or none. Repeat-safe: an existing archive is kept.
+    Returns "archived", "kept", "none" (no _loop to keep) or "failed: <why>"; it never raises, so finishing a job is never blocked by it."""
     src = Path(home) / "wt" / job_id / "_loop"
     dest = Path(home) / "results" / job_id
     if dest.exists():
@@ -113,6 +149,7 @@ def archive_job(home, job_id):
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         _copytree(src, tmp, ignore=shutil.ignore_patterns(*ARCHIVE_SKIP))
+        _write_job_file(tmp, job)
         os.rename(tmp, dest)
         return "archived"
     except Exception as exc:                       # any failure: the caller keeps the worktree, so the evidence is never lost
@@ -135,8 +172,9 @@ def record_merge(home, job_id, state, base, result=None):
 
 
 class Launcher:
-    def __init__(self, repo, api, budget, sandbox_slots=SANDBOX_SLOTS, wait_s=0.0, poll_s=0.5, sleep=time.sleep):
+    def __init__(self, repo, api, budget, sandbox_slots=None, wait_s=0.0, poll_s=0.5, sleep=time.sleep):
         """budget() -> {free_requests, review_spend_usd} for today, or None when the ledger has no figures yet.
+        sandbox_slots: None (default) reads config/limits.json at each start, so an edit applies to new starts only; a number fixes it.
         wait_s: a claim conflict is retried every poll_s seconds for up to wait_s (queued-claim wait); 0 refuses at once."""
         self.repo = Path(repo)
         self.api = api
@@ -145,11 +183,15 @@ class Launcher:
         self.wait_s, self.poll_s, self.sleep = wait_s, poll_s, sleep
         self._slots = {}
         self._keys = {}
+        self._jobs = {}
 
-    def start(self, name, rel_paths=(), key=None):
+    def start(self, name, rel_paths=(), key=None, job=None):
+        """Starts one job. job: the job file it runs (a dict), kept for the archive (archive_job writes it to results/<job_id>/)."""
         res = self._start(name, rel_paths, key)
         self.api.registry.bump("started" if res["ok"] else "refused:" + res["reason"])
         if res["ok"]:                                      # the job's first event, in the folder its run writes (_loop/<name>)
+            if job is not None:
+                self._jobs[res["job_id"]] = job
             event_log.emit(Path(res["worktree"]) / "_loop" / name, "job-start", job_id=res["job_id"], name=name, base=res["base"],
                            branch=res["branch"], gen=res["gen"], key=key or res["job_id"])
         return res
@@ -173,7 +215,8 @@ class Launcher:
         except Exception:
             self.api.lease.release(job_id, gen)
             raise
-        slot = self.api.gate.slot("sandbox", gen, timeout_s=0, capacity=self.sandbox_slots)
+        slots = self.sandbox_slots if self.sandbox_slots is not None else _sandbox_slots()
+        slot = self.api.gate.slot("sandbox", gen, timeout_s=0, capacity=slots)
         try:
             slot.__enter__()
         except TimeoutError:                       # the gate raises TimeoutError when no slot frees within timeout_s
@@ -209,7 +252,7 @@ class Launcher:
         the job is indexed into history.db after it."""
         if state not in event_log.MERGE_STATES:
             self._finish_event(job_id, state, result)
-        archive = archive_job(self.api.home, job_id)
+        archive = archive_job(self.api.home, job_id, job=self._jobs.pop(job_id, None))
         job_history.safe_index(self.api.home, job_id)
         result = dict(result or {}, archive=archive)
         if archive.startswith("failed"):

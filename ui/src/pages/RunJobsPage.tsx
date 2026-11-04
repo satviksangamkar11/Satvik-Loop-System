@@ -1,130 +1,120 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Ban, Play, Plus, RotateCcw } from 'lucide-react';
-import type { ProfileName, StageConfigRow } from '../api/types';
+import type { PlanRecord, ProfileName, StageSetting } from '../api/types';
+import { fmtInt, fmtStr } from '../api/format';
 
 export interface RunJobsPageProps {
-  authoritativeProfile: ProfileName;
-  stageRevision: string;
-  stages: StageConfigRow[];
-  productionPlannerStage: StageConfigRow;
+  profile: ProfileName;
+  stageRevision: number | null;
+  stages: StageSetting[];
   runEntryMode: 'existing_path' | 'planner_request';
   jobPathInput: string;
-  jobValidated: boolean;
-  budgetValidated: boolean;
-  authorizedPaidBudget: string;
+  jobValidated: boolean | null;
+  jobProblems: string[];
+  budgetValidated: boolean | null;
+  paidBudgetUsd: string;
   workerCountToStart: number;
-  planJobName: string;
+  planName: string;
   planPrompt: string;
-  planAllowedFiles: string;
-  planCostAuthorized: boolean;
-  generatedPlan: {
-    plan_id: string;
-    job_sha256: string;
-    known: string[];
-    assumed: Array<{ id: string; text: string; checked: boolean }>;
-  } | null;
-  activeIdempotencyKey: string;
+  planFiles: string;
+  generatedPlan: PlanRecord | null;
+  planApproveAssumed: boolean;
   pendingAction: string | null;
   bgPanel: string;
   bgSubtle: string;
   textMuted: string;
+  onChangeProfile: (p: ProfileName) => void;
   onChangeEntryMode: (mode: 'existing_path' | 'planner_request') => void;
   onChangeJobPath: (path: string) => void;
-  onResetForm: () => void;
   onValidateJobPath: () => void;
   onChangePaidBudget: (val: string) => void;
   onValidateBudget: () => void;
   onQueueJob: (isRerun: boolean) => void;
   onChangeWorkerCount: (n: number) => void;
   onStartWorkers: () => void;
-  onChangePlanJobName: (val: string) => void;
+  onChangePlanName: (val: string) => void;
   onChangePlanPrompt: (val: string) => void;
-  onChangePlanAllowedFiles: (val: string) => void;
-  onChangePlanCostAuthorized: (checked: boolean) => void;
+  onChangePlanFiles: (val: string) => void;
   onCreatePlan: () => void;
-  onToggleAssumedItem: (id: string, checked: boolean) => void;
+  onToggleApproveAssumed: (checked: boolean) => void;
   onApprovePlan: () => void;
 }
 
 export const RunJobsPage: React.FC<RunJobsPageProps> = ({
-  authoritativeProfile,
+  profile,
   stageRevision,
   stages,
-  productionPlannerStage,
   runEntryMode,
   jobPathInput,
   jobValidated,
+  jobProblems,
   budgetValidated,
-  authorizedPaidBudget,
+  paidBudgetUsd,
   workerCountToStart,
-  planJobName,
+  planName,
   planPrompt,
-  planAllowedFiles,
-  planCostAuthorized,
+  planFiles,
   generatedPlan,
-  activeIdempotencyKey,
+  planApproveAssumed,
   pendingAction,
   bgPanel,
   bgSubtle,
   textMuted,
+  onChangeProfile,
   onChangeEntryMode,
   onChangeJobPath,
-  onResetForm,
   onValidateJobPath,
   onChangePaidBudget,
   onValidateBudget,
   onQueueJob,
   onChangeWorkerCount,
   onStartWorkers,
-  onChangePlanJobName,
+  onChangePlanName,
   onChangePlanPrompt,
-  onChangePlanAllowedFiles,
-  onChangePlanCostAuthorized,
+  onChangePlanFiles,
   onCreatePlan,
-  onToggleAssumedItem,
+  onToggleApproveAssumed,
   onApprovePlan,
 }) => {
+  // UI-only gate: the planner is a paid call, so the user must tick this before the request is sent.
+  // The contract's POST /plans body does not carry it.
+  const [plannerCostAck, setPlannerCostAck] = useState<boolean>(false);
+  const plannerRefused = profile === 'test';
+  const plannerPlannerStage = stages.find((s) => s.stage_key === 'planner');
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-lg md:text-xl font-bold tracking-tight">2. Run Jobs (/jobs/new)</h1>
         <p className={`text-xs ${textMuted}`}>
-          Two distinct entry paths (Existing repo-relative `job_path` vs Production-only NL
-          Planner), 10-stage job snapshot configuration, budget validation, and separate Queue vs
-          Start 1–4 Loop Workers HTTP mutations.
+          Two entry paths: a repo-relative job file, or a natural-language plan. Queueing and starting loop workers are
+          separate requests.
         </p>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-start">
-        {/* Left 2/3: Step 1 (Source/Plan) & Step 2 (10-Stage Table) */}
         <div className="xl:col-span-2 space-y-4">
           <div className={`rounded-md border p-4 space-y-4 ${bgPanel}`}>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-              <span className="text-xs font-mono uppercase text-sky-400 font-bold">
-                Step 1 — Select Entry Path (Never Conflated)
-              </span>
+              <span className="text-xs font-mono uppercase text-sky-400 font-bold">Step 1 — Entry path</span>
               <div className="inline-flex rounded border border-slate-700 overflow-hidden text-xs font-mono">
                 <button
                   type="button"
                   onClick={() => onChangeEntryMode('existing_path')}
                   className={`px-3 py-1.5 font-semibold ${
-                    runEntryMode === 'existing_path'
-                      ? 'bg-sky-500 text-slate-950'
-                      : 'bg-slate-900 text-slate-300'
+                    runEntryMode === 'existing_path' ? 'bg-sky-500 text-slate-950' : 'bg-slate-900 text-slate-300'
                   }`}
                 >
-                  {'Path A: Existing Repo-Relative Job (jobs/<spec>.json)'}
+                  Path A: Existing job file (jobs/&lt;spec&gt;.json)
                 </button>
                 <button
                   type="button"
                   onClick={() => onChangeEntryMode('planner_request')}
                   className={`px-3 py-1.5 font-semibold ${
-                    runEntryMode === 'planner_request'
-                      ? 'bg-sky-500 text-slate-950'
-                      : 'bg-slate-900 text-slate-300'
+                    runEntryMode === 'planner_request' ? 'bg-sky-500 text-slate-950' : 'bg-slate-900 text-slate-300'
                   }`}
                 >
-                  Path B: Natural-Language Planner Request
+                  Path B: Natural-language plan
                 </button>
               </div>
             </div>
@@ -132,109 +122,87 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
             {runEntryMode === 'existing_path' ? (
               <div className="space-y-3 text-xs">
                 <div className="p-2.5 rounded border border-slate-800 bg-slate-900/50 text-slate-300 font-mono text-[11px]">
-                  Contract Note (Gap C-04): Arbitrary local browser file uploads and server
-                  filesystem directory pickers are NOT supported by docs/API_CONTRACT.md. Enter a
-                  repo-relative `job_path` and validate via `POST /api/jobs/validate`.
+                  The contract has no file picker or upload. Enter a repo-relative job_path and validate it with POST /api/jobs/validate.
                 </div>
 
                 <div className="space-y-1.5">
                   <label htmlFor="job-path-input" className="block font-semibold">
-                    Repo-Relative Job JSON Path (`job_path`):
+                    Repo-relative job path (`job_path`):
                   </label>
                   <div className="flex flex-wrap gap-2">
                     <input
                       id="job-path-input"
+                      data-testid="job-path-input"
                       type="text"
                       value={jobPathInput}
                       onChange={(e) => onChangeJobPath(e.target.value)}
                       className="flex-1 min-w-[240px] bg-slate-900 border border-slate-700 rounded px-3 py-1.5 font-mono text-xs text-slate-100"
-                      placeholder="jobs/tl_parser_strict.json"
+                      placeholder="jobs/my_spec.json"
                     />
                     <button
                       type="button"
-                      disabled={pendingAction === 'validate-job'}
+                      data-testid="validate-job-btn"
+                      disabled={pendingAction === 'validate-job' || jobPathInput.trim() === ''}
                       onClick={onValidateJobPath}
-                      className="px-3 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-mono font-semibold"
+                      className="px-3 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-mono font-semibold disabled:opacity-40"
                     >
                       Validate Job (`POST /jobs/validate`)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onResetForm}
-                      className="px-3 py-1.5 rounded border border-slate-700 hover:border-slate-500 font-mono"
-                    >
-                      Reset / New Job Form
                     </button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  <span className={`text-[11px] font-mono ${textMuted}`}>Test Presets:</span>
-                  {[
-                    { label: 'Active (409 Conflict)', path: 'jobs/tl_parser_strict.json' },
-                    {
-                      label: 'Completed (Requires rerun:true)',
-                      path: 'jobs/auth_token_validator.json',
-                    },
-                    { label: 'Fresh Valid Spec', path: 'jobs/packet_crc_verifier.json' },
-                    { label: 'Invalid Path Traversal (400)', path: '../outside_repo.json' },
-                  ].map((p) => (
-                    <button
-                      key={p.path}
-                      type="button"
-                      onClick={() => onChangeJobPath(p.path)}
-                      className="px-2 py-0.5 rounded border border-slate-700 bg-slate-900 hover:border-sky-400 font-mono text-[11px]"
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
+                {jobValidated !== null && (
+                  <div
+                    data-testid="validation-result"
+                    className={`p-2.5 rounded border font-mono text-[11px] space-y-1 ${
+                      jobValidated ? 'border-emerald-700 text-emerald-200' : 'border-rose-700 text-rose-200'
+                    }`}
+                  >
+                    <div className="font-bold">Validation Result (`POST /api/jobs/validate`): {jobValidated ? 'valid' : 'invalid'}</div>
+                    {jobProblems.map((p, i) => (
+                      <div key={i}>• {p}</div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3 text-xs">
-                {authoritativeProfile === 'test' && (
+                {plannerRefused && (
                   <div className="p-3 rounded border border-rose-600 bg-rose-950/60 text-rose-100 space-y-1">
                     <div className="font-bold font-mono flex items-center gap-1.5">
                       <Ban className="w-4 h-4 text-rose-400" />
-                      REFUSED IN TEST PROFILE (no_paid_or_planner_in_test)
+                      test profile: free only
                     </div>
                     <p className="text-[11px]">
-                      The authoritative backend profile is currently <code>test</code>, which
-                      forbids natural-language planning and paid calls. Switch the header Runtime
-                      Profile simulator to <code>PRODUCTION</code> to test authorized planner
-                      execution, or click below to observe the HTTP 422 refusal from POST
-                      /api/plans.
+                      The test profile refuses the planner (paid). Switch the stage view to production to plan.
                     </p>
                   </div>
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-semibold mb-1">Job Name:</label>
+                    <label className="block font-semibold mb-1">Plan name:</label>
                     <input
                       type="text"
-                      value={planJobName}
-                      onChange={(e) => onChangePlanJobName(e.target.value)}
+                      data-testid="plan-name-input"
+                      value={planName}
+                      onChange={(e) => onChangePlanName(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono"
                     />
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">
-                      Configured Planner Stage Model (C-09):
-                    </label>
+                    <label className="block font-semibold mb-1">Planner stage model (from stage settings):</label>
                     <div className="px-2.5 py-1.5 rounded border border-slate-800 bg-slate-900/60 font-mono text-sky-300">
-                      {stages[0]?.configured_model_id || 'Disabled in test profile'} (
-                      {stages[0]?.route})
+                      {fmtStr(plannerPlannerStage?.configured_model_id ?? null)}
                     </div>
                   </div>
                 </div>
 
                 <div>
-                  <label className="block font-semibold mb-1">
-                    Natural-Language Specification Request:
-                  </label>
+                  <label className="block font-semibold mb-1">Request:</label>
                   <textarea
                     rows={2}
+                    data-testid="plan-request-input"
                     value={planPrompt}
                     onChange={(e) => onChangePlanPrompt(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded p-2 font-mono text-xs"
@@ -242,91 +210,61 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
                 </div>
 
                 <div>
-                  <label className="block font-semibold mb-1">
-                    Allowed Repo-Relative Files (1 to 30 max, one per line):
-                  </label>
+                  <label className="block font-semibold mb-1">Files (1 to 30, one per line):</label>
                   <textarea
                     rows={3}
-                    value={planAllowedFiles}
-                    onChange={(e) => onChangePlanAllowedFiles(e.target.value)}
+                    value={planFiles}
+                    onChange={(e) => onChangePlanFiles(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded p-2 font-mono text-xs"
                   />
                 </div>
 
                 <label className="flex items-center gap-2 p-2.5 rounded border border-amber-700/60 bg-amber-950/30 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={planCostAuthorized}
-                    onChange={(e) => onChangePlanCostAuthorized(e.target.checked)}
-                  />
-                  <span>
-                    I explicitly authorize 1 planner call (
-                    <code>{productionPlannerStage?.configured_model_id}</code>) to synthesize
-                    PLAN/SPEC and write immutable INTENT.json.
-                  </span>
+                  <input type="checkbox" checked={plannerCostAck} onChange={(e) => setPlannerCostAck(e.target.checked)} />
+                  <span>I authorize one paid planner call to draft the plan.</span>
                 </label>
 
                 <button
                   type="button"
-                  disabled={pendingAction === 'create-plan'}
+                  data-testid="generate-plan-btn"
+                  disabled={plannerRefused || !plannerCostAck || pendingAction === 'create-plan'}
                   onClick={onCreatePlan}
-                  className="px-3 py-1.5 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-mono font-semibold"
+                  className="px-3 py-1.5 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-mono font-semibold disabled:bg-slate-900 disabled:text-slate-600"
                 >
                   Generate Plan (`POST /api/plans`)
                 </button>
 
                 {generatedPlan && (
-                  <div className="p-3 rounded border border-sky-600/60 bg-sky-950/20 space-y-2.5">
+                  <div className="p-3 rounded border border-sky-600/60 bg-sky-950/20 space-y-2.5" data-testid="plan-draft">
                     <div className="flex items-center justify-between font-mono text-xs">
-                      <span className="font-bold text-sky-300">
-                        Plan Draft: {generatedPlan.plan_id}
-                      </span>
-                      <span>
-                        job_sha256: <code>{generatedPlan.job_sha256.slice(0, 16)}…</code>
-                      </span>
+                      <span className="font-bold text-sky-300">Plan {generatedPlan.plan_id}</span>
+                      <span>state: {fmtStr(generatedPlan.state)}</span>
                     </div>
+                    <div className="font-mono text-[11px]">job_sha256: {fmtStr(generatedPlan.job_sha256)}</div>
                     <div className="text-[11px] space-y-1">
-                      <div className="font-semibold text-emerald-300">KNOWN CONSTRAINTS:</div>
-                      <ul className="list-disc list-inside text-slate-300">
-                        {generatedPlan.known.map((k, i) => (
-                          <li key={i}>{k}</li>
-                        ))}
-                      </ul>
+                      <div className="font-semibold text-amber-300">Assumed items (review before approving):</div>
+                      {generatedPlan.assumed.length === 0 ? (
+                        <div className="text-slate-400">None listed.</div>
+                      ) : (
+                        generatedPlan.assumed.map((item, i) => (
+                          <div key={i} className="p-1.5 rounded bg-slate-900/70 border border-slate-800 font-mono">
+                            {typeof item === 'string' ? item : JSON.stringify(item)}
+                          </div>
+                        ))
+                      )}
                     </div>
-                    <div className="text-[11px] space-y-1.5">
-                      <div className="font-semibold text-amber-300">
-                        ASSUMED ITEMS (Must be individually reviewed &amp; ticked; never
-                        auto-checked):
-                      </div>
-                      {generatedPlan.assumed.map((asItem) => (
-                        <label
-                          key={asItem.id}
-                          className="flex items-start gap-2 p-1.5 rounded bg-slate-900/70 border border-slate-800 cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={asItem.checked}
-                            onChange={(e) => onToggleAssumedItem(asItem.id, e.target.checked)}
-                            className="mt-0.5"
-                          />
-                          <span>{asItem.text}</span>
-                        </label>
-                      ))}
-                    </div>
+                    <label className="flex items-center gap-2 text-[11px]">
+                      <input type="checkbox" checked={planApproveAssumed} onChange={(e) => onToggleApproveAssumed(e.target.checked)} />
+                      <span>I approve the assumed items.</span>
+                    </label>
                     <button
                       type="button"
-                      disabled={
-                        !generatedPlan.assumed.every((a) => a.checked) ||
-                        pendingAction === 'approve-plan'
-                      }
+                      data-testid="approve-plan-btn"
+                      disabled={!generatedPlan.job_sha256 || generatedPlan.state !== 'planned' || pendingAction === 'approve-plan'}
                       onClick={onApprovePlan}
-                      className={`px-3 py-1.5 rounded font-mono font-semibold text-xs ${
-                        generatedPlan.assumed.every((a) => a.checked)
-                          ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-                          : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                      }`}
+                      className="px-3 py-1.5 rounded font-mono font-semibold text-xs bg-emerald-500 text-slate-950 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500"
                     >
-                      {'Approve Plan & Start (POST /plans/{id}/approve)'}
+                      Approve &amp; Start Job (`POST /plans/{'{id}'}/approve`; approval starts the job)
                     </button>
                   </div>
                 )}
@@ -334,141 +272,99 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
             )}
           </div>
 
-          {/* Step 2: 10-Stage Job-Specific Model/Effort Snapshot Table */}
           <div className={`rounded-md border p-4 space-y-3 ${bgPanel}`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-bold uppercase tracking-wider font-mono text-sky-400">
-                  Step 2 — 10-Stage Job-Specific Snapshot Table ({authoritativeProfile} profile)
+                  Step 2 — Stage settings ({profile} profile)
                 </h2>
                 <p className={`text-[11px] ${textMuted}`}>
-                  Ten configurable stage types (not 10 mandatory sequential steps; `fallback_write`
-                  is a runtime event only).
+                  The queued job freezes these values. Edit them on Stage Settings.
                 </p>
               </div>
-              <span className="text-xs font-mono text-slate-400">
-                Base Revision: <code>{stageRevision}</code>
-              </span>
+              <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="text-slate-400">Profile:</span>
+                {(['test', 'production'] as ProfileName[]).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => onChangeProfile(p)}
+                    className={`px-2 py-0.5 rounded border ${profile === p ? 'border-sky-400 text-sky-300' : 'border-slate-700 text-slate-400'}`}
+                  >
+                    {p}
+                  </button>
+                ))}
+                <span className="text-slate-400">Revision:</span>
+                <code>{fmtInt(stageRevision)}</code>
+              </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800 text-[11px] font-mono text-slate-400">
-                    <th className="py-2 pr-2">Stage Key &amp; Role</th>
-                    <th className="py-2 px-2">Configured Model &amp; Route</th>
-                    <th className="py-2 px-2">Effort / Reasoning</th>
-                    <th className="py-2 px-2">Max Output</th>
-                    <th className="py-2 px-2">Contract</th>
-                    <th className="py-2 pl-2">Inheritance / Gate</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/70 font-mono">
-                  {stages.map((st) => (
-                    <tr key={st.stage_key} className="hover:bg-slate-800/30">
-                      <td className="py-2 pr-2">
-                        <div className="font-semibold text-sky-300">{st.stage_key}</div>
-                        <div className="text-[10px] text-slate-400">role: {st.logical_role}</div>
-                      </td>
-                      <td className="py-2 px-2">
-                        <div className="truncate max-w-[200px]">
-                          {st.configured_model_id || 'disabled'}
-                        </div>
-                        <div className="text-[10px] text-slate-400">{st.route}</div>
-                      </td>
-                      <td className="py-2 px-2">
-                        <div>effort: {st.effort || 'n/a'}</div>
-                        <div className="text-[10px] text-slate-400">
-                          reasoning: {st.reasoning_mode}
-                        </div>
-                      </td>
-                      <td className="py-2 px-2">
-                        <div>{st.max_output_tokens.toLocaleString()}</div>
-                        {st.legacy_roster_max_tokens > 32768 && (
-                          <span
-                            title="Gap C-02: Legacy roster.json has 40,000; capped to 32,000 (model max 32,768)"
-                            className="text-[10px] text-amber-400"
-                          >
-                            ⚠ C-02 (legacy 40k)
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 px-2">
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] ${
-                            st.contract_verified
-                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                              : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
-                          }`}
-                        >
-                          {st.required_contract}
-                        </span>
-                      </td>
-                      <td className="py-2 pl-2 text-[11px] font-sans text-slate-300">
-                        {st.inheritance_rule}
-                      </td>
+            {stages.length === 0 ? (
+              <p className={`text-xs ${textMuted}`}>No stage settings loaded from GET /api/stages.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-[11px] font-mono text-slate-400">
+                      <th className="py-2 pr-2">Stage</th>
+                      <th className="py-2 px-2">Model</th>
+                      <th className="py-2 px-2">Effort</th>
+                      <th className="py-2 px-2">max_output_tokens</th>
+                      <th className="py-2 pl-2">Selectable / inherits</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70 font-mono">
+                    {stages.map((st) => (
+                      <tr key={st.stage_key} className="hover:bg-slate-800/30">
+                        <td className="py-2 pr-2 font-semibold text-sky-300">{st.stage_key}</td>
+                        <td className="py-2 px-2 truncate max-w-[200px]">{fmtStr(st.configured_model_id)}</td>
+                        <td className="py-2 px-2">{fmtStr(st.effort)}</td>
+                        <td className="py-2 px-2">{fmtInt(st.max_output_tokens)}</td>
+                        <td className="py-2 pl-2 text-[11px] font-sans text-slate-300">
+                          {st.model_selectable === true ? 'selectable' : st.model_selectable === false ? `fixed${st.inherits ? `: ${st.inherits}` : ''}` : 'Unknown'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right 1/3 Sticky Execution & Idempotency Summary */}
         <div className={`rounded-md border p-4 space-y-4 sticky top-16 ${bgPanel}`}>
-          <h2 className="text-sm font-bold uppercase tracking-wider font-mono text-sky-400">
-            Step 3 — Snapshot, Budget &amp; Execution Controls
-          </h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider font-mono text-sky-400">Step 3 — Budget &amp; execution</h2>
 
           <div className={`p-3 rounded border space-y-2 text-xs font-mono ${bgSubtle}`}>
             <div className="flex justify-between">
-              <span className="text-slate-400">Authoritative Profile:</span>
-              <strong className="text-amber-300">{authoritativeProfile}</strong>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Stage Revision:</span>
-              <span>{stageRevision}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Frozen Snapshot SHA:</span>
-              <span title="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855">
-                e3b0c44298fc1c14…
+              <span className="text-slate-400">Job validated:</span>
+              <span className={jobValidated === true ? 'text-emerald-400' : jobValidated === false ? 'text-rose-400' : 'text-slate-400'}>
+                {jobValidated === null ? 'not checked' : jobValidated ? 'YES' : 'NO'}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Job Validated:</span>
-              <span className={jobValidated ? 'text-emerald-400' : 'text-rose-400'}>
-                {jobValidated ? 'YES' : 'NO'}
+              <span className="text-slate-400">Budget validated:</span>
+              <span className={budgetValidated === true ? 'text-emerald-400' : budgetValidated === false ? 'text-rose-400' : 'text-slate-400'}>
+                {budgetValidated === null ? 'not checked' : budgetValidated ? 'YES' : 'NO'}
               </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-400">Budget Validated:</span>
-              <span className={budgetValidated ? 'text-emerald-400' : 'text-rose-400'}>
-                {budgetValidated ? 'YES' : 'NO'}
-              </span>
-            </div>
-            <div className="flex flex-col gap-0.5 pt-1 border-t border-slate-800">
-              <span className="text-slate-400">RFC-4122 UUID Idempotency-Key:</span>
-              <code className="text-sky-300 text-[11px] break-all">{activeIdempotencyKey}</code>
             </div>
           </div>
 
           <div className="space-y-1.5 text-xs">
             <label htmlFor="paid-budget-input" className="block font-semibold">
-              Authorized Paid Budget Ceiling (USD):
+              Paid budget ceiling (USD):
             </label>
             <div className="flex gap-2">
               <input
                 id="paid-budget-input"
                 type="text"
-                value={authorizedPaidBudget}
+                value={paidBudgetUsd}
                 onChange={(e) => onChangePaidBudget(e.target.value)}
                 className="flex-1 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono"
               />
               <button
                 type="button"
-                disabled={pendingAction === 'validate-budget'}
+                disabled={pendingAction === 'validate-budget' || Number.isNaN(Number(paidBudgetUsd))}
                 onClick={onValidateBudget}
                 className="px-2.5 py-1.5 rounded border border-sky-500/40 bg-sky-500/15 text-sky-300 font-mono"
               >
@@ -478,15 +374,14 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
           </div>
 
           <div className="space-y-2 pt-2 border-t border-slate-800">
-            <div className="text-[11px] font-mono text-slate-400">
-              QUEUEING != STARTING WORKERS (Separate API Mutations)
-            </div>
+            <div className="text-[11px] font-mono text-slate-400">Queueing does not start workers.</div>
 
             <button
               type="button"
-              disabled={pendingAction === 'queue-job'}
+              data-testid="queue-job-btn"
+              disabled={pendingAction === 'queue-job' || jobPathInput.trim() === ''}
               onClick={() => onQueueJob(false)}
-              className="w-full py-2 px-3 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-mono font-bold text-xs flex items-center justify-center gap-2"
+              className="w-full py-2 px-3 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-mono font-bold text-xs flex items-center justify-center gap-2 disabled:bg-slate-800 disabled:text-slate-500"
             >
               <Plus className="w-4 h-4" />
               Queue Job (POST /api/jobs, rerun=false)
@@ -494,28 +389,25 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
 
             <button
               type="button"
-              disabled={pendingAction === 'rerun-job'}
+              data-testid="rerun-job-btn"
+              disabled={pendingAction === 'rerun-job' || jobPathInput.trim() === ''}
               onClick={() => onQueueJob(true)}
-              className="w-full py-2 px-3 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-mono font-semibold text-xs flex items-center justify-center gap-2"
+              className="w-full py-2 px-3 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-mono font-semibold text-xs flex items-center justify-center gap-2 disabled:opacity-40"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Run Again for Completed Job (POST /api/jobs, rerun=true)
+              Run Again (POST /api/jobs, rerun=true)
             </button>
 
             <div className="pt-2 border-t border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold">Loop Workers to Start (1–4):</span>
+                <span className="font-semibold">Loop workers (1–4):</span>
                 <div className="inline-flex rounded border border-slate-700 overflow-hidden font-mono">
                   {[1, 2, 3, 4].map((n) => (
                     <button
                       key={n}
                       type="button"
                       onClick={() => onChangeWorkerCount(n)}
-                      className={`px-2.5 py-1 ${
-                        workerCountToStart === n
-                          ? 'bg-sky-500 text-slate-950 font-bold'
-                          : 'bg-slate-900 text-slate-300'
-                      }`}
+                      className={`px-2.5 py-1 ${workerCountToStart === n ? 'bg-sky-500 text-slate-950 font-bold' : 'bg-slate-900 text-slate-300'}`}
                     >
                       {n}
                     </button>
@@ -525,6 +417,7 @@ export const RunJobsPage: React.FC<RunJobsPageProps> = ({
 
               <button
                 type="button"
+                data-testid="start-workers-btn"
                 disabled={pendingAction === 'start-workers'}
                 onClick={onStartWorkers}
                 className="w-full py-2 px-3 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-mono font-bold text-xs flex items-center justify-center gap-2"

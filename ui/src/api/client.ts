@@ -1,35 +1,47 @@
 /**
- * Central Typed HTTP Client (`SatvikApiClient`) for Satvik Loop Control Center.
+ * Typed HTTP client for the Satvik Loop control API (docs/API_CONTRACT.md).
  *
- * Aligns 100% with `docs/API_CONTRACT.md`:
- * - Handles HTTP 204 No Content (`DELETE /api/models/{id}`) with empty body cleanly.
- * - Handles `POST /api/system/stop` -> `{"stop": boolean}`.
- * - Handles `POST /api/jobs/validate` -> `{"valid": boolean, "problems": string[]}`.
- * - Handles `POST /api/jobs` -> `{"queued": true, "queue_file": string, "stage_snapshot": ...}`.
- * - Handles `POST /api/loops/start` -> `{"started": number}`.
- * - Handles `POST /api/models` -> direct `Model` object response.
- * - Handles `POST /api/plans` -> HTTP 202 `{"plan_id": string, "status": "planning"}` followed by `GET /api/plans/{id}`.
- * - Generates valid IEEE 802.3 CRC-32 PKZIP binary archives that pass `unzip -t` / `zipfile.testzip()`.
+ * - Every mutation sends an `Idempotency-Key` header holding an RFC-4122 v4 UUID.
+ * - Payloads are built to the contract's request shapes (section 3). Nothing is invented.
+ * - Responses are normalized by `normalizer.ts`. Missing values stay null.
+ * - Mock mode answers from the canonical fixtures through `mockHandler`; live mode uses fetch.
  */
 
 import { isValidUuidV4 } from './idempotency';
 import {
-  normalizeContractState,
   normalizeEventPage,
-  normalizeJob,
+  normalizeHealth,
+  normalizeJobDetail,
+  normalizeJobSummary,
+  normalizeLimits,
   normalizeModel,
+  normalizeModelList,
   normalizeOverview,
+  normalizePlan,
+  normalizeResult,
+  normalizeStages,
+  normalizeVerifyResult,
+  isRecord,
 } from './normalizer';
 import type {
-  DataMode,
+  Effort,
   EventPage,
   JobRecord,
+  JobSummary,
   ModelRecord,
   NormalizedOverview,
+  PlanRecord,
   ProfileName,
+  ResultRecord,
   SemanticContract,
-  StageConfigRow,
+  StageChange,
   StageKey,
+  StageSetting,
+  StagesResponse,
+  SystemHealth,
+  SystemLimits,
+  VerifyResult,
+  DataMode,
 } from './types';
 
 export const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8765/api';
@@ -59,6 +71,7 @@ export class ApiHttpError extends Error {
   }
 }
 
+/** `DELETE /models/{id}`: the id is percent-encoded so `/` inside an OpenRouter id stays one path segment. */
 export function buildModelPath(modelId: string): string {
   if (!modelId || typeof modelId !== 'string') {
     throw new Error('Invalid model_id');
@@ -66,158 +79,32 @@ export function buildModelPath(modelId: string): string {
   return `/models/${encodeURIComponent(modelId)}`;
 }
 
-export function validateStageAssignment(params: {
-  profile: ProfileName;
-  stage: StageConfigRow;
-  model?: ModelRecord | null;
-  maxOutputTokens: number;
-}): {
-  valid: boolean;
-  errors: Array<{ code: string; message: string }>;
-  warnings: Array<{ code: string; message: string }>;
-} {
-  const { profile, stage, model, maxOutputTokens } = params;
-  const errors: Array<{ code: string; message: string }> = [];
-  const warnings: Array<{ code: string; message: string }> = [];
-
-  if (profile === 'test' && stage.stage_key === 'planner') {
-    errors.push({
-      code: 'profile-refusal',
-      message: 'Active profile "test" forbids planner calls and paid OpenRouter execution.',
-    });
-  }
-
-  if (!stage.model_selectable && model && stage.configured_model_id !== model.model_id) {
-    errors.push({
-      code: 'stage-locked',
-      message: `Stage "${stage.stage_key}" model is not directly selectable (${stage.inheritance_rule}).`,
-    });
-  }
-
-  if (model) {
-    const reqContract = stage.required_contract;
-    const state = normalizeContractState(model.contracts?.[reqContract]);
-    if (state !== 'verified') {
-      errors.push({
-        code: 'contract-unverified',
-        message: `Model "${model.model_id}" has contract "${reqContract}" state="${state}". Only verified contracts are eligible.`,
-      });
-    }
-
-    if (stage.stage_key === 'reviewer_b') {
-      const writeState = normalizeContractState(model.contracts?.writer_file_blocks);
-      if (writeState !== 'verified') {
-        errors.push({
-          code: 'fallback-write-incompatible',
-          message: `Reviewer B must also have verified "writer_file_blocks" contract for runtime fallback_write eligibility (currently "${writeState}").`,
-        });
-      }
-    }
-
-    if (model.reasoning?.supported === 'mandatory' && stage.reasoning_mode === 'off') {
-      errors.push({
-        code: 'mandatory-reasoning',
-        message: `Model "${model.model_id}" requires mandatory reasoning; Reasoning=Off is inadmissible.`,
-      });
-    }
-
-    if (maxOutputTokens > model.max_output_tokens) {
-      errors.push({
-        code: 'max-tokens-exceeded',
-        message: `Requested max_output_tokens (${maxOutputTokens}) exceeds model capability (${model.max_output_tokens}).`,
-      });
-    }
-  }
-
-  if (stage.legacy_roster_max_tokens && stage.legacy_roster_max_tokens > 32768) {
-    warnings.push({
-      code: 'C-02-legacy-cap',
-      message: `Legacy roster.json specifies max_tokens=${stage.legacy_roster_max_tokens}, which exceeds model capability (32,768). Normalized to ${stage.max_output_tokens}.`,
-    });
-  }
-
-  return { valid: errors.length === 0, errors, warnings };
-}
-
 /**
- * Computes exact IEEE 802.3 CRC-32 checksum over a Uint8Array so generated ZIP archives
- * pass standard `unzip -t` and Python `zipfile.ZipFile.testzip()` CRC integrity checks.
+ * Builds the keyed `stages` object of POST /jobs and POST /budget/validate:
+ * `{"<stage>": {"model", "effort", "settings"}}`.
  */
-export function computeCrc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) {
-    crc ^= bytes[i];
-    for (let j = 0; j < 8; j++) {
-      const mask = -(crc & 1);
-      crc = (crc >>> 1) ^ (0xedb88320 & mask);
-    }
+export function buildStagesPayload(
+  rows: StageSetting[]
+): Record<string, { model: string | null; effort: Effort | null; settings: Record<string, unknown> }> {
+  const out: Record<string, { model: string | null; effort: Effort | null; settings: Record<string, unknown> }> = {};
+  for (const row of rows) {
+    out[row.stage_key] = {
+      model: row.configured_model_id,
+      effort: row.effort,
+      settings: row.settings,
+    };
   }
-  return (crc ^ 0xffffffff) >>> 0;
+  return out;
 }
 
-export function buildValidZipArchiveBytes(jobId: string, summaryJson: string): Uint8Array {
-  const filename = `${jobId}/status.json`;
-  const encoder = new TextEncoder();
-  const nameBytes = encoder.encode(filename);
-  const contentBytes = encoder.encode(summaryJson);
-  const crc32 = computeCrc32(contentBytes);
-
-  const localHeaderLen = 30 + nameBytes.length;
-  const centralDirLen = 46 + nameBytes.length;
-  const eocdLen = 22;
-  const totalLen = localHeaderLen + contentBytes.length + centralDirLen + eocdLen;
-
-  const buf = new Uint8Array(totalLen);
-  const view = new DataView(buf.buffer);
-
-  // Local file header (0x04034b50)
-  view.setUint32(0, 0x04034b50, true);
-  view.setUint16(4, 20, true); // version needed = 2.0
-  view.setUint16(6, 0, true); // general purpose bit flag
-  view.setUint16(8, 0, true); // compression method = 0 (stored)
-  view.setUint16(10, 0x4900, true); // valid DOS time
-  view.setUint16(12, 0x5421, true); // valid DOS date
-  view.setUint32(14, crc32, true); // exact IEEE 802.3 CRC-32
-  view.setUint32(18, contentBytes.length, true); // compressed size
-  view.setUint32(22, contentBytes.length, true); // uncompressed size
-  view.setUint16(26, nameBytes.length, true); // file name length
-  view.setUint16(28, 0, true); // extra field length
-  buf.set(nameBytes, 30);
-  buf.set(contentBytes, localHeaderLen);
-
-  // Central directory file header (0x02014b50)
-  const cdOffset = localHeaderLen + contentBytes.length;
-  view.setUint32(cdOffset, 0x02014b50, true);
-  view.setUint16(cdOffset + 4, 20, true); // version made by
-  view.setUint16(cdOffset + 6, 20, true); // version needed
-  view.setUint16(cdOffset + 8, 0, true); // flags
-  view.setUint16(cdOffset + 10, 0, true); // compression method = 0
-  view.setUint16(cdOffset + 12, 0x4900, true); // mod time
-  view.setUint16(cdOffset + 14, 0x5421, true); // mod date
-  view.setUint32(cdOffset + 16, crc32, true); // exact IEEE 802.3 CRC-32
-  view.setUint32(cdOffset + 20, contentBytes.length, true); // compressed size
-  view.setUint32(cdOffset + 24, contentBytes.length, true); // uncompressed size
-  view.setUint16(cdOffset + 28, nameBytes.length, true);
-  view.setUint16(cdOffset + 30, 0, true);
-  view.setUint16(cdOffset + 32, 0, true);
-  view.setUint16(cdOffset + 34, 0, true);
-  view.setUint16(cdOffset + 36, 0, true);
-  view.setUint32(cdOffset + 38, 0, true);
-  view.setUint32(cdOffset + 42, 0, true); // relative offset of local header
-  buf.set(nameBytes, cdOffset + 46);
-
-  // End of Central Directory record (0x06054b50)
-  const eocdOffset = cdOffset + centralDirLen;
-  view.setUint32(eocdOffset, 0x06054b50, true);
-  view.setUint16(eocdOffset + 4, 0, true);
-  view.setUint16(eocdOffset + 6, 0, true);
-  view.setUint16(eocdOffset + 8, 1, true);
-  view.setUint16(eocdOffset + 10, 1, true);
-  view.setUint32(eocdOffset + 12, centralDirLen, true);
-  view.setUint32(eocdOffset + 16, cdOffset, true);
-  view.setUint16(eocdOffset + 20, 0, true);
-
-  return buf;
+/** Rows of PUT /stages and POST /stages/validate (`changes`). */
+export function buildStageChanges(rows: StageSetting[]): StageChange[] {
+  return rows.map((row) => ({
+    stage: row.stage_key,
+    model: row.configured_model_id,
+    effort: row.effort,
+    settings: row.settings,
+  }));
 }
 
 export interface SatvikApiClientOptions {
@@ -228,7 +115,7 @@ export interface SatvikApiClientOptions {
     path: string;
     headers: Record<string, string>;
     body?: any;
-  }) => Promise<{ status: number; body: any; binaryBytes?: Uint8Array; filename?: string }>;
+  }) => Promise<{ status: number; body: any }>;
 }
 
 export class SatvikApiClient {
@@ -251,12 +138,9 @@ export class SatvikApiClient {
   }): Promise<T> {
     const { method, path, body, idempotencyKey, signal } = params;
     const endpointLabel = `${method} /api${path}`;
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-    };
+    const headers: Record<string, string> = { Accept: 'application/json' };
 
     if (method !== 'GET') {
-      headers['Content-Type'] = 'application/json';
       if (!idempotencyKey || !isValidUuidV4(idempotencyKey)) {
         throw new ApiHttpError({
           status: 400,
@@ -266,14 +150,14 @@ export class SatvikApiClient {
           idempotencyKey,
         });
       }
+      headers['Content-Type'] = 'application/json';
       headers['Idempotency-Key'] = idempotencyKey;
     }
 
-    const mode = this.getMode();
-    if (mode === 'mock') {
+    if (this.getMode() === 'mock') {
       if (!this.mockHandler) {
         throw new ApiHttpError({
-          status: 500,
+          status: 503,
           code: 'mock-transport-unconfigured',
           message: 'Mock transport handler is not configured.',
           endpoint: endpointLabel,
@@ -282,42 +166,32 @@ export class SatvikApiClient {
       }
       const mockRes = await this.mockHandler({ method, path, headers, body });
       if (mockRes.status >= 400) {
-        const errObj = mockRes.body?.error ?? {};
-        throw new ApiHttpError({
-          status: mockRes.status,
-          code: String(errObj.code ?? `http-${mockRes.status}`),
-          message: String(errObj.message ?? `Mock HTTP ${mockRes.status} error`),
-          details: (errObj.details as Record<string, unknown>) ?? {},
-          endpoint: endpointLabel,
-          idempotencyKey,
-        });
+        throw errorFromEnvelope(mockRes.status, mockRes.body, endpointLabel, idempotencyKey);
       }
       return mockRes.body as T;
     }
 
-    // LIVE MODE: Send real HTTP request to FastAPI backend
     let response: Response;
     try {
-      const liveUrl = [this.baseUrl, path].join('');
-      response = await fetch(liveUrl, {
+      response = await fetch(`${this.baseUrl}${path}`, {
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
       });
     } catch (networkErr: any) {
+      if (networkErr?.name === 'AbortError') throw networkErr;
       throw new ApiHttpError({
         status: 503,
         code: 'backend-unreachable',
-        message: `Cannot reach live FastAPI backend at ${this.baseUrl}${path} (${
-          networkErr?.message || 'Network connection refused'
-        }). Live state was NOT modified.`,
+        message: `Cannot reach the live backend at ${this.baseUrl}${path} (${
+          networkErr?.message || 'connection refused'
+        }). Nothing was changed.`,
         endpoint: endpointLabel,
         idempotencyKey,
       });
     }
 
-    // Handle HTTP 204 No Content (e.g. DELETE /api/models/{id}) or empty body cleanly
     if (response.status === 204) {
       return undefined as unknown as T;
     }
@@ -329,9 +203,9 @@ export class SatvikApiClient {
         parsedBody = JSON.parse(rawText);
       } catch {
         throw new ApiHttpError({
-          status: response.status || 502,
+          status: response.status,
           code: 'malformed-json-response',
-          message: `Backend returned non-JSON payload from ${endpointLabel} (HTTP ${response.status}).`,
+          message: `Backend returned a non-JSON body from ${endpointLabel} (HTTP ${response.status}).`,
           endpoint: endpointLabel,
           idempotencyKey,
         });
@@ -339,766 +213,493 @@ export class SatvikApiClient {
     }
 
     if (!response.ok) {
-      const errObj = parsedBody?.error ?? {};
-      throw new ApiHttpError({
-        status: response.status,
-        code: String(errObj.code ?? `http-${response.status}`),
-        message: String(
-          errObj.message ?? `HTTP ${response.status} error from ${endpointLabel}`
-        ),
-        details: (errObj.details as Record<string, unknown>) ?? {},
-        endpoint: endpointLabel,
-        idempotencyKey,
-      });
+      throw errorFromEnvelope(response.status, parsedBody, endpointLabel, idempotencyKey);
     }
-
     return parsedBody as T;
   }
 
-  // ---- Typed Read Endpoints ----
+  // ---- Reads -------------------------------------------------------------
 
-  public async getOverview(signal?: AbortSignal): Promise<{
-    overview: NormalizedOverview;
-    raw: Record<string, any>;
-  }> {
-    const raw = await this.requestJson<Record<string, any>>({
-      method: 'GET',
-      path: '/overview',
-      signal,
-    });
-    return { overview: normalizeOverview(raw ?? {}), raw: raw ?? {} };
+  public async getOverview(signal?: AbortSignal): Promise<NormalizedOverview> {
+    const raw = await this.requestJson<unknown>({ method: 'GET', path: '/overview', signal });
+    return normalizeOverview(isRecord(raw) ? raw : {});
   }
 
-  public async getJobs(signal?: AbortSignal): Promise<JobRecord[]> {
-    const raw = await this.requestJson<any>({
-      method: 'GET',
-      path: '/jobs',
-      signal,
-    });
-    const list = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.jobs)
-      ? raw.jobs
-      : Array.isArray(raw?.items)
-      ? raw.items
-      : [];
-    return list.map(normalizeJob);
+  /** `GET /jobs`. The list envelope carries `index_ok`. */
+  public async getJobs(signal?: AbortSignal): Promise<{ jobs: JobSummary[]; index_ok: boolean | null }> {
+    const raw = await this.requestJson<unknown>({ method: 'GET', path: '/jobs', signal });
+    const body = isRecord(raw) ? raw : {};
+    const items: unknown[] = Array.isArray(raw) ? raw : Array.isArray(body.jobs) ? body.jobs : [];
+    return {
+      jobs: items.filter(isRecord).map((j) => normalizeJobSummary(j)),
+      index_ok: typeof body.index_ok === 'boolean' ? body.index_ok : null,
+    };
   }
 
   public async getLoop(jobId: string, signal?: AbortSignal): Promise<JobRecord> {
-    const raw = await this.requestJson<Record<string, any>>({
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/loops/${encodeURIComponent(jobId)}`,
       signal,
     });
-    return normalizeJob(raw ?? { job_id: jobId });
+    return normalizeJobDetail(isRecord(raw) ? raw : { job_id: jobId });
   }
 
-  public async getLoopEvents(
-    jobId: string,
-    afterSeq: number,
-    signal?: AbortSignal
-  ): Promise<EventPage> {
-    const raw = await this.requestJson<Record<string, any>>({
+  public async getLoopEvents(jobId: string, afterSeq: number, signal?: AbortSignal): Promise<EventPage> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/loops/${encodeURIComponent(jobId)}/events?after=${afterSeq}`,
       signal,
     });
-    return normalizeEventPage(raw ?? { events: [], next_after: afterSeq, index_ok: true });
+    return normalizeEventPage(raw);
   }
 
-  public async getModels(signal?: AbortSignal): Promise<{
-    openrouter_models: ModelRecord[];
-    claude_cli_models: ModelRecord[];
-  }> {
-    const raw = await this.requestJson<any>({
-      method: 'GET',
-      path: '/models',
-      signal,
-    });
-    if (Array.isArray(raw)) {
-      const normalized = raw.map(normalizeModel);
-      return {
-        openrouter_models: normalized.filter((m) => m.route === 'openrouter'),
-        claude_cli_models: normalized.filter((m) => m.route === 'claude_cli'),
-      };
-    }
-    const orList = Array.isArray(raw?.openrouter_models)
-      ? raw.openrouter_models.map(normalizeModel)
-      : Array.isArray(raw?.models)
-      ? raw.models.map(normalizeModel).filter((m: ModelRecord) => m.route === 'openrouter')
-      : [];
-    const cliList = Array.isArray(raw?.claude_cli_models)
-      ? raw.claude_cli_models.map(normalizeModel)
-      : Array.isArray(raw?.models)
-      ? raw.models.map(normalizeModel).filter((m: ModelRecord) => m.route === 'claude_cli')
-      : [];
-    return { openrouter_models: orList, claude_cli_models: cliList };
+  /** `GET /models`: the whole pool, each row with its own `via`. */
+  public async getModels(signal?: AbortSignal): Promise<{ models: ModelRecord[]; index_ok: boolean | null }> {
+    const raw = await this.requestJson<unknown>({ method: 'GET', path: '/models', signal });
+    return {
+      models: normalizeModelList(raw),
+      index_ok: isRecord(raw) && typeof raw.index_ok === 'boolean' ? raw.index_ok : null,
+    };
   }
 
-  public async searchCatalogModels(
-    query: string,
-    signal?: AbortSignal
-  ): Promise<{ results: ModelRecord[] }> {
-    const raw = await this.requestJson<any>({
+  public async searchCatalogModels(query: string, signal?: AbortSignal): Promise<ModelRecord[]> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/models/search?q=${encodeURIComponent(query)}`,
       signal,
     });
-    const list = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.results)
-      ? raw.results
-      : Array.isArray(raw?.models)
-      ? raw.models
+    return isRecord(raw) && Array.isArray(raw.results)
+      ? raw.results.map((m: unknown) => normalizeModel(isRecord(m) ? m : {}))
       : [];
-    return { results: list.map(normalizeModel) };
   }
 
-  public async getStages(
-    profile: ProfileName,
-    signal?: AbortSignal
-  ): Promise<{
-    revision: string;
-    authoritative_runtime_profile: ProfileName;
-    stages: StageConfigRow[];
-  }> {
-    const raw = await this.requestJson<any>({
+  public async getStages(profile: ProfileName, signal?: AbortSignal): Promise<StagesResponse> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/stages?profile=${encodeURIComponent(profile)}`,
       signal,
     });
-    const stagesArr = Array.isArray(raw?.stages)
-      ? raw.stages
-      : Array.isArray(raw?.profiles?.[profile])
-      ? raw.profiles[profile]
-      : [];
-    return {
-      revision: String(raw?.revision ?? 'rev-stages-20261103-07'),
-      authoritative_runtime_profile:
-        raw?.authoritative_runtime_profile === 'production' || raw?.profile === 'production'
-          ? 'production'
-          : 'test',
-      stages: stagesArr,
-    };
+    return normalizeStages(raw);
   }
 
-  public async getResult(jobId: string, signal?: AbortSignal): Promise<JobRecord> {
-    const raw = await this.requestJson<Record<string, any>>({
+  public async getResult(jobId: string, signal?: AbortSignal): Promise<ResultRecord> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/results/${encodeURIComponent(jobId)}`,
       signal,
     });
-    return normalizeJob(raw ?? { job_id: jobId });
+    return normalizeResult(isRecord(raw) ? raw : { job_id: jobId });
   }
 
+  /** `GET /results/{id}/diff` -> `{"files": [{"path", "unified_diff"}]}`. */
   public async getResultDiff(
     jobId: string,
     signal?: AbortSignal
-  ): Promise<{ job_id: string; diff_text: string | null }> {
-    const raw = await this.requestJson<any>({
+  ): Promise<Array<{ path: string; unified_diff: string }>> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/results/${encodeURIComponent(jobId)}/diff`,
       signal,
     });
-    return {
-      job_id: jobId,
-      diff_text:
-        typeof raw === 'string'
-          ? raw
-          : raw?.diff_text ?? raw?.diff ?? null,
-    };
+    const files = isRecord(raw) && Array.isArray(raw.files) ? raw.files : [];
+    return files.filter(isRecord).map((f) => ({
+      path: typeof f.path === 'string' ? f.path : '',
+      unified_diff: typeof f.unified_diff === 'string' ? f.unified_diff : '',
+    }));
   }
 
-  public async getSystemHealth(signal?: AbortSignal): Promise<Record<string, any>> {
-    return this.requestJson({
-      method: 'GET',
-      path: '/system/health',
-      signal,
-    });
+  public async getSystemHealth(signal?: AbortSignal): Promise<SystemHealth> {
+    const raw = await this.requestJson<unknown>({ method: 'GET', path: '/system/health', signal });
+    return normalizeHealth(raw);
   }
 
-  public async getSystemLimits(signal?: AbortSignal): Promise<{
-    sandbox_slots: number;
-    review_spend_cap_usd: string;
-    revision: string | null;
-  }> {
-    const raw = await this.requestJson<any>({
-      method: 'GET',
-      path: '/system/limits',
-      signal,
-    });
-    return {
-      sandbox_slots: Number(raw?.sandbox_slots ?? 4),
-      review_spend_cap_usd: String(
-        raw?.review_spend_cap_usd ?? raw?.review_cap_usd ?? raw?.review_ceiling_usd ?? '2.5000'
-      ),
-      revision: raw?.revision ?? null,
-    };
+  public async getSystemLimits(signal?: AbortSignal): Promise<SystemLimits> {
+    const raw = await this.requestJson<unknown>({ method: 'GET', path: '/system/limits', signal });
+    return normalizeLimits(raw);
   }
 
-  public async getPlan(planId: string, signal?: AbortSignal): Promise<{
-    plan_id: string;
-    status: string;
-    job_sha256: string;
-    known: string[];
-    assumed: Array<{ id: string; text: string; checked: boolean }>;
-  }> {
-    const raw = await this.requestJson<any>({
+  public async getPlan(planId: string, signal?: AbortSignal): Promise<PlanRecord> {
+    const raw = await this.requestJson<unknown>({
       method: 'GET',
       path: `/plans/${encodeURIComponent(planId)}`,
       signal,
     });
-    return {
-      plan_id: String(raw?.plan_id ?? raw?.id ?? planId),
-      status: String(raw?.status ?? 'ready'),
-      job_sha256: String(raw?.job_sha256 ?? raw?.snapshot_sha256 ?? ''),
-      known: Array.isArray(raw?.known) ? raw.known : [],
-      assumed: Array.isArray(raw?.assumed)
-        ? raw.assumed.map((a: any, idx: number) =>
-            typeof a === 'string'
-              ? { id: `as-${idx + 1}`, text: a, checked: false }
-              : { id: String(a.id ?? `as-${idx + 1}`), text: String(a.text ?? ''), checked: Boolean(a.checked ?? false) }
-          )
-        : [],
-    };
+    return normalizePlan(raw, planId);
   }
 
-  // ---- Real Binary Archive ZIP Download (`GET /api/results/{id}/download`) ----
-
-  public async downloadResultArchive(jobId: string): Promise<{
-    filename: string;
-    sizeBytes: number;
-    blob: Blob;
-    bytes: Uint8Array;
-  }> {
+  /** `GET /results/{id}/download`: a zip of `results/<job_id>/`, saved to the viewer's disk. */
+  public async downloadResultArchive(jobId: string): Promise<{ filename: string; sizeBytes: number }> {
     const path = `/results/${encodeURIComponent(jobId)}/download`;
     const endpointLabel = `GET /api${path}`;
-    const mode = this.getMode();
-
-    let bytes: Uint8Array;
-    let filename = `${jobId}-archive.zip`;
-
-    if (mode === 'mock') {
-      if (!this.mockHandler) {
-        throw new ApiHttpError({
-          status: 500,
-          code: 'mock-transport-unconfigured',
-          message: 'Mock transport not configured.',
-          endpoint: endpointLabel,
-        });
-      }
-      const mockRes = await this.mockHandler({
-        method: 'GET',
-        path,
-        headers: { Accept: 'application/zip' },
+    if (this.getMode() === 'mock') {
+      throw new ApiHttpError({
+        status: 503,
+        code: 'mock-no-archive',
+        message: 'Mock mode has no archive. Switch to LIVE API to download the engine archive.',
+        endpoint: endpointLabel,
       });
-      if (mockRes.status >= 400) {
-        const errObj = mockRes.body?.error ?? {};
-        throw new ApiHttpError({
-          status: mockRes.status,
-          code: String(errObj.code ?? 'archive-unavailable'),
-          message: String(errObj.message ?? 'Archive ZIP is unavailable for this job.'),
-          details: errObj.details ?? {},
-          endpoint: endpointLabel,
-        });
-      }
-      bytes =
-        mockRes.binaryBytes ??
-        buildValidZipArchiveBytes(jobId, JSON.stringify(mockRes.body ?? { job_id: jobId }));
-      if (mockRes.filename) filename = mockRes.filename;
-    } else {
-      let response: Response;
-      try {
-        const liveUrl = [this.baseUrl, path].join('');
-        response = await fetch(liveUrl, {
-          method: 'GET',
-          headers: { Accept: 'application/zip, application/octet-stream' },
-        });
-      } catch (networkErr: any) {
-        throw new ApiHttpError({
-          status: 503,
-          code: 'backend-unreachable',
-          message: `Cannot download archive from ${this.baseUrl}${path}: ${
-            networkErr?.message || 'Connection refused'
-          }`,
-          endpoint: endpointLabel,
-        });
-      }
-
-      if (!response.ok) {
-        let errPayload: any = null;
-        try {
-          errPayload = await response.json();
-        } catch {
-          // ignore
-        }
-        throw new ApiHttpError({
-          status: response.status,
-          code: String(errPayload?.error?.code ?? 'archive-download-failed'),
-          message: String(
-            errPayload?.error?.message ??
-              `Archive download failed with HTTP ${response.status}`
-          ),
-          details: errPayload?.error?.details ?? {},
-          endpoint: endpointLabel,
-        });
-      }
-
-      const contentDisp = response.headers.get('content-disposition');
-      if (contentDisp) {
-        const match = contentDisp.match(/filename="?([^";]+)"?/i);
-        if (match?.[1]) filename = match[1];
-      }
-      const arrayBuf = await response.arrayBuffer();
-      bytes = new Uint8Array(arrayBuf);
     }
-
-    const blob = new Blob([bytes], { type: 'application/zip' });
-    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'GET',
+        headers: { Accept: 'application/zip, application/octet-stream' },
+      });
+    } catch (networkErr: any) {
+      throw new ApiHttpError({
+        status: 503,
+        code: 'backend-unreachable',
+        message: `Cannot download the archive from ${this.baseUrl}${path}: ${networkErr?.message || 'connection refused'}`,
+        endpoint: endpointLabel,
+      });
+    }
+    if (!response.ok) {
+      let errPayload: unknown = null;
       try {
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = filename;
-        document.body.appendChild(anchor);
-        anchor.click();
-        document.body.removeChild(anchor);
-        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        errPayload = await response.json();
       } catch {
-        // Ignore in headless non-DOM test runner
+        errPayload = null;
       }
+      throw errorFromEnvelope(response.status, errPayload, endpointLabel);
     }
-
-    return { filename, sizeBytes: bytes.byteLength, blob, bytes };
+    const blob = await response.blob();
+    let filename = `${jobId}-archive.zip`;
+    const contentDisp = response.headers.get('content-disposition');
+    const match = contentDisp?.match(/filename="?([^";]+)"?/i);
+    if (match?.[1]) filename = match[1];
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+    }
+    return { filename, sizeBytes: blob.size };
   }
 
-  // ---- Typed Mutating Endpoints Aligned With API_CONTRACT.md ----
+  // ---- Mutations (every call carries an Idempotency-Key) ---------------
 
-  public async setGlobalStop(
-    on: boolean,
-    idempotencyKey: string
-  ): Promise<{ stop: boolean; stop_active: boolean; mode: 'soft'; message: string }> {
-    const res = await this.requestJson<any>({
+  /** `POST /system/stop` `{on}` -> `{stop}`. A model call already in flight still finishes. */
+  public async setGlobalStop(on: boolean, idempotencyKey: string): Promise<{ stop: boolean | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/system/stop',
       body: { on },
       idempotencyKey,
     });
-    const stopVal = Boolean(res?.stop !== undefined ? res.stop : res?.stop_active ?? on);
-    return {
-      stop: stopVal,
-      stop_active: stopVal,
-      mode: 'soft',
-      message:
-        res?.message ??
-        (stopVal
-          ? 'Soft STOP enabled via POST /api/system/stop: No new jobs or stage calls will start; in-flight model call finishes naturally.'
-          : 'Soft STOP cleared via POST /api/system/stop: Loop workers may resume claiming queued work.'),
-    };
+    return { stop: isRecord(res) && typeof res.stop === 'boolean' ? res.stop : null };
   }
 
+  /** `POST /jobs/validate` `{job_path}` -> `{valid, problems}`. A 400 `invalid-job` is thrown with `details.problems`. */
   public async validateJob(
     payload: { job_path: string },
     idempotencyKey: string
-  ): Promise<{
-    valid: boolean;
-    problems: string[];
-    job_path: string;
-    snapshot_sha256: string | null;
-  }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ valid: boolean | null; problems: string[] }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/jobs/validate',
-      body: payload,
+      body: { job_path: payload.job_path },
       idempotencyKey,
     });
-    const valid = Boolean(res?.valid);
-    const problems = Array.isArray(res?.problems) ? res.problems.map(String) : [];
-    if (!valid && problems.length > 0) {
-      throw new ApiHttpError({
-        status: 422,
-        code: 'invalid-spec',
-        message: `Job validation failed: ${problems.join('; ')}`,
-        details: { problems, job_path: payload.job_path },
-        endpoint: 'POST /api/jobs/validate',
-        idempotencyKey,
-      });
-    }
+    const body = isRecord(res) ? res : {};
     return {
-      valid,
-      problems,
-      job_path: String(res?.job_path ?? payload.job_path),
-      snapshot_sha256: res?.snapshot_sha256 ?? res?.job_sha256 ?? null,
+      valid: typeof body.valid === 'boolean' ? body.valid : null,
+      problems: Array.isArray(body.problems) ? body.problems.map(String) : [],
     };
   }
 
+  /** `POST /budget/validate` `{stages, paid_budget_usd}` -> `{valid, worst_case_usd, problems}`. */
   public async validateBudget(
-    payload: { paid_budget_usd: string; profile: ProfileName },
+    payload: { stages: StageSetting[]; paid_budget_usd: number },
     idempotencyKey: string
-  ): Promise<{ valid: boolean; paid_budget_usd: string; message: string }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ valid: boolean | null; worst_case_usd: number | null; problems: string[] }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/budget/validate',
-      body: payload,
+      body: { stages: buildStagesPayload(payload.stages), paid_budget_usd: payload.paid_budget_usd },
       idempotencyKey,
     });
+    const body = isRecord(res) ? res : {};
     return {
-      valid: Boolean(res?.valid ?? true),
-      paid_budget_usd: String(res?.paid_budget_usd ?? payload.paid_budget_usd),
-      message: String(res?.message ?? `Budget validated ($${payload.paid_budget_usd}).`),
+      valid: typeof body.valid === 'boolean' ? body.valid : null,
+      worst_case_usd: typeof body.worst_case_usd === 'number' ? body.worst_case_usd : null,
+      problems: Array.isArray(body.problems) ? body.problems.map(String) : [],
     };
   }
 
+  /** `POST /jobs` -> 201 `{queued, queue_file}` plus the frozen `stage_snapshot`. */
   public async queueJob(
     payload: {
       job_path: string;
       rerun: boolean;
-      stage_revision: string;
-      paid_budget_usd: string;
-      stages?: StageConfigRow[];
+      stages: StageSetting[];
+      stage_revision: number;
+      paid_budget_usd: number;
     },
     idempotencyKey: string
   ): Promise<{
-    queued: boolean;
-    queue_file: string;
-    stage_snapshot: unknown;
-    queued_job: JobRecord;
-    message: string;
+    queued: boolean | null;
+    queue_file: string | null;
+    stage_snapshot: { sha256: string | null; revision: number | null } | null;
   }> {
-    const res = await this.requestJson<any>({
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/jobs',
-      body: payload,
+      body: {
+        job_path: payload.job_path,
+        rerun: payload.rerun,
+        // Only the selectable rows are overrides. A locked or inherited row (model_selectable false, model null, e.g. reviewer_a in
+        // the test profile) cannot be set, and the API refuses a null model for it (bad-model), so it is left out.
+        stages: buildStagesPayload(payload.stages.filter((row) => row.model_selectable === true)),
+        stage_revision: payload.stage_revision,
+        paid_budget_usd: payload.paid_budget_usd,
+      },
       idempotencyKey,
     });
-    const queued = Boolean(res?.queued ?? true);
-    const queueFile = String(
-      res?.queue_file ?? `_loop/queue/${payload.job_path.replace(/^jobs\//, '')}`
-    );
-    const stageSnapshot = res?.stage_snapshot ?? res?.stages ?? payload.stages ?? null;
-    const rawJob = res?.queued_job ?? {
-      job_id:
-        res?.job_id ??
-        `job-${payload.job_path
-          .replace(/^jobs\//, '')
-          .replace(/\.json$/, '')
-          .replace(/[^a-zA-Z0-9_-]/g, '-')}`,
-      job_path: payload.job_path,
-      spec_id: payload.job_path.replace(/^jobs\//, '').replace(/\.json$/, '').toUpperCase(),
-      derived_state: 'queued',
-      end_state: null,
-      merge_state: 'none',
-      config_revision: payload.stage_revision,
-      started: new Date().toISOString(),
-    };
-    const normalizedQueuedJob = normalizeJob(rawJob);
+    const body = isRecord(res) ? res : {};
     return {
-      queued,
-      queue_file: queueFile,
-      stage_snapshot: stageSnapshot,
-      queued_job: normalizedQueuedJob,
-      message:
-        res?.message ??
-        `Queued "${payload.job_path}" -> ${queueFile} (rerun=${payload.rerun}).`,
+      queued: typeof body.queued === 'boolean' ? body.queued : null,
+      queue_file: typeof body.queue_file === 'string' ? body.queue_file : null,
+      stage_snapshot: isRecord(body.stage_snapshot)
+        ? {
+            sha256: typeof body.stage_snapshot.sha256 === 'string' ? body.stage_snapshot.sha256 : null,
+            revision: typeof body.stage_snapshot.revision === 'number' ? body.stage_snapshot.revision : null,
+          }
+        : null,
     };
   }
 
-  public async startWorkers(
-    loops: number,
-    idempotencyKey: string
-  ): Promise<{ started: number; loops_started: number; message: string }> {
-    const res = await this.requestJson<any>({
+  /** `POST /loops/start` `{loops}` -> 202 `{started}`. */
+  public async startLoops(loops: number, idempotencyKey: string): Promise<{ started: number | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/loops/start',
       body: { loops },
       idempotencyKey,
     });
-    const started = Number(res?.started ?? res?.loops_started ?? loops);
-    return {
-      started,
-      loops_started: started,
-      message:
-        res?.message ??
-        `Started ${started} loop worker(s) via POST /api/loops/start.`,
-    };
+    return { started: isRecord(res) && typeof res.started === 'number' ? res.started : null };
   }
 
+  /** `POST /plans` `{name, request, files}` -> 202 `{plan_id, state: "planning"}`. Read the plan with `getPlan`. */
   public async createPlan(
-    payload: {
-      job_name: string;
-      prompt: string;
-      allowed_files: string[];
-      cost_authorized: boolean;
-      profile: ProfileName;
-    },
+    payload: { name: string; request: string; files: string[] },
     idempotencyKey: string
-  ): Promise<{
-    plan_id: string;
-    status: string;
-    job_sha256: string;
-    known: string[];
-    assumed: Array<{ id: string; text: string; checked: boolean }>;
-  }> {
-    const res = await this.requestJson<any>({
+  ): Promise<PlanRecord> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/plans',
-      body: {
-        job_name: payload.job_name,
-        request: payload.prompt,
-        prompt: payload.prompt,
-        allowed_files: payload.allowed_files,
-        cost_authorized: payload.cost_authorized,
-        profile: payload.profile,
-      },
+      body: { name: payload.name, request: payload.request, files: payload.files },
       idempotencyKey,
     });
-    const planId = String(res?.plan_id ?? res?.id ?? 'plan-prod-902');
-    // If POST /plans returns HTTP 202 { plan_id, status: "planning" } without resolved assumptions yet,
-    // follow up with GET /api/plans/{id} as specified in API_CONTRACT.md.
-    if (res?.status === 'planning' || !Array.isArray(res?.assumed)) {
-      return this.getPlan(planId);
-    }
-    return {
-      plan_id: planId,
-      status: String(res?.status ?? 'ready'),
-      job_sha256: String(res?.job_sha256 ?? res?.snapshot_sha256 ?? ''),
-      known: Array.isArray(res?.known) ? res.known : [],
-      assumed: Array.isArray(res?.assumed) ? res.assumed : [],
-    };
+    return normalizePlan(res, '');
   }
 
+  /** `POST /plans/{id}/approve` `{job_sha256, approve_assumed}` -> 202 `{job_id}`. Approving also starts the job. */
   public async approvePlan(
     planId: string,
-    payload: { job_sha256: string; assumed_approved_ids: string[] },
+    payload: { job_sha256: string; approve_assumed: boolean },
     idempotencyKey: string
-  ): Promise<{ approved: boolean; started_job_id: string; message: string }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ job_id: string | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: `/plans/${encodeURIComponent(planId)}/approve`,
-      body: payload,
+      body: { job_sha256: payload.job_sha256, approve_assumed: payload.approve_assumed },
       idempotencyKey,
     });
-    return {
-      approved: Boolean(res?.approved ?? true),
-      started_job_id: String(res?.started_job_id ?? res?.job_id ?? `job-${planId}`),
-      message:
-        res?.message ??
-        `Approved ${planId} with verified job_sha256 and started execution.`,
-    };
+    return { job_id: isRecord(res) && typeof res.job_id === 'string' ? res.job_id : null };
   }
 
-  public async patchLoopStages(
+  /** `PATCH /loops/{id}/stages` `{stage, change, revision}` -> `{ok, revision}`. */
+  public async patchLoopStage(
     jobId: string,
-    payload: {
-      stage: StageKey;
-      change: { effort: 'low' | 'medium' | 'high' };
-      revision: string;
-    },
+    payload: { stage: StageKey; change: { effort: Effort }; revision: number },
     idempotencyKey: string
-  ): Promise<{ updated: boolean; stage: StageKey; revision: string; message: string }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ ok: boolean | null; revision: number | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'PATCH',
       path: `/loops/${encodeURIComponent(jobId)}/stages`,
       body: payload,
       idempotencyKey,
     });
+    const body = isRecord(res) ? res : {};
     return {
-      updated: Boolean(res?.updated ?? true),
-      stage: (res?.stage ?? payload.stage) as StageKey,
-      revision: String(res?.revision ?? payload.revision),
-      message:
-        res?.message ??
-        `Updated future unstarted stage "${payload.stage}" effort=${payload.change.effort}.`,
+      ok: typeof body.ok === 'boolean' ? body.ok : null,
+      revision: typeof body.revision === 'number' ? body.revision : null,
     };
   }
 
+  /** `POST /stages/validate` `{profile, changes}` -> `{valid, problems}`. */
   public async validateStages(
-    payload: { profile: ProfileName; changes: StageConfigRow[] },
+    payload: { profile: ProfileName; changes: StageChange[] },
     idempotencyKey: string
-  ): Promise<{ valid: boolean; message: string }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ valid: boolean | null; problems: Array<{ code: string; stage: string; message: string }> }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/stages/validate',
       body: payload,
       idempotencyKey,
     });
+    const body = isRecord(res) ? res : {};
     return {
-      valid: Boolean(res?.valid ?? true),
-      message:
-        res?.message ??
-        `Validated all 10 stage rows for profile "${payload.profile}".`,
+      valid: typeof body.valid === 'boolean' ? body.valid : null,
+      problems: Array.isArray(body.problems)
+        ? body.problems.filter(isRecord).map((p) => ({
+            code: String(p.code ?? ''),
+            stage: String(p.stage ?? ''),
+            message: String(p.message ?? ''),
+          }))
+        : [],
     };
   }
 
+  /** `PUT /stages` `{profile, revision, changes}` -> `{revision}`. Affects future jobs only. */
   public async putStages(
-    payload: { profile: ProfileName; revision: string; changes: StageConfigRow[] },
+    payload: { profile: ProfileName; revision: number; changes: StageChange[] },
     idempotencyKey: string
-  ): Promise<{ revision: string; profile: ProfileName; stages: StageConfigRow[]; message: string }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ revision: number | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'PUT',
       path: '/stages',
       body: payload,
       idempotencyKey,
     });
-    return {
-      revision: String(res?.revision ?? payload.revision),
-      profile: (res?.profile ?? payload.profile) as ProfileName,
-      stages: Array.isArray(res?.stages) ? res.stages : payload.changes,
-      message:
-        res?.message ??
-        `Saved global stage defaults for "${payload.profile}" (revision: ${
-          res?.revision ?? payload.revision
-        }).`,
-    };
+    return { revision: isRecord(res) && typeof res.revision === 'number' ? res.revision : null };
   }
 
-  public async addModel(
-    modelId: string,
-    idempotencyKey: string
-  ): Promise<{ model: ModelRecord; added_model: ModelRecord; message: string }> {
-    // API_CONTRACT.md returns the Model object directly on POST /models
-    const res = await this.requestJson<any>({
+  /** `POST /models` `{model_id}` -> 201 Model (contracts unverified until probed). */
+  public async addModel(modelId: string, idempotencyKey: string): Promise<ModelRecord> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/models',
       body: { model_id: modelId },
       idempotencyKey,
     });
-    const normModel = normalizeModel(res?.added_model ?? res ?? { model_id: modelId });
-    return {
-      model: normModel,
-      added_model: normModel,
-      message:
-        res?.message ??
-        `Added ${normModel.model_id} to pool with unverified stage contracts.`,
-    };
+    return normalizeModel(isRecord(res) ? res : {});
   }
 
-  public async deleteModel(
-    modelId: string,
-    idempotencyKey: string
-  ): Promise<{ deleted_model_id: string; encoded_path: string; message: string }> {
-    const path = buildModelPath(modelId);
-    // API_CONTRACT.md returns HTTP 204 No Content with an empty body
+  /** `DELETE /models/{id}` -> 204. */
+  public async deleteModel(modelId: string, idempotencyKey: string): Promise<void> {
     await this.requestJson<void>({
       method: 'DELETE',
-      path,
+      path: buildModelPath(modelId),
       idempotencyKey,
     });
-    return {
-      deleted_model_id: modelId,
-      encoded_path: `/api${path}`,
-      message: `Removed ${modelId} from curated pool (HTTP 204 No Content).`,
-    };
   }
 
+  /**
+   * `POST /models/verify` `{model_id, contract}` -> `{result, verified_at}`.
+   * Fail-closed: only `pass` yields verified; `fail` yields failed; anything else is unverified.
+   */
   public async verifyModelContract(
     payload: { model_id: string; contract: SemanticContract },
     idempotencyKey: string
-  ): Promise<{
-    model_id: string;
-    contract: SemanticContract;
-    contract_state: 'verified';
-    verified_at: string;
-    message: string;
-  }> {
-    const res = await this.requestJson<any>({
+  ): Promise<VerifyResult> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/models/verify',
       body: payload,
       idempotencyKey,
     });
-    const nowIso = new Date().toISOString();
-    return {
-      model_id: String(res?.model_id ?? payload.model_id),
-      contract: (res?.contract ?? payload.contract) as SemanticContract,
-      contract_state: 'verified',
-      verified_at: String(res?.verified_at ?? nowIso),
-      message:
-        res?.message ??
-        `Verified contract "${payload.contract}" for ${payload.model_id}.`,
-    };
+    return normalizeVerifyResult(res, payload);
   }
 
+  /** `POST /models/verify-reasoning` `{model_id, efforts}` -> `{reasoning_mode, efforts_verified}`. */
   public async verifyModelReasoning(
-    payload: { model_id: string; efforts: Array<'low' | 'medium' | 'high'> },
+    payload: { model_id: string; efforts: Effort[] },
     idempotencyKey: string
-  ): Promise<{
-    model_id: string;
-    efforts: Array<'low' | 'medium' | 'high'>;
-    verified_at: string;
-    message: string;
-  }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ reasoning_mode: string | null; efforts_verified: string[] }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/models/verify-reasoning',
       body: payload,
       idempotencyKey,
     });
-    const nowIso = new Date().toISOString();
+    const body = isRecord(res) ? res : {};
     return {
-      model_id: String(res?.model_id ?? payload.model_id),
-      efforts: Array.isArray(res?.efforts) ? res.efforts : payload.efforts,
-      verified_at: String(res?.verified_at ?? nowIso),
-      message:
-        res?.message ??
-        `Verified reasoning efforts (${payload.efforts.join(', ')}) for ${payload.model_id}.`,
+      reasoning_mode: typeof body.reasoning_mode === 'string' ? body.reasoning_mode : null,
+      efforts_verified: Array.isArray(body.efforts_verified) ? body.efforts_verified.map(String) : [],
     };
   }
 
-  public async refreshModels(
-    idempotencyKey: string
-  ): Promise<{ refreshed_at: string; message: string }> {
-    const res = await this.requestJson<any>({
+  /** `POST /models/refresh` `{}` -> `{updated, metadata_at}`. */
+  public async refreshModels(idempotencyKey: string): Promise<{ updated: number | null; metadata_at: string | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'POST',
       path: '/models/refresh',
       body: {},
       idempotencyKey,
     });
-    const nowIso = new Date().toISOString();
+    const body = isRecord(res) ? res : {};
     return {
-      refreshed_at: String(res?.refreshed_at ?? nowIso),
-      message:
-        res?.message ??
-        'Refreshed OpenRouter catalog metadata and pricing timestamps (zero model token spend).',
+      updated: typeof body.updated === 'number' ? body.updated : null,
+      metadata_at: typeof body.metadata_at === 'string' ? body.metadata_at : null,
     };
   }
 
+  /**
+   * `PUT /system/limits` `{revision, sandbox_slots?, review_usd_daily_cap?, job_review_usd?}` -> `{revision}`.
+   * `revision` is required by the contract and the GET response does not supply it (C-08), so the caller must
+   * not send this call without a real revision.
+   */
   public async putSystemLimits(
     payload: {
-      sandbox_slots: number;
-      review_spend_cap_usd: string;
-      revision: string | null;
+      revision: number;
+      sandbox_slots?: number;
+      review_usd_daily_cap?: number;
+      job_review_usd?: number;
     },
     idempotencyKey: string
-  ): Promise<{
-    sandbox_slots: number;
-    review_spend_cap_usd: string;
-    revision: string;
-    message: string;
-  }> {
-    const res = await this.requestJson<any>({
+  ): Promise<{ revision: number | null }> {
+    const res = await this.requestJson<unknown>({
       method: 'PUT',
       path: '/system/limits',
       body: payload,
       idempotencyKey,
     });
-    return {
-      sandbox_slots: Number(res?.sandbox_slots ?? payload.sandbox_slots),
-      review_spend_cap_usd: String(
-        res?.review_spend_cap_usd ?? payload.review_spend_cap_usd
-      ),
-      revision: String(res?.revision ?? payload.revision ?? 'rev-limits-01'),
-      message:
-        res?.message ??
-        `Updated sandbox_slots=${payload.sandbox_slots} and review_spend_cap_usd=$${payload.review_spend_cap_usd}.`,
-    };
+    return { revision: isRecord(res) && typeof res.revision === 'number' ? res.revision : null };
   }
 }
 
-export function createHttpTransport(baseUrl: string = DEFAULT_API_BASE_URL): SatvikApiClient {
-  return new SatvikApiClient({
-    baseUrl,
-    getMode: () => 'live',
+/**
+ * One problem as text. The API sends `details.problems` as plain strings (POST /jobs/validate) or as objects {code, stage, message}
+ * (POST /stages/validate, POST /jobs); an object is shown by its message, never as "[object Object]".
+ */
+export function problemText(problem: unknown): string {
+  if (typeof problem === 'string') return problem;
+  if (isRecord(problem)) {
+    if (typeof problem.message === 'string') return problem.message;
+    if (typeof problem.code === 'string') return problem.code;
+  }
+  return 'unreadable problem';
+}
+
+function errorFromEnvelope(
+  status: number,
+  body: unknown,
+  endpoint: string,
+  idempotencyKey?: string
+): ApiHttpError {
+  const errObj = isRecord(body) && isRecord(body.error) ? body.error : {};
+  const details = isRecord(errObj.details) ? { ...errObj.details } : {};
+  if (Array.isArray(details.problems)) {
+    details.problems = details.problems.map(problemText);
+  }
+  return new ApiHttpError({
+    status,
+    code: typeof errObj.code === 'string' ? errObj.code : `http-${status}`,
+    message: typeof errObj.message === 'string' ? errObj.message : `HTTP ${status} from ${endpoint}`,
+    details,
+    endpoint,
+    idempotencyKey,
   });
 }
+
+export function createHttpTransport(baseUrl: string = DEFAULT_API_BASE_URL): SatvikApiClient {
+  return new SatvikApiClient({ baseUrl, getMode: () => 'live' });
+}
+
+export type { JobRecord, JobSummary, NormalizedOverview, PlanRecord, ProfileName, StagesResponse };

@@ -21,7 +21,17 @@ these shapes do not without a version bump. The engine facts behind each field a
   | `GET /loops/{id}/events?after=<seq>` | 2 s (returns only new events) |
   | everything else | on page load, or after an action |
 - **Index health:** every list response has `"index_ok": true|false`. With `false`, the data came straight from the files (slower, but still
-  correct); show a small notice, not an error.
+  correct); show a small notice, not an error. At startup the API rebuilds a missing or corrupt `history.db` from the files when
+  `SATVIK_HOME` is set (I32), so `index_ok` is true after a start. A locked index is left alone, and with `SATVIK_HOME` unset the API starts
+  with `index_ok` false.
+
+**Running the backend:** `pip install -r monitor/requirements.txt` (fastapi, uvicorn, httpx), then from the repo root
+`SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765 --workers 1`. The base URL is `http://127.0.0.1:8765/api`.
+`SATVIK_UI_ORIGIN` (comma-separated) sets the CORS origins; the default is the two local dev origins on port 5173.
+
+**Single worker only (`--workers 1`).** The API assumes one uvicorn worker: its process-wide lock (the config and limits writes) and the
+idempotency store (the Idempotency-Key replay) live in that one process. With more workers, two processes could write the same config at once
+and a repeat with the same key could run twice. The run command above pins `--workers 1`; do not raise it.
 
 ## 1. Enums (closed sets: show only these)
 - `derived_state` (a job, as the UI shows it): `queued`, `running`, `waiting`, `waiting-unknown`, `stale-warning`, `orphan`, `finished`,
@@ -43,6 +53,8 @@ these shapes do not without a version bump. The engine facts behind each field a
 - `contract`: `planner_json`, `writer_file_blocks`, `repair_edit_blocks`, `repair_whole_file`, `reviewer_verdict`, `native_structured_output`.
 - `contract_state`: `verified`, `failed`, `unverified`, `not-applicable`. A model is eligible for a stage only when that stage's contract is `verified`.
   - Claude Code models use `text_validated` instead: the reply is checked with the same text parsers, and there is never `native_structured_output`.
+    A Claude Code model reports every text contract as `unverified` (with `text_validated` true) until a real `POST /models/verify` result is
+    recorded for that model and contract (in its catalog entry, as an OpenRouter entry). `planner_json` has no Claude Code check yet, so it stays `unverified`.
 - `reasoning_mode`: `optional` (on/off verified), `mandatory` (it cannot be turned off), `unsupported`, `unknown`. Show only the switch states the mode allows.
 - `start_refusal`: `stop-file`, `provider-unavailable`, `free-requests`, `review-spend`, `request-running`, `no-sandbox-slot`, `claim-conflict`,
   `no-budget-snapshot`.
@@ -55,6 +67,9 @@ these shapes do not without a version bump. The engine facts behind each field a
  "active_stage": null, "active_model": null, "waiting": null, "heartbeat_age_s": null, "started": "2026-11-03T17:39:10Z",
  "finished": "2026-11-03T17:43:02Z", "free_requests_used": 3, "review_usd_spent": 0.0}
 ```
+
+### Job list (`GET /jobs`)
+`GET /jobs?filter=all|running|queued|finished|failed` answers `{"jobs": [JobSummary…], "index_ok": true|false}`. The sample is `monitor/fixtures/jobs.json`.
 
 ### JobDetail (`GET /loops/{id}`)
 JobDetail is a JobSummary plus these fields:
@@ -86,6 +101,10 @@ JobDetail is a JobSummary plus these fields:
   - `restore-green`
   - `finish` (`end_state`, `reason`)
   - `merge` (`merge_state`, `head`, `attempts`)
+- **Attempt fields:** `status` is the attempt status (`ok`, `failed`, `rejected`, or `running` before the end), never the HTTP code. The engine
+  records the HTTP code of the last request; the API derives the status from it and from the engine's failed flag: a call that did not fail is
+  `ok`; a failed call whose HTTP reply was a 2xx (the reply could not be used) is `rejected`; any other failure is `failed`. The HTTP code is not
+  shown (no field in this contract).
 - **Rendering rules:**
   - A stage repeated N times appears N times.
   - A stage that never ran has **no** events.
@@ -100,7 +119,7 @@ JobDetail is a JobSummary plus these fields:
 ```
 
 ### Model (`GET /models`)
-Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> = contract_state`, and `reasoning_mode`. A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
+Each entry also has `endpoint` (provider slug, or null). Its contract states are under `capabilities`: `capabilities.contracts.<contract> = contract_state`, and `capabilities.reasoning_mode` (the same nesting as the example below). A stage's `max_tokens` must not exceed the model's `max_output_tokens`: `/stages/validate` refuses it with `over-max-output`.
 ```json
 {"model_id": "nvidia/nemotron-3-ultra-550b-a55b:free", "via": "openrouter", "hosting_provider": null, "paid": false,
  "price_in_usd_per_mtok": 0, "price_out_usd_per_mtok": 0, "context_tokens": 262144, "max_output_tokens": 32768,
@@ -110,7 +129,7 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
  "verified_at": "2026-11-03T16:00:00Z", "metadata_at": "2026-11-03T15:00:00Z"}
 ```
 - A Claude Code model has `"via": "claude_code"`, `efforts` from `low` to `max`, and every price `null`. Show "subscription", never a dollar
-  figure.
+  figure. Its text contracts are `unverified` until a recorded verify result says otherwise (see `contract_state`).
 - **Any capability that is absent or `null` is not selectable.**
 
 ### Stage settings (`GET /stages?profile=test`)
@@ -120,6 +139,11 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
   "effort": "high", "settings": {"temperature": 0.1, "max_tokens": 40000, "reasoning": {"max_tokens": 8000}}, "source": "role:writer_b"},
  {"stage": "reviewer_reask", "model": null, "model_selectable": false, "inherits": "triggering reviewer", "effort": "low", "settings": {}}]}
 ```
+
+Each stage row carries the contract its model must have verified: `required_contract` (`planner_json` for planner; `writer_file_blocks` for
+the two writer write stages; `repair_edit_blocks` for the four repair stages and `review_fix_repair`; `reviewer_verdict` for the three reviewer
+stages) and `fallback_contract` (`repair_whole_file` for a repair stage, else `null`). The UI offers only models whose `required_contract` is
+`verified`. `POST /stages/validate` refuses a changed stage whose model does not have it verified (400 `contract-not-verified`).
 
 ### Results (`GET /results/{id}`)
 ```json
@@ -132,13 +156,13 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
 ### System (`GET /system/health`, `GET /system/limits`)
 - **`health`:**
   ```json
-  {"backend": "ok", "engine_version": "<main sha>", "docker": "ok|down", "sandbox_image": "ok|missing", "satvik_home": "<path>",
+  {"backend": "ok", "profile": "test|production", "engine_version": "<main sha>", "docker": "ok|down", "sandbox_image": "ok|missing", "satvik_home": "<path>",
    "index_ok": true, "keys": [{"alias": "free", "present": true}, {"alias": "paid", "present": false}], "stop": false}
   ```
   Key values are never returned.
 - **`limits`:**
   ```json
-  {"leases": [{"job_id": "…", "held": true, "heartbeat_age_s": 4, "pid_alive": true}], "claims": [{"path": "…", "job_id": "…"}],
+  {"revision": 1, "leases": [{"job_id": "…", "held": true, "heartbeat_age_s": 4, "pid_alive": true}], "claims": [{"path": "…", "job_id": "…"}],
    "gates": [{"gate": "nemotron", "holders": 1, "capacity": 1}], "ledger": {"free_used": 87, "free_cap": 1000, "review_spent_usd": 0.0}}
   ```
 
@@ -157,10 +181,10 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
 | Remove a model | `DELETE /models/{id}` | — | 204 | 409 `model-in-use` (`details.stages[]`), 422 `pool-min` (min 10) | not used by any stage | edits `config/models.json` | v1 |
 | Test reasoning | `POST /models/verify-reasoning` | `{"model_id", "efforts": [...]}` | `{"reasoning_mode", "efforts_verified": [...]}` | 503 | key present | ≤1 free call per effort | v1 |
 | Validate paid budget | `POST /budget/validate` | `{"stages": {...}, "paid_budget_usd"}` | `{"valid", "worst_case_usd", "problems": []}` | 400 `budget-over-cap`, 422 `paid-in-test` | always | none | v1 |
-| Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range` | no job running for slots | edits config; applies to new starts only | v1 |
-| Validate stage settings | `POST /stages/validate` | `{"profile", "changes": [...]}` | `{"valid": true, "problems": []}` | 400 with `problems[{code, stage, message}]` | always | none | v1 |
+| Update limits | `PUT /system/limits` | `{"revision", "sandbox_slots"?: 1-4, "review_usd_daily_cap"?, "job_review_usd"?}` | `{"revision": n+1}` | 409 `stale-revision`, 422 `out-of-range` (a value outside its bounds: `sandbox_slots` 1-4, `review_usd_daily_cap` 0-5, `job_review_usd` 0-0.05), 422 `not-applied-by-engine` (`job_review_usd` other than the engine's 0.05, which the production gate requires) | no job running for slots | edits config; applies to new starts only | v1 |
+| Validate stage settings | `POST /stages/validate` | `{"profile", "changes": [...]}` | `{"valid": true, "problems": []}` | 400 with `problems[{code, stage, message}]`; `contract-not-verified` when a changed stage's model lacks its required contract | always | none | v1 |
 | Save stage settings | `PUT /stages` | `{"profile", "revision", "changes": [...]}` | `{"revision": n+1}` | 409 `stale-revision`, 400 validation | always | affects **future jobs only**; running jobs keep their snapshot | v1 |
-| Verify model | `POST /models/verify` | `{"model_id", "contract"}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, 503 provider | key present | 1 free call | v1 |
+| Verify model | `POST /models/verify` | `{"model_id", "contract", "effort"?}` | `{"result": "pass\|fail", "verified_at"}` | 422 `not-in-catalog`, `not-allowed-in-test` (test profile: only haiku at high), 400 `bad-effort`, 503 provider | OpenRouter: key present; Claude Code: none (a claude call, `effort` default `high`) | OpenRouter: 1 free call; Claude Code: 1 isolated claude call | v1 |
 | Refresh prices and metadata | `POST /models/refresh` | `{}` | `{"updated": n, "metadata_at"}` | 503 | key present | 1 GET to OpenRouter | v1 |
 | Global STOP | `POST /system/stop` | `{"on": true\|false}` | `{"stop": true}` | — | always | no new starts, no next round. **A model call in flight is not interrupted** | v1 |
 | Download results | `GET /results/{id}/download` | — | a zip of `results/<job_id>/` | 404 `not-archived` | after finish | none | v1 |
@@ -180,5 +204,5 @@ Each entry also has `endpoint` (provider slug, or null), `contracts.<contract> =
 7. **Waiting with no reason** is `waiting-unknown`. A late heartbeat is `stale-warning`. Only `orphan` means dead.
 
 ## 5. Fixtures (sample responses in `monitor/fixtures/`)
-`running_job.json`, `completed_job.json`, `failed_review_job.json`, `quota_refusal.json`, `untriggered_stage_job.json`,
+`jobs.json` (GET /jobs: `{"jobs": [JobSummary…], "index_ok"}`), `running_job.json`, `completed_job.json`, `failed_review_job.json`, `quota_refusal.json`, `untriggered_stage_job.json`,
 `recovered_merge_job.json`, `overview.json`, `models.json`, `stages.json`, `results_escalate.json`, `system_health.json`, `error_examples.json`.

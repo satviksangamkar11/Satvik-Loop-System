@@ -4,26 +4,29 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "VITE_DATA_MODE=mock vite",
-    "dev:live": "VITE_DATA_MODE=live vite",
+    "dev": "vite --mode mock",
+    "dev:live": "vite --mode live",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "test:unit": "node --test tests/transport.test.mjs",
-    "test:e2e": "playwright test"
+    "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:real": "playwright test --config playwright.live.config.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-virtual": "^3.11.0",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.1.0",
-    "clsx": "^2.1.1",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.49.1",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
@@ -32,6 +35,8 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "typescript-eslint": "^8.72.1",
+    "vite": "^6.0.5",
+    "vitest": "^5.1.0"
   }
 }

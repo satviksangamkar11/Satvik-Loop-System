@@ -1,5 +1,12 @@
+/**
+ * Front-end types for docs/API_CONTRACT.md. Every field name is the contract's own name.
+ * Absent or unknown backend values are `null` (rendered "Unknown"), never a guessed value.
+ * Optional (`?`) fields exist only on detail responses; they are undefined on list items.
+ */
+
 export type DataMode = 'mock' | 'live';
 export type ProfileName = 'test' | 'production';
+
 export type NavPage =
   | '/dashboard'
   | '/jobs/new'
@@ -9,14 +16,7 @@ export type NavPage =
   | '/results'
   | '/system';
 
-export type ExecutionRole =
-  | 'planner'
-  | 'writer_a'
-  | 'writer_b'
-  | 'reviewer_a'
-  | 'reviewer_b'
-  | 'repair';
-
+/** The ten configurable stage types (contract section 1). */
 export type StageKey =
   | 'planner'
   | 'writer_a_write'
@@ -59,30 +59,24 @@ export type EndState =
   | 'refused'
   | 'stopped';
 
-export type TerminalOutcome = EndState;
-
 export type MergeState =
-  | 'pending'
   | 'merged'
   | 'merge-conflict'
   | 'tests-failed'
   | 'push-failed'
   | 'main-moved'
+  | 'pending'
   | 'none';
 
-export type MergeStatus = MergeState;
+export type WaitWhy = 'model-slot' | 'account-pace' | '429-backoff' | 'retry-backoff';
 
-export type WaitReason =
-  | 'model-slot'
-  | 'account-pace'
-  | '429-backoff'
-  | 'retry-backoff';
+export type StageStatus = 'ran' | 'running' | 'not-triggered' | 'pending';
 
-export type ContractState =
-  | 'verified'
-  | 'failed'
-  | 'unverified'
-  | 'not-applicable';
+export type AttemptStatus = 'running' | 'ok' | 'failed' | 'rejected';
+
+export type Via = 'openrouter' | 'claude_code';
+
+export type Effort = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type SemanticContract =
   | 'planner_json'
@@ -92,6 +86,21 @@ export type SemanticContract =
   | 'reviewer_verdict'
   | 'native_structured_output';
 
+export type ContractState = 'verified' | 'failed' | 'unverified' | 'not-applicable';
+
+export type ReasoningMode = 'optional' | 'mandatory' | 'unsupported' | 'unknown';
+
+export type StartRefusal =
+  | 'stop-file'
+  | 'provider-unavailable'
+  | 'free-requests'
+  | 'review-spend'
+  | 'request-running'
+  | 'no-sandbox-slot'
+  | 'claim-conflict'
+  | 'no-budget-snapshot';
+
+/** Error envelope: {"error": {"code", "message", "details"}} with an HTTP status. */
 export interface ApiErrorEnvelope {
   status: number;
   error: {
@@ -101,318 +110,290 @@ export interface ApiErrorEnvelope {
   };
 }
 
-export interface AttemptEvent {
+// ---------------------------------------------------------------------------
+// Events (GET /loops/{id}/events)
+// ---------------------------------------------------------------------------
+
+export type LoopEventType =
+  | 'job-start'
+  | 'attempt-start'
+  | 'attempt-end'
+  | 'wait-start'
+  | 'wait-end'
+  | 'tests'
+  | 'review'
+  | 'restore-green'
+  | 'finish'
+  | 'merge';
+
+/** One recorded event. Type-specific fields are null when the event type does not carry them. */
+export interface LoopEvent {
   seq: number;
-  ts: string;
-  timestamp: string;
-  type:
-    | 'attempt-start'
-    | 'attempt-end'
-    | 'wait-start'
-    | 'wait-end'
-    | 'fallback_write'
-    | 'restored-green'
-    | 'merge-status';
-  attempt_id: string;
-  stage: StageKey | 'fallback_write';
-  role: ExecutionRole;
-  model: string;
-  endpoint: string;
-  effort: 'low' | 'medium' | 'high' | null;
-  prompt_tokens?: number | null;
-  completion_tokens?: number | null;
-  tokens_in?: number | null;
-  tokens_out?: number | null;
-  duration_sec?: number | null;
-  cost_usd?: string | null;
-  wait_why?: WaitReason;
-  detail: string;
+  ts: string | null;
+  type: LoopEventType | string;
+  attempt_id: string | null;
+  stage: string | null;
+  role: string | null;
+  mode: string | null;
+  model: string | null;
+  via: Via | null;
+  effort: Effort | null;
+  status: AttemptStatus | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  reasoning_tokens: number | null;
+  finish_reason: string | null;
+  seconds: number | null;
+  error: string | null;
+  why: WaitWhy | null;
+  green: boolean | null;
+  failing: unknown[] | null;
+  reviewer: string | null;
+  verdict: string | null;
+  evidence_ok: boolean | null;
+  end_state: EndState | null;
+  reason: string | null;
+  merge_state: MergeState | null;
+  head: string | null;
+  attempts: number | null;
 }
 
 export interface EventPage {
-  events: AttemptEvent[];
-  next_after: number;
-  index_ok: boolean;
+  events: LoopEvent[];
+  next_after: number | null;
+  index_ok: boolean | null;
 }
 
-export interface TestFailureItem {
-  test_name: string;
-  file: string;
-  line: number;
-  assertion: string;
+// ---------------------------------------------------------------------------
+// Jobs (GET /jobs, GET /loops/{id})
+// ---------------------------------------------------------------------------
+
+export interface WaitingInfo {
+  why: WaitWhy | null;
+  since: string | null;
+  model: string | null;
 }
 
-export interface ReviewFinding {
-  file: string;
-  line: number;
-  ref: string;
-  message: string;
-  evidence_ok: boolean;
-}
-
-export interface ReviewerReport {
-  reviewer_slot: string;
-  stage_key: 'reviewer_b' | 'reviewer_a';
-  model_id: string;
-  canonical_model_id: string;
-  verdict: 'READY' | 'FIX FIRST';
-  independent_of_authors: boolean;
-  evidence_ok: boolean;
-  findings: ReviewFinding[];
-}
-
-export interface AttemptRecord {
-  attempt_id: string;
-  seq_start: number;
-  seq_end: number | null;
-  stage_key: StageKey | 'fallback_write';
-  logical_role: ExecutionRole;
-  model_id: string;
-  canonical_model_id: string;
-  endpoint: string;
-  effort: 'low' | 'medium' | 'high';
-  reasoning: 'off' | 'optional' | 'mandatory';
-  temperature: number;
-  max_output: number;
-  config_revision: string;
-  started: string;
-  finished: string | null;
-  started_at: string;
-  finished_at: string | null;
-  duration_sec: number | null;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  total_tokens?: number | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cost_usd: string | null;
-  billing_mode: 'free' | 'paid' | 'subscription';
-  contract: SemanticContract;
-  outcome: string;
-  tests_summary: {
-    passed: number;
-    failed: number;
-    failures: TestFailureItem[];
-  } | null;
-}
-
-export type StageRunState = 'ran' | 'running' | 'pending' | 'not-triggered';
-
-export interface JobRecord {
-  id?: string;
+/** A row of `GET /jobs` (JobSummary). */
+export interface JobSummary {
   job_id: string;
-  job_path: string;
-  spec_id: string;
-  profile: ProfileName;
-  config_revision: string;
-  snapshot_sha256: string;
-  derived_state: DerivedJobState;
+  name: string | null;
+  derived_state: DerivedJobState | null;
   end_state: EndState | null;
-  terminal_outcome: EndState | null;
-  test_verdict: 'passed' | 'passed (restored-green)' | 'failed' | 'running' | 'not-run';
-  reviewer_verdict: 'READY (2/2)' | 'FIX FIRST' | 'pending' | 'not-run';
-  merge_state: MergeState;
-  merge_status: MergeState;
-  stage: StageKey | null;
+  merge_state: MergeState | null;
   active_stage: StageKey | null;
-  role: ExecutionRole | null;
-  logical_role: ExecutionRole | null;
-  active_attempt_id: string | null;
-  model: string;
-  model_id: string;
-  canonical_model_id: string;
-  endpoint: string;
-  effort: 'low' | 'medium' | 'high';
-  started: string;
-  finished: string | null;
-  started_at: string;
-  finished_at: string | null;
-  duration_sec: number;
-  heartbeat_at: string | null;
+  active_model: string | null;
+  waiting: WaitingInfo | null;
   heartbeat_age_s: number | null;
-  heartbeat_age_sec: number | null;
-  lease_alive: boolean;
-  lease_pid: number | null;
-  lease: {
-    alive: boolean;
-    holder_pid: number | null;
-    pid: number | null;
-    heartbeat_at: string | null;
-    heartbeat_age_s: number | null;
-    heartbeat_age_sec: number | null;
-  };
-  worktree_path: string;
-  shared_claim_conflicts: string[];
-  waiting: {
-    why: WaitReason;
-    since: string;
-    model: string;
-    slot_holder_job_id?: string;
-  } | null;
-  restored_green: boolean;
-  restored_green_note?: string;
-  normalization_note?: string;
-  free_requests_used: number;
-  total_cost_usd: string | null;
-  hashes: {
-    tested_sha256: string | null;
-    reviewed_sha256: string | null;
-    delivered_sha256: string | null;
-    integrity_equal: boolean;
-  };
-  archive: {
-    available: boolean;
-    failure_reason?: string;
-    path_hint: string;
-    size_bytes: number | null;
-    artifacts: string[];
-  };
-  merge_detail: {
-    status: MergeState;
-    target_branch: string;
-    base_sha: string;
-    rebased_onto_sha?: string;
-    commit_sha: string | null;
-    retries: number;
-    conflict_files?: string[];
-    message: string;
-  };
-  stages: Record<StageKey, StageRunState>;
-  stage_overview: Record<StageKey, StageRunState>;
-  contributor_chain: Array<{
-    attempt_id: string;
-    stage: StageKey | 'fallback_write';
-    logical_role: ExecutionRole;
-    canonical_model_id: string;
-    status: string;
-  }>;
-  attempts: AttemptRecord[];
-  reviews: ReviewerReport[];
-  events: AttemptEvent[];
-  diff_text: string | null;
+  started: string | null;
+  finished: string | null;
+  free_requests_used: number | null;
+  review_usd_spent: number | null;
 }
+
+export interface StageRunRow {
+  stage: StageKey;
+  status: StageStatus | null;
+  attempts: number | null;
+}
+
+/** The JobDetail-only fields (GET /loops/{id}). Absent on list items. */
+export interface JobDetailExtras {
+  profile: ProfileName | null;
+  spec: string | null;
+  files: string[];
+  reason: string | null;
+  tests_passed: boolean | null;
+  failing_tests: unknown[];
+  review_verdict: string | null;
+  findings: string[];
+  stage_snapshot: { sha256: string | null; revision: number | null } | null;
+  stages: StageRunRow[];
+  lease: {
+    held: boolean | null;
+    pid: number | null;
+    pid_alive: boolean | null;
+    heartbeat: string | null;
+    generation: number | null;
+  } | null;
+  budget: {
+    free_requests_used: number | null;
+    free_requests: number | null;
+    review_usd_spent: number | null;
+    review_usd: number | null;
+    repair_calls: number | null;
+  } | null;
+  hashes: { tested: string | null; reviewed: string | null; delivered: string | null } | null;
+  archive: { available: boolean | null; archive_failed: boolean | null } | null;
+  merge: {
+    merge_state: MergeState | null;
+    head: string | null;
+    attempts: number | null;
+    note: string | null;
+  } | null;
+  note: string | null;
+}
+
+/** A job as the UI holds it: a summary, plus detail fields once a detail response was loaded. */
+export type JobRecord = JobSummary & Partial<JobDetailExtras>;
+
+// ---------------------------------------------------------------------------
+// Results (GET /results/{id})
+// ---------------------------------------------------------------------------
+
+export interface ResultTestFailure {
+  id: string | null;
+  message: string | null;
+  file: string | null;
+  line: number | null;
+}
+
+export interface ResultReview {
+  reviewer: string | null;
+  verdict: string | null;
+  findings: string[];
+  file: string | null;
+}
+
+export interface ResultRecord {
+  job_id: string;
+  end_state: EndState | null;
+  merge_state: MergeState | null;
+  tests: { passed: boolean | null; failing: ResultTestFailure[] } | null;
+  reviews: ResultReview[];
+  diff_available: boolean | null;
+  artifacts: string[];
+  branch: string | null;
+  merge: unknown | null;
+}
+
+// ---------------------------------------------------------------------------
+// Overview (GET /overview)
+// ---------------------------------------------------------------------------
 
 export interface NormalizedOverview {
-  ts: string;
-  engine_sha: string;
-  active_profile: ProfileName;
-  stop: boolean;
-  stop_active: boolean;
-  stop_reason: string | null;
-  loops_running: number;
-  queue_depth: number;
-  jobs_queued: number;
-  jobs_waiting: number;
-  loops_waiting: number;
-  pace: number;
-  pace_60s: {
-    sent: number;
-    limit: number | null;
-  };
-  free_today: {
-    used: number | null;
-    cap: number | null;
-    remaining: number | null;
-    source: string;
-  };
-  reviews_pending: number;
-  sandbox_slots: {
-    used: number;
-    cap: number | null;
-  };
-  active_errors: number;
-  reconciled_cost_usd: string | null;
-  review_usd_today: string | null;
-  review_cap_usd: string | null;
-  review_spend: {
-    used_usd: string | null;
-    cap_usd: string | null;
-    reserve_usd: string | null;
-  };
-  recent_errors: Array<{
-    id: string;
-    ts: string;
-    job_id: string;
-    stage: string;
-    code: string;
-    message: string;
-  }>;
+  loops_running: number | null;
+  queue_depth: number | null;
+  jobs_waiting: number | null;
+  active_errors: number | null;
+  stop: boolean | null;
+  free_today: { used: number | null; cap: number | null; cap_source: string | null };
+  pace: { sent_last_60s: number | null; limit: number | null };
+  review_usd_today: { spent: number | null; cap: number | null };
+  pending_reviews: number | null;
+  sandbox_slots: { used: number | null; total: number | null };
+  updated: string | null;
+  index_ok: boolean | null;
+}
+
+// ---------------------------------------------------------------------------
+// Models (GET /models, POST /models, GET /models/search)
+// ---------------------------------------------------------------------------
+
+export interface ModelCapabilities {
+  reasoning_on_off: boolean | null;
+  efforts: Effort[];
+  token_budget: boolean | null;
+  temperature: { min: number; max: number } | null;
+  structured_outputs: boolean | null;
+  contracts: Record<SemanticContract, ContractState>;
+  reasoning_mode: ReasoningMode;
+  text_validated: boolean | null;
 }
 
 export interface ModelRecord {
   model_id: string;
-  canonical_model_id: string;
-  display_name: string;
-  provider: string;
-  endpoints: string[];
-  active_endpoint: string;
-  route: 'openrouter' | 'claude_cli';
-  billing_type: 'free' | 'paid' | 'subscription';
-  input_usd_per_1m: string | null;
-  output_usd_per_1m: string | null;
-  context_window: number;
-  max_output_tokens: number;
-  structured_outputs_claimed: boolean;
-  validation_path?: 'native_json' | 'text_validated';
-  profile_restriction?: string;
-  synthetic_scale_row?: boolean;
-  contracts: Record<SemanticContract, ContractState>;
-  reasoning: {
-    mode: 'off' | 'optional' | 'mandatory' | 'unknown';
-    supported: 'optional' | 'mandatory' | 'unsupported' | 'unknown';
-    off_admissible: boolean;
-    efforts: Array<'low' | 'medium' | 'high'>;
-    token_budget_supported: boolean;
-    token_budget_min: number | null;
-    token_budget_max: number | null;
-  };
-  temperature_range: { min: number; max: number; default: number };
+  via: Via | null;
+  hosting_provider: string | null;
+  paid: boolean | null;
+  price_in_usd_per_mtok: number | null;
+  price_out_usd_per_mtok: number | null;
+  context_tokens: number | null;
+  max_output_tokens: number | null;
+  capabilities: ModelCapabilities;
   verified_at: string | null;
-  verified_endpoint: string | null;
-  freshness: string;
-  availability: 'available' | 'owner-gated' | 'unavailable';
-  in_use_stages: StageKey[];
-}
-
-export interface StageConfigRow {
-  stage_key: StageKey;
-  display_name: string;
-  logical_role: ExecutionRole;
-  routing_trigger: string;
-  model_selectable: boolean;
-  inheritance_rule: string;
-  configured_model_id: string | null;
+  metadata_at: string | null;
+  note: string | null;
   endpoint: string | null;
-  route: 'openrouter' | 'claude_cli' | 'inherited' | 'disabled';
-  required_contract: SemanticContract;
-  contract_verified: boolean;
-  fallback_writer_contract_verified?: boolean;
-  effort: 'low' | 'medium' | 'high' | null;
-  reasoning_mode: 'off' | 'optional' | 'mandatory' | 'inherited';
-  token_budget: number | null;
-  temperature: number;
-  max_output_tokens: number;
-  legacy_roster_max_tokens: number;
-  profile_source: string;
-  budget_estimate_usd: string | null;
-  status_note: string;
 }
 
-export type ScenarioId =
-  | 'default_all_fixtures'
-  | 's1_empty_startup'
-  | 's2_waiting_slot_to_start'
-  | 's3_passed_merge_pending_vs_merged'
-  | 's4_review_open_restored_green'
-  | 's5_quota_refusal_pace_exhausted'
-  | 's6_soft_stop_active'
-  | 's7_untriggered_vs_fallback_write'
-  | 's8_disconnected_or_stale_index'
-  | 's9_concurrent_same_model_diff_effort'
-  | 's10_409_revision_conflict'
-  | 's11_model_capability_restrictions'
-  | 's12_archive_fail_and_merge_conflict'
-  | 's13_idempotency_and_rerun'
-  | 's14_paid_planner_probe_gate'
-  | 's15_model_pool_removal_refusal'
-  | 's16_system_limits_c08_gated';
+/** Result of POST /models/verify. Only `pass` yields "verified"; everything else is not verified. */
+export interface VerifyResult {
+  model_id: string;
+  contract: SemanticContract;
+  state: 'verified' | 'failed' | 'unverified';
+  verified_at: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Stage settings (GET /stages, PUT /stages)
+// ---------------------------------------------------------------------------
+
+export interface StageSetting {
+  stage_key: StageKey;
+  configured_model_id: string | null;
+  via: Via | null;
+  model_selectable: boolean | null;
+  inherits: string | null;
+  /** The contract a model must have `verified` to be used for this stage (GET /stages `required_contract`). */
+  required_contract: SemanticContract | null;
+  effort: Effort | null;
+  revision: number | null;
+  source: string | null;
+  /** settings.max_tokens, or null when the backend sends none. */
+  max_output_tokens: number | null;
+  settings: Record<string, unknown>;
+  note: string | null;
+}
+
+export interface StagesResponse {
+  profile: ProfileName | null;
+  revision: number | null;
+  stages: StageSetting[];
+}
+
+// ---------------------------------------------------------------------------
+// Plans (POST /plans, GET /plans/{id})
+// ---------------------------------------------------------------------------
+
+export interface PlanRecord {
+  plan_id: string;
+  state: 'planning' | 'planned' | string | null;
+  job_sha256: string | null;
+  assumed: unknown[];
+}
+
+// ---------------------------------------------------------------------------
+// System (GET /system/health, GET /system/limits)
+// ---------------------------------------------------------------------------
+
+export interface SystemHealth {
+  backend: string | null;
+  engine_version: string | null;
+  docker: string | null;
+  sandbox_image: string | null;
+  satvik_home: string | null;
+  index_ok: boolean | null;
+  keys: Array<{ alias: string; present: boolean | null }>;
+  stop: boolean | null;
+}
+
+export interface SystemLimits {
+  /** The limits' revision (GET /system/limits); PUT /system/limits must send it. null when the backend did not report one. */
+  revision: number | null;
+  leases: Array<{ job_id: string; held: boolean | null; heartbeat_age_s: number | null; pid_alive: boolean | null }>;
+  claims: Array<{ path: string; job_id: string }>;
+  gates: Array<{ gate: string; holders: number | null; capacity: number | null }>;
+  ledger: { free_used: number | null; free_cap: number | null; review_spent_usd: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Stage-settings and STOP helpers
+// ---------------------------------------------------------------------------
+
+export interface StageChange {
+  stage: StageKey;
+  model: string | null;
+  effort: Effort | null;
+  settings: Record<string, unknown>;
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "sandbox_slots": 4,
+  "review_usd_daily_cap": 0.5,
+  "job_review_usd": 0.05
+}

@@ -834,6 +834,7 @@ def run_job(
     sandbox=None,
     openrouter=None,
     stop_check: Callable[[], None] | None = None,
+    stage_snapshot: dict | None = None,
 ) -> dict:
     production = job.get("profile") == "production"
     roster_profile = _p1b().oc.PROFILE                      # SATVIK_PROFILE: the roster the adapter loaded (owner 2026-11-02)
@@ -975,7 +976,8 @@ def run_job(
         import p1b_production
         return p1b_production.run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock,
                                   originals=original_contents, evidence=evidence, client=openrouter or p1b_production.client_for(root, job),
-                                  parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys)
+                                  parse_files=parse_files, check_path=check_path, content_problem=_content_problem, scrub_keys=scrub_keys,
+                                  frozen_snapshot=stage_snapshot)
 
     rounds_record: list[dict] = []
     coder_calls = 0
@@ -1512,17 +1514,36 @@ def ledger_budget() -> dict:
     return {"free_requests": usage["free_cap"] - usage["free_today"], "review_spend_usd": usage["review_spent_usd"]}
 
 
-def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, **run_kwargs) -> dict:
+def _write_job_copy(wt: Path, name: str, job: dict) -> None:
+    """wt/_loop/<name>.job.json: the job file this run used. It sits beside the job folder (not inside it, so run_job's previous-run moves
+    never touch it). Evidence only: it never raises, so a start is not blocked by it."""
+    try:
+        folder = Path(wt) / "_loop"
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / f".{name}.job.json.tmp"
+        tmp.write_text(json.dumps(job, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        os.replace(tmp, folder / f"{name}.job.json")
+    except OSError:
+        pass
+
+
+def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, stage_snapshot: dict | None = None,
+                 **run_kwargs) -> dict:
     """Start one job in its own worktree (Launcher.start: limits, request lookup, claims), run it there with the lease kept alive, record the
-    finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised."""
+    finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised.
+    stage_snapshot: the job's frozen stage table (queued with it, stage_config.snapshot), used as its snapshot when it starts; None reads the
+    roster at start, as before."""
     name = job["name"]
-    start = launcher.start(name, list(job["files"]), key=key or name)
+    start = launcher.start(name, list(job["files"]), key=key or name, job=job)
     if not start["ok"]:
         return {"name": name, "state": "refused", "reason": start["reason"]}
     job_id, gen, base = start["job_id"], start["gen"], start["base"]
     stop_beat = api.lease.keep_alive(job_id, gen)
     wt = Path(start["worktree"])
+    _write_job_copy(wt, name, job)                       # the job file as it was run (the API shows its spec and files), beside the job folder
     run_kwargs.setdefault("stop_check", _stop_switch(api.home))
+    if stage_snapshot is not None:
+        run_kwargs["stage_snapshot"] = stage_snapshot
     try:
         try:
             result = (run or run_job)(job, wt, **run_kwargs)
@@ -1578,21 +1599,53 @@ def queue_dir(home: Path) -> Path:
     return Path(home) / "queue"
 
 
-def enqueue(job_path: Path, home: Path) -> Path:
-    """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename)."""
+STAGES_SUFFIX = ".stages"          # queue/<file>.stages: the job's frozen stage table (stage_config.snapshot). Not *.json, so the queue's *.json globs never see it
+
+
+def stages_file(queued: Path) -> Path:
+    """The frozen stage table that travels with a queued job file (queue/<file>.stages), or taken/<file>.stages once it is taken."""
+    queued = Path(queued)
+    return queued.with_name(queued.name + STAGES_SUFFIX)
+
+
+def _write_json_atomic(path: Path, data) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def enqueue(job_path: Path, home: Path, stages: dict | None = None) -> Path:
+    """Copy a job file into the queue under a name that sorts by arrival. The write is atomic (temp file, then rename). With `stages` (a frozen
+    stage snapshot), its sidecar is written first, so a job that appears in the queue always has its table beside it."""
     folder = queue_dir(home)
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f"{time.time_ns():020d}-{os.getpid()}-{Path(job_path).name}"
+    if stages is not None:
+        _write_json_atomic(stages_file(dest), stages)
     tmp = dest.with_suffix(".tmp")
-    tmp.write_bytes(Path(job_path).read_bytes())
-    os.replace(tmp, dest)
+    try:
+        tmp.write_bytes(Path(job_path).read_bytes())
+        os.replace(tmp, dest)
+    except BaseException:
+        stages_file(dest).unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        raise
     return dest
+
+
+def read_stages(queued: Path) -> dict | None:
+    """The frozen stage snapshot of a queued or taken job file, or None when it has none (a job queued without one)."""
+    try:
+        data = json.loads(stages_file(queued).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 COMPLETED = ("passed", "merged")      # a job in one of these states runs again only with rerun=True
 
 
-def try_enqueue(job_path: Path, home: Path, rerun: bool = False) -> dict:
+def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | None = None) -> dict:
     """enqueue() with a duplicate check, for callers that need a structured answer (the UI). Under the queue lock (queue/.lock), so two
     identical requests at once leave one pending file. A job is a duplicate only while it is ACTIVE: the same job file (sha-256) pending in
     queue/, or its name running in the registry with a held lease (claimed or started). A finished job's old queue/taken/ file is history,
@@ -1622,12 +1675,12 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False) -> dict:
             return {"queued": False, "reason": "duplicate-running", "job": row.get("job")}
         if row and row.get("state") in COMPLETED and not rerun:
             return {"queued": False, "reason": "already-completed", "job": row.get("job")}
-        return {"queued": True, "path": str(enqueue(job_path, home))}
+        return {"queued": True, "path": str(enqueue(job_path, home, stages=stages))}
 
 
 def take_next(home: Path) -> Path | None:
-    """Claim the oldest queued job by renaming it into queue/taken/. A rename that loses to another drainer is skipped, so each job is
-    taken once. Returns the claimed path, or None when the queue is empty."""
+    """Claim the oldest queued job by renaming it into queue/taken/, with its frozen stage table (queue/<file>.stages) if it has one. A rename
+    that loses to another drainer is skipped, so each job is taken once. Returns the claimed path, or None when the queue is empty."""
     folder = queue_dir(home)
     if not folder.exists():
         return None
@@ -1638,6 +1691,12 @@ def take_next(home: Path) -> Path | None:
             os.replace(path, taken / path.name)
         except OSError:
             continue
+        side = stages_file(path)
+        if side.is_file():
+            try:
+                os.replace(side, stages_file(taken / path.name))
+            except OSError:
+                pass
         return taken / path.name
     return None
 
@@ -1656,7 +1715,9 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
         except (ValueError, OSError) as exc:
             out.append((path.name, "invalid"))
             continue
-        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run)
+        frozen = read_stages(path)                  # the table frozen at queue time; None for a job queued without one
+        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run,
+                           **({"stage_snapshot": frozen} if frozen is not None else {}))
         out.append((path.name, res["state"]))
 
 

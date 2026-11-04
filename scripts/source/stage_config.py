@@ -55,6 +55,20 @@ STAGES = {                                  # stage -> (role, mode); role None: 
 }
 STAGE_NAMES = tuple(STAGES)
 INHERITED = ("reviewer_reask", "review_fix_repair")     # model and via come from the job as it runs: never selectable
+# The output contract each stage needs from its model (docs/API_CONTRACT.md: contract, contract_state). The UI offers only models whose
+# required contract is verified. fallback: the contract of the whole-file repair a repair stage falls back to (None: no fallback).
+CONTRACT_OF = {                                  # stage -> (required_contract, fallback_contract)
+    "planner": ("planner_json", None),
+    "writer_a_write": ("writer_file_blocks", None),
+    "writer_b_write": ("writer_file_blocks", None),
+    "writer_a_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "writer_b_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "review_fix_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "specialist_repair": ("repair_edit_blocks", "repair_whole_file"),
+    "reviewer_b": ("reviewer_verdict", None),
+    "reviewer_a": ("reviewer_verdict", None),
+    "reviewer_reask": ("reviewer_verdict", None),
+}
 WRITER_STAGES = ("writer_a_write", "writer_a_repair", "writer_b_write", "writer_b_repair")
 REVIEWER_STAGES = ("reviewer_b", "reviewer_a")
 OVERRIDE_KEYS = ("model", "via", "effort", "settings")
@@ -391,7 +405,8 @@ def _spec(data, table, stage, role, entry):
 
 def _fallback(data, table, stage, role, mode):
     """reviewer_b writing (or repairing as the author) when writer_b is down: reviewer_b's model and via; its own settings with the writer_b
-    stage's settings overrides on top; the writer_b stage's effort when both have the same via, else the default for the mode."""
+    stage's settings overrides on top; the writer_b stage's effort when both have the same via. Otherwise a Claude Code reviewer_b keeps its
+    own stage's effort (that is the effort its model is called with), and an OpenRouter one takes the default for the mode."""
     rb = table["reviewer_b"]
     writer_stage = "writer_b_write" if mode == "write" else "writer_b_repair"
     override = _stages_block(data).get(writer_stage) or {}
@@ -400,6 +415,8 @@ def _fallback(data, table, stage, role, mode):
     settings.update(override.get("settings") or {})
     if table[writer_stage]["via"] == rb["via"]:
         effort = table[writer_stage]["effort"]
+    elif rb["via"] == "claude_code":
+        effort = rb["effort"]
     else:
         effort = _default_effort(data, rb["via"], data["roles"]["reviewer_b"], mode)
     return _spec(data, table, stage, "reviewer_b", dict(rb, settings=settings, effort=effort))

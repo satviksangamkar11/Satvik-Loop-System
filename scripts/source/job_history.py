@@ -28,7 +28,9 @@ waiting) and the events. Its derived_state is one of:
   merged:<state>         the merge ended (merge event, merge.json or the registry row): merged, merge-conflict, tests-failed, ...
 list_jobs(home, filter) lists the jobs the home knows of, filtered by running, queued, failed or finished."""
 import json
+import logging
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +38,7 @@ from pathlib import Path
 import event_log
 import loop_home
 
+log = logging.getLogger("satvik.job_history")
 DB_NAME = "history.db"
 BUSY_S = 30.0
 STALE_WARN_S = 3 * loop_home.HEARTBEAT_S      # three missed heartbeats: the job is late, though not yet an orphan
@@ -189,11 +192,12 @@ def rebuild_index(home):
     return {job_id: index_job(home, job_id) for job_id in sorted(file_job_ids(home))}
 
 
-def index_ok(home):
-    """True when history.db exists and answers a read (read-only; nothing is created). A missing, locked or corrupt index is False."""
+def index_state(home):
+    """'ok' when history.db exists and answers a read (read-only; nothing is created), 'missing' when there is no file, 'locked' when
+    another process holds it busy (it may be healthy: never delete it), 'corrupt' when it is there but does not read as this index."""
     path = Path(home) / DB_NAME
     if not path.is_file():
-        return False
+        return "missing"
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
         try:
@@ -201,9 +205,35 @@ def index_ok(home):
             conn.execute("SELECT count(*) FROM events").fetchone()
         finally:
             conn.close()
+    except sqlite3.OperationalError as exc:
+        return "locked" if "locked" in str(exc).lower() or "busy" in str(exc).lower() else "corrupt"
     except sqlite3.Error:
-        return False
-    return True
+        return "corrupt"
+    return "ok"
+
+
+def index_ok(home):
+    """True when history.db exists and answers a read (read-only; nothing is created). A missing, locked or corrupt index is False."""
+    return index_state(home) == "ok"
+
+
+def ensure_index(home):
+    """The API's startup check: when history.db is missing or corrupt, rebuild it from the files (rebuild_index) and create its schema, so
+    an empty home gets a usable index too. A healthy index is never touched, and a locked one is left alone (another process may be using
+    it). Never raises: a failure is logged and the answer stays as it was. Returns index_state after the check."""
+    try:
+        state = index_state(home)
+        if state in ("ok", "locked"):
+            return state
+        rebuild_index(home)
+        connect(home).close()                     # the schema, also when no job has rows to index
+        return index_state(home)
+    except Exception:                             # the index never blocks the API: the job views answer from the files
+        log.exception("history index check failed for %s; the API continues with index_ok false", home)
+        try:
+            return index_state(home)
+        except Exception:
+            return "corrupt"
 
 
 def attempts(home, job_id=None):
@@ -322,6 +352,28 @@ def _derive(reg, lease, status, s, merge, queued):
     return "running", None
 
 
+def planner_events(home, name):
+    """The planner's attempt events (stage planner) of the planned job `name`. plan_job writes them to <repo>/_loop/<name>/events.jsonl, the
+    folder beside the plan (plan_dir is <repo>/_loop/<name>/plan), not to the job's own folders: the launched job's id is only given when it
+    starts, after its plan was made, so the view reads the plan folder the plan record names (api/plans/<plan_id>.json, name and plan_dir).
+    [] when no plan has that name. Only the view reads these: history.db indexes the job's own events alone, so their seq numbers never mix."""
+    if not isinstance(name, str) or not name:
+        return []
+    out, seen = [], set()
+    for path in sorted((Path(home) / "api" / "plans").glob("*.json")):
+        rec = _read_json(path) or {}
+        plan_dir = rec.get("plan_dir")
+        if rec.get("name") != name or not isinstance(plan_dir, str) or not plan_dir:
+            continue
+        events_path = Path(plan_dir).parent / event_log.FILE
+        if events_path in seen:
+            continue
+        seen.add(events_path)
+        out += [e for e in event_log.read_events(events_path)
+                if e.get("type") in ("attempt-start", "attempt-end") and e.get("stage") == "planner"]
+    return out
+
+
 def job_view(home, job_id, now=None, _rows=None, _index_ok=None):
     """One reconciled dict for a job id (or a pending queue file's id): derived_state and why, and the facts it was derived from. It reads
     the files only (never history.db), so its answer does not depend on the index; index_ok says whether the index is usable."""
@@ -340,11 +392,13 @@ def job_view(home, job_id, now=None, _rows=None, _index_ok=None):
     _check(job_id)
     events = event_log.read_job_events(home, job_id)
     source = "archive" if any((home / "results" / job_id).glob("*/" + event_log.FILE)) else "worktree" if events else None
-    s = summarize(events)
+    status = _status(home, job_id)
+    start_event = summarize(events)["start"] or {}
+    name = start_event.get("name") or (status or {}).get("name")
+    s = summarize(planner_events(home, name) + events)     # the planner's attempts come first: the job's own events stay the last
     rows = _registry_rows(home) if _rows is None else _rows
     reg = _registry_row(home, job_id, rows)
     lease = _lease(home, job_id, now)
-    status = _status(home, job_id)
     merge = _merge_json(home, job_id)
     derived, why = _derive(reg, lease, status, s, merge, False)
     start = s["start"] or {}
@@ -403,3 +457,35 @@ def list_jobs(home, filter=None, now=None):
     views = [v for v in views if FILTERS[filter](v["derived_state"])]
     return {"jobs": sorted(views, key=lambda v: (v.get("started") or "", v.get("job_id") or v.get("queue_id") or ""), reverse=True),
             "index_ok": ok}
+
+
+# ---------------------------------------------------------------- the command line
+
+def main(argv=None):
+    """python scripts/source/job_history.py rebuild: deletes history.db and builds it again from the files of SATVIK_HOME, then prints the job
+    count. Exit 0 when the index answers a read afterwards, 1 otherwise (SATVIK_HOME unset or refused, or the rebuild failed)."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args != ["rebuild"]:
+        print("usage: job_history.py rebuild   (rebuilds history.db under SATVIK_HOME from the job files)", file=sys.stderr)
+        return 2
+    try:
+        home = loop_home.home(loops=1)
+    except loop_home.LoopHomeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        counts = rebuild_index(home)
+        connect(home).close()
+    except Exception as exc:                  # sqlite, disk: say so, the files still answer
+        print(f"error: rebuild failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    ok = index_ok(home)
+    print(f"home: {home}")
+    print(f"jobs: {len(counts)}")
+    print(f"event rows: {sum(n or 0 for n in counts.values())}")
+    print(f"index_ok: {str(ok).lower()}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

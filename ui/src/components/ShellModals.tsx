@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, Octagon, X } from 'lucide-react';
 import type { ModelRecord, SemanticContract } from '../api/types';
+import { fmtModelPrice } from '../api/format';
 
 export interface StopModalProps {
   open: boolean;
@@ -50,7 +51,7 @@ export const StopConfirmModal: React.FC<StopModalProps> = ({
         <p className="text-xs text-slate-300 leading-relaxed">
           <strong>Soft STOP Semantics:</strong> Global STOP sets a soft boundary (`STOP` file). It
           prevents workers from claiming queued jobs or starting new stage attempts, but{' '}
-          <strong>any currently in-flight model call (`att-051-02`) will finish naturally</strong>{' '}
+          <strong>any model call already in flight will finish naturally</strong>{' '}
           and is never forcibly killed or labelled cancelled.
         </p>
         <div className="flex justify-end gap-2 font-mono text-xs">
@@ -135,12 +136,12 @@ export const ProbeConfirmModal: React.FC<ProbeConfirmModalProps> = ({
             <code>
               {modal.probeType === 'verify_contract'
                 ? `POST /api/models/verify (contract: ${modal.contract})`
-                : 'POST /api/models/verify-reasoning (efforts: low, medium, high)'}
+                : 'POST /api/models/verify-reasoning (every listed effort except off)'}
             </code>
           </div>
           <div className="p-2.5 rounded bg-amber-950/50 border border-amber-700 text-amber-200 font-sans">
             <strong>Quota &amp; Cost Disclosure:</strong> This probe dispatches{' '}
-            {modal.probeType === 'verify_contract' ? '1 live request' : '3 live requests'} against
+            {modal.probeType === 'verify_contract' ? '1 live request' : 'one request per listed effort'} against
             the provider endpoint, consuming daily free quota or incurred token spend. Default
             selection is <strong>NO / Cancel</strong>.
           </div>
@@ -263,9 +264,7 @@ export const AddModelCatalogModal: React.FC<AddModelModalProps> = ({
                 <div>
                   <div className="font-bold text-sky-300">{cand.model_id}</div>
                   <div className="text-[11px] text-slate-400">
-                    Billing: {cand.billing_type} · Price:{' '}
-                    {cand.input_usd_per_1m !== null ? `$${cand.input_usd_per_1m}` : 'Unknown'} ·
-                    Contracts: all `unverified`
+                    via: {cand.via ?? 'Unknown'} · Price: {fmtModelPrice(cand)} · Contracts: not verified until probed
                   </div>
                 </div>
                 <button
@@ -358,7 +357,7 @@ export const RevisionConflictModal: React.FC<ConflictResolverModalProps> = ({
             onClick={onReloadServerState}
             className="px-3 py-1.5 rounded bg-sky-500 text-slate-950 font-bold"
           >
-            Fetch &amp; Reload Server Revision ({modal.serverRevision})
+            Fetch &amp; Reload Server State
           </button>
         </div>
       </div>

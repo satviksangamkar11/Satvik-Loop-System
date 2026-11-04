@@ -1,0 +1,54 @@
+{
+  "jobs": [
+    {
+      "job_id": "fl-top-20261103-2309-7d15",
+      "name": "fl-top",
+      "derived_state": "merged",
+      "end_state": "passed",
+      "merge_state": "merged",
+      "active_stage": null,
+      "active_model": null,
+      "waiting": null,
+      "heartbeat_age_s": null,
+      "started": "2026-11-03T17:39:10Z",
+      "finished": "2026-11-03T17:43:02Z",
+      "free_requests_used": 3,
+      "review_usd_spent": 0.0
+    },
+    {
+      "job_id": "fl-top-20261103-2248-2ed3",
+      "name": "fl-top",
+      "derived_state": "finished",
+      "end_state": "escalate",
+      "merge_state": "none",
+      "active_stage": null,
+      "active_model": null,
+      "waiting": null,
+      "heartbeat_age_s": null,
+      "started": "2026-11-03T16:48:10Z",
+      "finished": "2026-11-03T16:50:02Z",
+      "free_requests_used": 1,
+      "review_usd_spent": 0.0
+    },
+    {
+      "job_id": "fl-top-20261103-2310-9a1c",
+      "name": "fl-top",
+      "derived_state": "waiting",
+      "end_state": null,
+      "merge_state": "none",
+      "active_stage": "reviewer_b",
+      "active_model": "nvidia/nemotron-3.5-super-vl:free",
+      "waiting": {
+        "why": "model-slot",
+        "since": "2026-11-03T17:41:02Z",
+        "model": "nvidia/nemotron-3.5-super-vl:free"
+      },
+      "heartbeat_age_s": 3,
+      "started": "2026-11-03T17:39:10Z",
+      "finished": null,
+      "free_requests_used": 2,
+      "review_usd_spent": 0.0
+    }
+  ],
+  "index_ok": true
+}

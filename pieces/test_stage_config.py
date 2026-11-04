@@ -166,6 +166,10 @@ def test_with_default_stages_every_openrouter_request_body_is_byte_for_byte_toda
         reply = FILE_TEXT if kind in ("writer", "repair") else READY
         bodies = []
         for use_stage in (False, True):
+            # a fresh SATVIK_HOME per request: the shared ledger's 15-a-minute window (shared_limits) never fills, so no real minute is waited
+            home = tmp_path / f"home-{role}-{mode}-{use_stage}"
+            home.mkdir()
+            monkeypatch.setenv("SATVIK_HOME", str(home))
             provider = ph.Provider({model: [reply]})
             client = ph.client(tmp_path / f"{role}-{mode}-{use_stage}", provider, budget=oc.JobBudget(40, 0.05))
             if use_stage:
@@ -348,6 +352,25 @@ def test_allowed_changes_validate_clean():
     assert _with_stage("test", "writer_a_write", {"via": "claude_code", "model": "haiku", "effort": "high"}) == []
     assert _with_stage("production", "specialist_repair", {"model": "sonnet", "effort": "low"}) == []
     assert _with_stage("test", "reviewer_reask", {"effort": "medium", "settings": {"max_tokens": 9000}}) == []
+
+
+CLAUDE_REVIEWER_B = {"model": "haiku", "via": "claude_code", "effort": "high"}
+
+
+def test_a_valid_claude_code_reviewer_b_change_validates_under_production_and_test():
+    """I23: review_fix_repair inherits reviewer_b's model when writer_b is down. Its fallback spec took the roster reviewer_b's effort (none,
+    the roster role is OpenRouter), so a valid Claude Code reviewer_b was refused with bad-effort on review_fix_repair."""
+    assert _with_stage("production", "reviewer_b", CLAUDE_REVIEWER_B) == []
+    assert _with_stage("test", "reviewer_b", CLAUDE_REVIEWER_B) == []
+
+
+def test_the_inherited_fallback_of_a_claude_code_reviewer_b_uses_its_own_stage_effort():
+    data = dict(sc._profile_data("production")[1])
+    data["stages"] = sc._merge(sc._stages_block(data), {"reviewer_b": CLAUDE_REVIEWER_B})
+    spec = sc.call_spec(data, "review_fix_repair", "reviewer_b")
+    assert (spec["model"], spec["via"], spec["effort"]) == ("haiku", "claude_code", "high")
+    no_effort = sc.validate({"reviewer_b": {"model": "haiku", "via": "claude_code"}}, "production")
+    assert "bad-effort" in codes(no_effort)                                 # a Claude Code reviewer_b still needs its own effort
 
 
 def test_resolve_stages_raises_a_roster_refusal_with_the_code(roster):
