@@ -1,0 +1,40 @@
+E                 'start': 'not-this-process',
+E                 'usd': 1000}}
+E         Use -v to get more diff)
+
+pieces\test_i57_clock_and_pid.py:71: AssertionError
+___________________ test_a_symlink_into_secrets_is_refused ____________________
+
+repo = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1613/test_a_symlink_into_secrets_is0/repo')
+tmp_path = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1613/test_a_symlink_into_secrets_is0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000016D43624210>
+
+    def test_a_symlink_into_secrets_is_refused(repo, tmp_path, monkeypatch):
+        (repo / "secrets").mkdir()
+        (repo / "secrets" / "notes.txt").write_text("x" + chr(10), encoding="utf-8")
+>       (repo / "pieces" / "notes.py").symlink_to(repo / "secrets" / "notes.txt")
+
+pieces\test_plan_job.py:570: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1613/test_a_symlink_into_secrets_is0/repo/pieces/notes.py')
+target = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1613/test_a_symlink_into_secrets_is0/repo/secrets/notes.txt')
+target_is_directory = False
+
+    def symlink_to(self, target, target_is_directory=False):
+        """
+        Make this path a symlink pointing to the target path.
+        Note the order of arguments (link, target) is the reverse of os.symlink.
+        """
+>       os.symlink(target, self, target_is_directory)
+E       OSError: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1613\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1613\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'
+
+C:\Python314\Lib\pathlib\__init__.py:1213: OSError
+=========================== short test summary info ===========================
+FAILED pieces/test_i41_queue_claims.py::test_a_reused_pid_is_a_dead_owner - a...
+FAILED pieces/test_i56_bounds_and_checkpoint.py::test_restore_green_puts_the_green_files_back_from_disk_when_memory_is_gone
+FAILED pieces/test_i57_clock_and_pid.py::test_a_lease_whose_pid_was_reused_is_not_held
+FAILED pieces/test_i57_clock_and_pid.py::test_a_gate_slot_held_by_a_reused_pid_is_free
+FAILED pieces/test_i57_clock_and_pid.py::test_a_paid_hold_of_a_reused_pid_is_released_as_spent
+FAILED pieces/test_plan_job.py::test_a_symlink_into_secrets_is_refused - OSEr...
+6 failed, 1480 passed, 4 skipped, 7 subtests passed in 385.49s (0:06:25)

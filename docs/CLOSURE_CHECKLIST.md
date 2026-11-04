@@ -5,8 +5,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 
 **Rules:**
 - Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
-- Local work goes to Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`), or Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) when agent 1's
-  context is full.
+- Local work goes to Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) only. **Do not use Local agent 1** (`session_016GQpGGyAsk3SytLChxhEfL`), owner's instruction 2026-11-04.
 - No other sessions. No UI redesign.
 - **No paid calls and no Opus calls until the very end**, anywhere: no paid OpenRouter model (GLM etc.), no Opus in the loop (production repair and planner stay unused), no paid verify. `SATVIK_PROFILE=test`, $0; only free models and Haiku.
 
@@ -126,6 +125,12 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 
 | I66 | (I49 consequence) The byte-based worst case is ~3x the old estimate, so fewer paid GLM reviews fit under the $0.05 job review ceiling (p0_gates pins 0.05) | Owner decision: raise the ceiling or accept fewer reviews | Decided |
 | I67 | (I53 consequence) Loop jobs can no longer edit `scripts/source/*.py`, `monitor/`, `config/`, `tools/sandbox/`; the pilot jobs under docs/pilot are now refused (historical loaders waived in tests). A controller change needs a trusted workflow that does not exist yet | Owner decision: accept, or design the trusted workflow | Decided |
+
+| I68 ✅ cloud (`a860626`, merged `1934ce6`); Windows rerun pending | Windows: `process_start` reads only /proc, so reused-pid detection (I41, I57) does nothing on Windows; 4 tests fail there (`b6ada87`) | Windows start identity via ctypes GetProcessTimes (branch `windows-fixes`) | Passes on Windows |
+| I69 ✅ cloud (`a10b631`, merged `1934ce6`); Windows rerun pending | Windows: `test_restore_green_puts_the_green_files_back_from_disk_when_memory_is_gone` fails (restored files differ) | Find the Windows cause (newlines/paths) and fix the checkpoint code | Passes on Windows |
+| I70 ✅ cloud (`053f87e`, merged `1934ce6`); Windows rerun pending | Windows: `test_a_symlink_into_secrets_is_refused` errors (WinError 1314, no symlink privilege) | Skip only when the OS refuses the symlink | Passes or skips cleanly on Windows |
+| I71 ✅ cloud (`984d403`, merged `1934ce6`); Windows rerun pending | Windows: Vite binds `localhost` (::1) but the Playwright configs poll 127.0.0.1:5173, so e2e times out | Bind 127.0.0.1 explicitly | `npm run test:e2e` passes on Windows unmodified |
+| I72 ✅ cloud (`5241734; runtime 0, 11 moderate dev-only (eslint tree)`, merged `1934ce6`); Windows rerun pending | `npm ci` now reports 11 moderate vulnerabilities (was 5) | Audit runtime vs dev; fix runtime ones | Runtime audit 0 |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.

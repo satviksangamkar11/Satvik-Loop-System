@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import loop_home as lh
+import pytest
 import shared_limits as sl
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -47,6 +48,8 @@ def test_a_live_lease_of_this_process_is_held(tmp_path):
 
 
 def test_a_lease_whose_pid_was_reused_is_not_held(tmp_path):
+    if lh.process_start(os.getpid()) is None:
+        pytest.skip("this platform gives no process start identity (Linux and Windows do), so a reused pid cannot be told apart here")
     lh.Lease(tmp_path).acquire("job-a")
     path = tmp_path / "leases" / "job-a.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -57,6 +60,8 @@ def test_a_lease_whose_pid_was_reused_is_not_held(tmp_path):
 
 
 def test_a_gate_slot_held_by_a_reused_pid_is_free(tmp_path):
+    if lh.process_start(os.getpid()) is None:
+        pytest.skip("this platform gives no process start identity (Linux and Windows do), so a reused pid cannot be told apart here")
     (tmp_path / "gates.json").write_text(json.dumps({"sandbox": [{"pid": os.getpid(), "start": "not-this-process", "gen": 1,
                                                                   "token": "old"}]}), encoding="utf-8")
     with lh.Gate(tmp_path).slot("sandbox", 2, timeout_s=0, capacity=1):
@@ -64,6 +69,8 @@ def test_a_gate_slot_held_by_a_reused_pid_is_free(tmp_path):
 
 
 def test_a_paid_hold_of_a_reused_pid_is_released_as_spent(tmp_path):
+    if lh.process_start(os.getpid()) is None:
+        pytest.skip("this platform gives no process start identity (Linux and Windows do), so a reused pid cannot be told apart here")
     now = T_NEXT
     st = {"holds": {"c1": {"job": "j", "usd": 1000, "at": now - sl.HOLD_STALE_S - 10, "pid": os.getpid(), "start": "not-this-process"}},
           "review_spent": 0, "jobs": {}}

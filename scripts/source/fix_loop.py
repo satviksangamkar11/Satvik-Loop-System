@@ -209,7 +209,7 @@ def _atomic_write(path: Path, text: str) -> None:
 def _read_file_safe(root: Path, rel: str) -> str | None:
     p = root / rel
     if p.exists():
-        return p.read_text(encoding="utf-8")
+        return p.read_bytes().decode("utf-8")      # exact bytes (no newline translation): the originals are restored byte for byte (I69)
     return None
 
 
