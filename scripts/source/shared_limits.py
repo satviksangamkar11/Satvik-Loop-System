@@ -162,24 +162,27 @@ def settle_review(job_id, gen, reserved, spent, home_dir=None):
         _save_state(root, st)
 
 
-def pace(timeout_s=None, home_dir=None) -> float:
+def pace(timeout_s=None, home_dir=None, clock=None, sleep=None) -> float:
     """Wait until fewer than PER_MINUTE requests were sent in the last 60 s, then record this send. Returns the send time.
     Call it before every paid send (after reserve_review). reserve_free records its own send, so do not call pace for a free request.
-    TimeoutError, without recording a send, when the wait would pass `timeout_s` (the unit deadline's time left)."""
+    TimeoutError, without recording a send, when the wait would pass `timeout_s` (the unit deadline's time left). `clock` and `sleep` default
+    to time.time and time.sleep; the tests inject a clock shared by several processes."""
+    clock = clock or time.time
+    sleep = sleep or time.sleep
     root = lh.home() if home_dir is None else Path(home_dir)
-    end = None if timeout_s is None else time.time() + timeout_s
+    end = None if timeout_s is None else clock() + timeout_s
     while True:
         with lh._locked(root):
-            now = time.time()
+            now = clock()
             st = _state(root, now)
             if len(st["minute"]) < PER_MINUTE:
                 st["minute"].append(now)
                 _save_state(root, st)
                 return now
             wait = min(st["minute"]) + WINDOW_S - now
-        if end is not None and time.time() + max(wait, 0.01) > end:
+        if end is not None and clock() + max(wait, 0.01) > end:
             raise TimeoutError(f"the account pace is full for another {wait:.1f} s")
-        time.sleep(max(wait, 0.01))
+        sleep(max(wait, 0.01))
 
 
 def slot_name(model) -> str:
