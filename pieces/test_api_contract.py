@@ -393,6 +393,31 @@ def test_attempt_end_status_is_the_attempt_status_not_the_http_code(world):
     assert shape_diff(fixture("running_job.json")["events"]["events"][2], ends["a1"]) == []
 
 
+def test_attempt_end_carries_its_attempt_fields_from_the_start_even_after_a_cursor(world):
+    """M2: an attempt-end that lacks stage, role, mode, model, via or effort takes them from the attempt-start with the same attempt id,
+    also when the start is before the poll's `after` cursor."""
+    job_id = "fl-top-20261104-0900-b2b2"
+    events = [
+        {"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+        {"type": "attempt-start", "attempt_id": "a1", "stage": "reviewer_b", "role": "reviewer_b", "mode": "review",
+         "model": "nvidia/nemotron-3.5-super-vl:free", "via": "openrouter", "effort": "low"},
+        {"type": "attempt-end", "attempt_id": "a1", "status": 200, "failed": False, "prompt_tokens": 10099, "completion_tokens": 420,
+         "reasoning_tokens": 300, "finish_reason": "stop", "seconds": 41.2, "error": None},
+    ]
+    add_job(world, job_id, events=events, end="passed", state="passed", started=("reviewer_b",), registry="passed")
+    reindex(world)
+    later = world.client.get(f"/api/loops/{job_id}/events", params={"after": 1}).json()
+    assert [e["seq"] for e in later["events"]] == [2, 3]
+    end = later["events"][1]
+    assert end["type"] == "attempt-end" and end["attempt_id"] == "a1"
+    assert {k: end[k] for k in ("stage", "role", "mode", "model", "via", "effort")} == {
+        "stage": "reviewer_b", "role": "reviewer_b", "mode": "review", "model": "nvidia/nemotron-3.5-super-vl:free", "via": "openrouter",
+        "effort": "low"}
+    assert end["status"] == "ok" and end["prompt_tokens"] == 10099
+    whole = world.client.get(f"/api/loops/{job_id}/events", params={"after": 0}).json()["events"]
+    assert all(e["stage"] == "reviewer_b" for e in whole if e["type"].startswith("attempt-"))
+
+
 def test_failed_review_job_matches_fixture(world):
     scripted_review_open(world)
     body = world.client.get(f"/api/loops/{JOB_ID_REVIEW}").json()

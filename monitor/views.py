@@ -291,27 +291,36 @@ def _attempt_status(e):
     return "rejected" if _is_http_success(e.get("status")) else "failed"
 
 
-def _event(e):
+ATTEMPT_FROM_START = ("stage", "role", "mode", "model", "via", "effort")    # the fields an attempt-end may lack: its attempt-start has them
+
+
+def _event(e, starts=None):
     """One event as the API shows it: the engine's job_id, failed and requests (its request count) are dropped, none is in the contract. An
     attempt event carries every attempt field (null when the engine has none yet); its status is the contract's attempt_status, never the
-    HTTP code."""
+    HTTP code. starts maps attempt_id to its attempt-start event: an attempt-end takes from it each of ATTEMPT_FROM_START it lacks."""
     out = {k: v for k, v in e.items() if k not in ("job_id", "failed", "requests")}
     if e.get("type") in ("attempt-start", "attempt-end"):
+        if e.get("type") == "attempt-end":
+            start = (starts or {}).get(e.get("attempt_id")) or {}
+            for key in ATTEMPT_FROM_START:
+                if out.get(key) is None:
+                    out[key] = start.get(key)
+            out["status"] = _attempt_status(e)
         for key in ATTEMPT_FIELDS:
             out.setdefault(key, None)
         if e.get("type") == "attempt-start" and out.get("status") is None:
             out["status"] = "running"
-        if e.get("type") == "attempt-end":
-            out["status"] = _attempt_status(e)
     return out
 
 
 def events(home, job_id, after=0):
-    """The attempt events after seq `after`, mapped to the contract's event shape. A stage that never ran has none."""
+    """The attempt events after seq `after`, mapped to the contract's event shape. A stage that never ran has none. An attempt-end is read
+    with its attempt-start, which can come before `after`, so the starts are taken from every event, not only the new ones."""
     if not job_exists(home, job_id):
         raise ApiError(404, "unknown-job", f"no job {job_id}")
     rows = event_log.read_job_events(home, job_id)
-    new = [_event(e) for e in rows if e["seq"] > after]
+    starts = {e.get("attempt_id"): e for e in rows if e.get("type") == "attempt-start"}
+    new = [_event(e, starts) for e in rows if e["seq"] > after]
     next_after = new[-1]["seq"] if new else after
     return {"events": new, "next_after": next_after, "index_ok": job_history.index_ok(home)}
 
