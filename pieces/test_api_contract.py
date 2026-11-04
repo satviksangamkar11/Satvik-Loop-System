@@ -418,6 +418,31 @@ def test_attempt_end_carries_its_attempt_fields_from_the_start_even_after_a_curs
     assert all(e["stage"] == "reviewer_b" for e in whole if e["type"].startswith("attempt-"))
 
 
+def test_an_archived_job_shows_its_spec_and_files_from_the_archived_job_file(world):
+    """M5: GET /loops/{id} reads spec and files from the job file in the archive (results/<id>/<name>.job.json), after the worktree is gone.
+    An archive that has no job file (made before the archive kept one) shows them as null: not guessed."""
+    job = {"name": "fl-top", "spec": "docs/pilot/four-loop/FL_TOP_SPEC.md", "files": ["scripts/source/fl_top.py"], "tests": [],
+           "profile": "test", "budget": {"free_requests": 40, "review_usd": 0.05, "paid_usd": 0}}
+    job_id = "fl-top-20261104-0900-d4d4"
+    events = [{"type": "job-start", "name": "fl-top", "base": BASE, "branch": f"job/{job_id}", "gen": 1, "key": "fl-top"},
+              {"type": "finish", "state": "passed", "reason": "READY"}]
+    add_job(world, job_id, where="wt", events=events, end="passed", state="passed", registry="passed", lease="released")
+    wt_job_file = world.home / "wt" / job_id / "_loop" / "fl-top.job.json"
+    wt_job_file.unlink()                                             # the run wrote no copy of its job file
+    assert launch.archive_job(world.home, job_id, job=job) == "archived"
+    shutil.rmtree(world.home / "wt" / job_id)                        # the worktree is gone: the archive alone answers
+    reindex(world)
+    body = world.client.get(f"/api/loops/{job_id}").json()
+    assert body["spec"] == job["spec"] and body["files"] == job["files"]
+    assert body["archive"] == {"available": True, "archive_failed": False}
+    old = "fl-top-20261104-0900-e5e5"
+    add_job(world, old, where="results", events=events, end="passed", state="passed", registry="passed", lease="released")
+    (world.home / "results" / old / "fl-top.job.json").unlink()      # an older archive: no job file at all
+    reindex(world)
+    older = world.client.get(f"/api/loops/{old}").json()
+    assert older["spec"] is None and older["files"] is None and older["end_state"] == "passed"
+
+
 def test_failed_review_job_matches_fixture(world):
     scripted_review_open(world)
     body = world.client.get(f"/api/loops/{JOB_ID_REVIEW}").json()
@@ -848,7 +873,7 @@ def test_queued_job_freezes_its_stage_table_and_the_start_uses_it(world):
     class Launcher:
         repo = world.repo
 
-        def start(self, name, files, key=None):
+        def start(self, name, files, key=None, job=None):
             wt = world.home / "wt" / "fl-top-test-0001"
             wt.mkdir(parents=True, exist_ok=True)
             return {"ok": True, "job_id": "fl-top-test-0001", "gen": 1, "base": BASE, "worktree": str(wt), "branch": "job/x"}

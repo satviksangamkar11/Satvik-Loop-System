@@ -117,10 +117,28 @@ ARCHIVE_SKIP = ("openrouter", ".gitignore")        # never archived: the OpenRou
 _copytree = shutil.copytree                        # a hook for tests (an archive copy that fails)
 
 
-def archive_job(home, job_id):
-    """Copies the job's evidence (wt/<job_id>/_loop, without ARCHIVE_SKIP) to results/<job_id>/: first into a temporary folder, then one
-    rename, so a reader sees all of it or none. Repeat-safe: an existing archive is kept. Returns "archived", "kept", "none" (no _loop to
-    keep) or "failed: <why>"; it never raises, so finishing a job is never blocked by it."""
+def _write_job_file(folder, job):
+    """results/<job_id>/<name>.job.json: the job file the run used (its spec and files), for the API. The run's own copy (fix_loop writes it
+    into _loop when it starts) is kept when it is there, so the archive holds the file as it ran; without one, the job the launcher started is
+    written from. Best effort, like the run's copy: a file that cannot be written never fails the archive."""
+    if not isinstance(job, dict):
+        return
+    name = job.get("name")
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,159}", name):
+        return
+    target = Path(folder) / f"{name}.job.json"
+    if target.exists():
+        return
+    try:
+        target.write_text(json.dumps(job, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def archive_job(home, job_id, job=None):
+    """Copies the job's evidence (wt/<job_id>/_loop, without ARCHIVE_SKIP) to results/<job_id>/, and its job file (_write_job_file, from job when
+    given): first into a temporary folder, then one rename, so a reader sees all of it or none. Repeat-safe: an existing archive is kept.
+    Returns "archived", "kept", "none" (no _loop to keep) or "failed: <why>"; it never raises, so finishing a job is never blocked by it."""
     src = Path(home) / "wt" / job_id / "_loop"
     dest = Path(home) / "results" / job_id
     if dest.exists():
@@ -131,6 +149,7 @@ def archive_job(home, job_id):
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         _copytree(src, tmp, ignore=shutil.ignore_patterns(*ARCHIVE_SKIP))
+        _write_job_file(tmp, job)
         os.rename(tmp, dest)
         return "archived"
     except Exception as exc:                       # any failure: the caller keeps the worktree, so the evidence is never lost
@@ -164,11 +183,15 @@ class Launcher:
         self.wait_s, self.poll_s, self.sleep = wait_s, poll_s, sleep
         self._slots = {}
         self._keys = {}
+        self._jobs = {}
 
-    def start(self, name, rel_paths=(), key=None):
+    def start(self, name, rel_paths=(), key=None, job=None):
+        """Starts one job. job: the job file it runs (a dict), kept for the archive (archive_job writes it to results/<job_id>/)."""
         res = self._start(name, rel_paths, key)
         self.api.registry.bump("started" if res["ok"] else "refused:" + res["reason"])
         if res["ok"]:                                      # the job's first event, in the folder its run writes (_loop/<name>)
+            if job is not None:
+                self._jobs[res["job_id"]] = job
             event_log.emit(Path(res["worktree"]) / "_loop" / name, "job-start", job_id=res["job_id"], name=name, base=res["base"],
                            branch=res["branch"], gen=res["gen"], key=key or res["job_id"])
         return res
@@ -229,7 +252,7 @@ class Launcher:
         the job is indexed into history.db after it."""
         if state not in event_log.MERGE_STATES:
             self._finish_event(job_id, state, result)
-        archive = archive_job(self.api.home, job_id)
+        archive = archive_job(self.api.home, job_id, job=self._jobs.pop(job_id, None))
         job_history.safe_index(self.api.home, job_id)
         result = dict(result or {}, archive=archive)
         if archive.startswith("failed"):
