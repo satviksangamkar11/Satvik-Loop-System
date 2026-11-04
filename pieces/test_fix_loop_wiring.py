@@ -21,8 +21,9 @@ class FakeMerge:
     def __init__(self):
         self.submitted = []
 
-    def submit(self, job_id, gen):
+    def submit(self, job_id, gen, manifest=None):
         self.submitted.append((job_id, gen))
+        self.manifests = getattr(self, "manifests", []) + [manifest]
 
 
 def env_for(tmp_path, wait_s=0.0, sleep=time.sleep):

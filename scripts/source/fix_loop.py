@@ -1615,8 +1615,20 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
         raise
     launcher.finish(job_id, gen, state, base, {"round": result.get("round")})
     if state == "passed" and merge_queue is not None:
-        merge_queue.submit(job_id, gen)
+        merge_queue.submit(job_id, gen, manifest=merge_manifest(job, wt, dict(result, state=state)))
     return dict(result, job_id=job_id)
+
+
+def merge_manifest(job: dict, wt: Path, result: dict) -> dict:
+    """The job manifest the merge carries (I47): the job's own files as they were reviewed and tested (their combined hash, taken from the
+    run's evidence when it has one, else from the worktree now), and its locked acceptance tests with their bytes. The merge re-checks both
+    after the rebase and reruns the acceptance tests."""
+    gates = _p0()
+    files = list(job["files"])
+    locked = list(job.get("acceptance_tests") or [])
+    evidence = (result or {}).get("evidence") or {}
+    reviewed = evidence.get("reviewed_hash") or gates.combined_hash(wt, files)
+    return {"files": files, "reviewed_hash": reviewed, "acceptance_tests": locked, "acceptance_hashes": gates.hash_paths(wt, locked)}
 
 
 def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:

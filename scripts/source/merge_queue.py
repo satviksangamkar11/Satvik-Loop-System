@@ -13,6 +13,7 @@ from pathlib import Path
 import event_log
 import job_history
 import loop_home
+import p0_gates
 from launch import git, record_merge
 
 MERGE_KEY = "merge"
@@ -40,21 +41,36 @@ def add_index_line(wt, job_id) -> bool:
     return True
 
 
+def reviewed_bytes_problem(wt, manifest):
+    """None when the job's files in wt are the bytes that were reviewed and tested, and its locked acceptance files are the locked bytes (I47).
+    An empty manifest (a job submitted without one) is not checked here. Any difference is a refusal: unreviewed bytes are never merged."""
+    if not manifest:
+        return None
+    if p0_gates.combined_hash(wt, manifest.get("files") or []) != manifest.get("reviewed_hash"):
+        return "the job's files after the rebase are not the bytes that were reviewed and tested"
+    locked = list(manifest.get("acceptance_tests") or [])
+    if p0_gates.hash_paths(wt, locked) != (manifest.get("acceptance_hashes") or {}):
+        return "the locked acceptance tests changed after review"
+    return None
+
+
 # The folders the merge check copies into the sandbox: every folder the suite reads, by path (I39, 2026-11-04). monitor/ is imported by the API
 # tests; ui/ holds the contract test file they read; tools/ and specs/ are read by the guard tests. A folder missing from this list fails the
 # suite at merge time, so pieces/test_sandbox_image_deps.py checks the list against the tests' own paths.
 SUITE_INCLUDE = ("pieces", "scripts", "config", "tests", "docs", "monitor", "ui", "tools", "specs")
 
 
-def default_suite(wt):
+def default_suite(wt, acceptance=()):
     """Docker sandbox, no network: every acceptance test first, then the full suite. No usable sandbox means no merge. The copy holds
-    every folder the suite reads (SUITE_INCLUDE): without config/ the roster cannot load (found in the 2-loop test, 2026-11-03)."""
+    every folder the suite reads (SUITE_INCLUDE): without config/ the roster cannot load (found in the 2-loop test, 2026-11-03).
+    acceptance: the job's own locked acceptance tests (its manifest, I47), rerun after the rebase, in addition to the pieces acceptance files."""
     from sandbox_runner import DockerSandbox
     sandbox = DockerSandbox(include=list(SUITE_INCLUDE))
     problems = sandbox.selftest()
     if problems:
         return False, "sandbox unusable: " + "; ".join(problems)
-    acceptance = sorted(p.relative_to(wt).as_posix() for p in (Path(wt) / "pieces").glob("test_*acceptance*.py"))
+    globbed = sorted(p.relative_to(wt).as_posix() for p in (Path(wt) / "pieces").glob("test_*acceptance*.py"))
+    acceptance = list(dict.fromkeys(list(acceptance) + globbed))
     for targets in (acceptance, ["pieces"]):
         if not targets:
             continue
@@ -99,9 +115,11 @@ class MergeQueue:
         """The entries still to merge, read from disk: a restarted queue sees the ones a crash left behind."""
         return self._entries()
 
-    def submit(self, job_id, gen):
-        """Persist the entry (state pending) before anything else: a crash after this point cannot lose the merge."""
-        self._put({"job_id": job_id, "gen": gen, "state": "pending", "seq": time.time_ns(), "head": None, "errors": 0})
+    def submit(self, job_id, gen, manifest=None):
+        """Persist the entry (state pending) before anything else: a crash after this point cannot lose the merge. manifest (I47): the job's
+        reviewed bytes and locked acceptance tests, which the merge re-establishes after the rebase."""
+        self._put({"job_id": job_id, "gen": gen, "state": "pending", "seq": time.time_ns(), "head": None, "errors": 0,
+                   "manifest": manifest or {}})
 
     def drain(self):
         """Merge every pending entry in submit order. Returns [(job_id, state)]. Holds home/merge.lock for the whole drain. An error on one
@@ -164,11 +182,19 @@ class MergeQueue:
             if add_index_line(wt, job_id):                     # the index line goes in during the merge, before the suite
                 git(["add", "README.md"], wt)
                 git(["commit", "-q", "-m", f"index: {job_id}"], wt)
-            ok, text = self.run_suite(wt)
+            manifest = entry.get("manifest") or {}
+            problem = reviewed_bytes_problem(wt, manifest)     # I47: after the rebase, the job's bytes must still be the reviewed ones
+            if problem:
+                return self._finish(job_id, gen, "reviewed-bytes-changed", base, {"tail": problem}, entry)
+            acceptance = list(manifest.get("acceptance_tests") or [])
+            ok, text = self.run_suite(wt, acceptance) if acceptance else self.run_suite(wt)   # the job's locked acceptance tests run again
             if not ok:
                 return self._finish(job_id, gen, "tests-failed", base, {"tail": text[-2000:]}, entry)
             if self._fetch_main() != base:                     # main moved while the suite ran: test again from the new main
                 continue
+            problem = reviewed_bytes_problem(wt, manifest)     # and nothing changed while the suite ran
+            if problem:
+                return self._finish(job_id, gen, "reviewed-bytes-changed", base, {"tail": problem}, entry)
             head = git(["rev-parse", "HEAD"], wt).stdout.strip()
             entry.update(state="merging", head=head)           # recorded before the push: a crash now is reconciled against main
             self._put(entry)
