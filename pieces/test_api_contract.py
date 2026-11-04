@@ -1055,6 +1055,21 @@ def test_a_job_review_usd_other_than_the_engine_value_is_refused_and_not_stored(
     assert ok.status_code == 200 and ok.json() == {"revision": 2}
 
 
+def test_job_review_usd_out_of_range_is_422_out_of_range_and_in_range_elsewhere_is_not_applied(world):
+    """M4: a value outside the limit's bounds (job_review_usd 0..0.05) is 422 out-of-range; an in-range value other than the engine's 0.05
+    is 422 not-applied-by-engine. Nothing is stored for either. The bounds are the contract's (section 3, Update limits)."""
+    for number, value in (("out-high", 0.06), ("out-low", -0.01)):
+        r = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": value},
+                             headers={"Idempotency-Key": f"limits-range-{number}"})
+        assert r.status_code == 422 and r.json()["error"]["code"] == "out-of-range", (value, r.json())
+    inside = world.client.put("/api/system/limits", json={"revision": 1, "job_review_usd": 0.04},
+                              headers={"Idempotency-Key": "limits-range-inside"})
+    assert inside.status_code == 422 and inside.json()["error"]["code"] == "not-applied-by-engine"
+    assert limits_config.load()["revision"] == 1 and limits_config.job_review_usd() == 0.05
+    contract = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert "422 `out-of-range`" in contract and "job_review_usd` other than the engine's 0.05" in contract
+
+
 def test_the_run_command_pins_one_worker_in_the_docs_the_requirements_and_the_app(world):
     command = "python -m uvicorn monitor.api:app --port 8765 --workers 1"
     assert command in (REPO / "monitor" / "requirements.txt").read_text(encoding="utf-8")
