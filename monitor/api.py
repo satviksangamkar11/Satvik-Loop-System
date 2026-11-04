@@ -8,7 +8,9 @@ Reads are GET; actions are POST, PUT, PATCH or DELETE. Each action runs through 
 returns the first response and runs nothing again. Errors use the contract's envelope. The routes hold no logic of their own: they parse the
 request and call views (reads), config_api (models, stages, limits, budget, verify) or actions (queue, loops, STOP, plans, stage edits)."""
 import json
+import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,10 +18,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import job_history  # the engine's module (monitor/__init__ puts scripts/source on sys.path): the index is rebuilt from the files at startup
 from . import actions, config_api, views
 from .store import ApiError, home as satvik_home, respond
 
-app = FastAPI(title="Satvik Loop Control Center API", version="1", docs_url="/api/docs", openapi_url="/api/openapi.json")
+log = logging.getLogger("satvik.api")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Startup: when SATVIK_HOME resolves and its history.db is missing or corrupt, rebuild the index from the files. Unset or refused, the
+    API still starts (the health answer says so). Never raises: a failure is logged and the index stays unusable (index_ok false)."""
+    try:
+        home = _home_or_none()
+        if home is None:
+            log.info("SATVIK_HOME is not set or refused; the API starts without the history index")
+        else:
+            state = job_history.ensure_index(home)
+            log.info("history index at startup: %s (%s)", state, home)
+    except Exception:                         # never block startup
+        log.exception("the history index check failed at startup; the API starts with index_ok false")
+    yield
+
+
+app = FastAPI(title="Satvik Loop Control Center API", version="1", docs_url="/api/docs", openapi_url="/api/openapi.json",
+              lifespan=_lifespan)
 
 _ORIGINS = [o.strip() for o in os.environ.get("SATVIK_UI_ORIGIN", "http://127.0.0.1:5173,http://localhost:5173").split(",") if o.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_ORIGINS, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],

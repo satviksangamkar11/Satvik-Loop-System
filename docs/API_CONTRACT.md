@@ -21,7 +21,9 @@ these shapes do not without a version bump. The engine facts behind each field a
   | `GET /loops/{id}/events?after=<seq>` | 2 s (returns only new events) |
   | everything else | on page load, or after an action |
 - **Index health:** every list response has `"index_ok": true|false`. With `false`, the data came straight from the files (slower, but still
-  correct); show a small notice, not an error.
+  correct); show a small notice, not an error. At startup the API rebuilds a missing or corrupt `history.db` from the files when
+  `SATVIK_HOME` is set (I32), so `index_ok` is true after a start. A locked index is left alone, and with `SATVIK_HOME` unset the API starts
+  with `index_ok` false.
 
 **Running the backend:** `pip install -r monitor/requirements.txt` (fastapi, uvicorn, httpx), then from the repo root
 `SATVIK_HOME=<folder outside every worktree> python -m uvicorn monitor.api:app --port 8765 --workers 1`. The base URL is `http://127.0.0.1:8765/api`.

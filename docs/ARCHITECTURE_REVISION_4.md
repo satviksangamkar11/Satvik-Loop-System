@@ -107,8 +107,11 @@ two processes could write the same config at once, and a repeated `Idempotency-K
 while a job runs, `SATVIK_HOME/results/<job_id>/` once it is archived, and the registry, lease and queue files. `SATVIK_HOME/history.db`
 is an index only, and no reader depends on it. `index_ok` is true only when the file exists and answers a read-only query; it is false when
 the file is missing, locked or corrupt. A false value changes where the data came from, not the answer. The engine's finish and merge hooks
-write the index (`job_history.safe_index`, called from `launch.py` and `merge_queue.py`), and `rebuild_index` deletes and rebuilds it. The
-API never builds it.
+write the index (`job_history.safe_index`, called from `launch.py` and `merge_queue.py`), and `rebuild_index` deletes and rebuilds it.
+At API startup (I32) the index is checked: when `SATVIK_HOME` resolves and `history.db` is missing or corrupt, `job_history.ensure_index`
+rebuilds it from the files and creates its schema, so an empty home gets a usable (empty) index. A healthy index is never touched, and a
+locked one is left alone (another process may hold it). The check never raises; a failure is logged and the API starts with `index_ok`
+false. With `SATVIK_HOME` unset the API starts with no index. By hand: `python scripts/source/job_history.py rebuild` prints the job count.
 
 **Idempotency.** Every mutation that goes through `_run` (queue, start loops, stage edits, plans and their approval, model add, remove and
 verify, stage save, limits, STOP) stores its first final response under its `Idempotency-Key`, in `SATVIK_HOME/api/idempotency/`. A repeat
@@ -166,9 +169,11 @@ of the other resolve to the same model. Two stages of the same writer may share 
 
 ### Known observations (I31 and others)
 
-- **`index_ok: false` and `engine_version: null` on a fresh seeded home.** The seed writes no `history.db`, so `index_ok` stays false until
-  an engine finish or merge hook indexes a job, or `rebuild_index` is run by hand. The seeded `SATVIK_REPO` is a plain folder, not a git
-  checkout, so `engine_version` is null. Both are expected, and the API answers the same either way.
+- **`index_ok: false` and `engine_version: null` on a fresh seeded home (I31; `index_ok` resolved by I32).** The seed writes no
+  `history.db`. Since I32 the API builds it at startup when `SATVIK_HOME` is set (an empty index on a home with no jobs, otherwise the
+  jobs are indexed from the files), so `index_ok` is true after the first start. Before that start, or with `SATVIK_HOME` unset, it is
+  false. The seeded `SATVIK_REPO` is a plain folder, not a git checkout, so `engine_version` is still null. That part is expected, and the
+  API answers the same either way.
 - **Archives made before the job file was archived have `spec` and `files` null.** The archive keeps `<name>.job.json` from commit `2cc5c96`
   (merged in `2c74b35`). The seeded `ah-budget` archive predates it, so its detail shows null for both.
 - **Planner events** are written to the plan folder (`<repo>/_loop/<name>/`, named by the plan record), not to the job's own folders. The
