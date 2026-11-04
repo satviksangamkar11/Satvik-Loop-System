@@ -36,7 +36,10 @@ def add_index_line(wt, job_id) -> bool:
     return True
 
 
-SUITE_INCLUDE = ("pieces", "scripts", "config", "tests", "docs")    # the folders the merge check copies into the sandbox
+# The folders the merge check copies into the sandbox: every folder the suite reads, by path (I39, 2026-11-04). monitor/ is imported by the API
+# tests; ui/ holds the contract test file they read; tools/ and specs/ are read by the guard tests. A folder missing from this list fails the
+# suite at merge time, so pieces/test_sandbox_image_deps.py checks the list against the tests' own paths.
+SUITE_INCLUDE = ("pieces", "scripts", "config", "tests", "docs", "monitor", "ui", "tools", "specs")
 
 
 def default_suite(wt):

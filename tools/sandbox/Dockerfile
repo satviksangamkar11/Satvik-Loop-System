@@ -5,8 +5,12 @@
 FROM python:3.13-slim
 # git: the merge queue runs the loop's own suite here, and its launcher and merge tests make throw-away git repos (2026-11-03)
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-# pytest plus the loop's own test dependencies (fix_loop imports yaml and jsonschema), pinned
+# pytest plus the loop's own test dependencies (fix_loop imports yaml and jsonschema), pinned.
+# The monitor API and its tests need fastapi (with starlette, imported by monitor/api.py) and httpx (fastapi.testclient). The versions are
+# the ones the suite passes with, and each satisfies the lower bound in monitor/requirements.txt (I39, 2026-11-04; tested by
+# pieces/test_sandbox_image_deps.py, which fails when a dependency the suite imports is not pinned here).
 RUN pip install --no-cache-dir "pytest==9.1.1" "pyyaml==6.0.3" "jsonschema==4.26.0" \
+    "fastapi==0.162.0" "starlette==1.7.0" "httpx==0.28.1" \
  && rm -rf /root/.cache
 USER 65534:65534
 WORKDIR /work
