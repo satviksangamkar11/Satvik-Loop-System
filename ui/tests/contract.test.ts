@@ -381,6 +381,7 @@ describe('mutation payloads match the contract', () => {
     expect(Array.isArray(body.stages)).toBe(false);
     expect(body.stages.writer_a_write).toEqual({
       model: 'dots-studio/dots-3-note-preview:free',
+      via: 'openrouter',                 // I61: the model's transport travels with the model
       effort: 'high',
       settings: { temperature: 0.1, max_tokens: 32000, reasoning: { max_tokens: 8000 } },
     });

@@ -345,11 +345,13 @@ def test_reviewer_rate_limited_on_every_call_is_provider_unavailable_with_the_or
     transport = Rate429Transport(provider, limited=99)
     client, sleeps = window_client(tmp_path, transport)
     root, result = run_e2e(tmp_path, client=client)
-    assert result["state"] == "provider-unavailable", result
+    # Batch A (I49): the reviewer's worst case is a byte bound on the prompt (about 3x chars/3 for code), so the sixth attempt would pass the
+    # job's $0.05 review ceiling. It is refused before it is sent, after the five upstream windows. Originals are still restored.
+    assert result["state"] == "budget-exceeded", result
     assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == ORIGINAL_CODE
-    assert sleeps == [15.0, 30.0, 60.0, 120.0, 180.0] and transport.reviewer_posts == 6
+    assert sleeps == [15.0, 30.0, 60.0, 120.0, 180.0] and transport.reviewer_posts == 5
     status = json.loads((root / "_loop" / "calc" / "status.json").read_text(encoding="utf-8"))
-    assert "rate-limited upstream" in status["reason"]
+    assert "review ceiling" in status["reason"]
     assert len(status["evidence"]["openrouter_retries"]) == 5
 
 

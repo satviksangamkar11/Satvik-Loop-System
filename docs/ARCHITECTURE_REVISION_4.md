@@ -188,6 +188,171 @@ of the other resolve to the same model. Two stages of the same writer may share 
   is used for the probe only, so a pass at one effort is not recorded as tied to that effort.
 - **`planner_json` has no Claude Code check.** A Claude Code model reports it `unverified`, so it is never eligible for the planner stage.
 
+### Paid-call safety (Batch A: I36, I44, I48, I49, I50)
+
+Code: `scripts/source/stage_config.py`, `openrouter_call.py`, `shared_limits.py`, `loop_home.py` (`process_start`), `monitor/actions.py`,
+`monitor/config_api.py`. Tests: `pieces/test_batch_a_paid.py` (22 tests; 19 fail on the code before this batch).
+
+- **I36, billing is the model's.** A stage's paid flag, pin and prices come from `config/models.json` and, where the roster also names the
+  model, the roster must agree. They are frozen in the snapshot as `billing`. `stage_config` refuses a paid model on a non-reviewer stage
+  (`paid-model-stage`), a stage whose role's paid flag differs from its model's (`billing-mismatch`), and a paid model with no pin or prices
+  (`unpriced-paid-model`, `unknown-billing` when the sources disagree). `openrouter_call.call` checks the stage against the allow-list before
+  any reservation or POST. *Limit:* a model that neither the catalog nor the roster names keeps its role's values in a stage. Such a call is
+  refused as not on the allow-list before any send, so nothing is sent.
+- **I44, the approved ceiling.** `POST /jobs` with a paid stage, or with `paid_budget_usd` above zero, always runs `validate_budget`. An
+  unpriced answer (`valid: false`) refuses the job (422 `budget-unknown`). A paid stage with `paid_budget_usd` 0 is refused (400
+  `budget-over-cap`). The approved ceiling, the lower of the budget and the job review ceiling, is frozen as `paid_ceiling_usd` in the stage
+  snapshot. Plan approval approves the planned job's declared `budget.review_usd` the same way. Each paid call reserves against the lower of
+  the job's review budget and that ceiling. The shared ledger also checks the job's booked spend plus open holds, so a restart does not reset
+  it. *Limits:* a direct run with no queued snapshot has no ceiling and keeps its job file's review budget (0.05 in production), as before.
+  The validation estimate uses the model's agreed price. The engine reserves at the higher of that and the live endpoint price, so a call
+  whose live price is higher is refused by the engine, not sent.
+- **I48, the pace.** The account pace is taken inside the model slot, immediately before the POST (`openrouter_call._send`, `_pace`). A free
+  request is counted for the day with `reserve_free_day` before the slot. A pace refusal is not a send: nothing is posted, and a paid hold is
+  released at nothing. *Limit:* a request holds its model slot while it waits for the account pace, bounded by the unit deadline.
+- **I49, the worst case.** The prompt bound is one token per UTF-8 byte plus 512 framing tokens (`prompt_bound_tokens`). It is priced at the
+  higher of the roster's and the live endpoint's per-token price. The endpoint price is read again after 900 s, and an unknown price refuses
+  the call before any POST. *Consequence:* for ASCII code the bound is about three times the old chars/3 estimate, so fewer paid reviews fit
+  under the $0.05 job review ceiling. `test_p1b_review_package` now stops at the sixth reviewer attempt with `budget-exceeded`. *Limit:* the
+  one-token-per-byte bound is assumed, not measured against each provider's tokenizer.
+- **I50, holds.** Each paid reservation is a hold on `SATVIK_HOME/ledger/limits.json`, with a call id, its owner's pid and process start time
+  (Linux; elsewhere the pid alone). Settling it releases that hold. A hold whose owner is dead and older than 300 s, or any hold older than
+  3600 s, is released as spent for its whole amount. Open holds survive the 05:30 IST day change, and the spend booked per job id is kept.
+  *Limits:* the reconciliation is conservative, not exact. A hold for a call that was never sent is booked at its full amount until it is
+  released. The free daily count is never handed back. Without a Linux `/proc`, a reused pid can keep a dead owner's hold open until the
+  one-hour limit.
+
+### Batch C, Codex audit (I38, I39, I43, I46, I53; 2026-11-04)
+
+- **I38, STOP in production.** The stop check reaches the P1b runner and is checked before each new model step, each repair step, and
+  each retry or wait (the adapter's wait hook). A call already in flight finishes; its reply is kept, and the job ends `stopped` with its
+  files restored. Remaining limit: the outer loop still checks STOP only between jobs, and a call in flight runs to its own timeout.
+- **I39, merge sandbox.** `SUITE_INCLUDE` holds every folder the tests read by path (`pieces`, `scripts`, `config`, `tests`, `docs`,
+  `monitor`, `ui`, `tools`, `specs`). The image pins fastapi 0.162.0, starlette 1.7.0 and httpx 0.28.1, each above its bound in
+  `monitor/requirements.txt`. `pieces/test_sandbox_image_deps.py` fails when a suite import or a path is not covered. Remaining limit:
+  uvicorn is not pinned (the suite does not import it); the pins are exact versions, so a new suite import needs a new pin.
+- **I43, API-queued jobs.** A job queued with its stage table carries `api` in its queue name (`<ns>-api-<pid>-<name>.json`). It is refused
+  (not run, reported `refused`) when its table is missing, corrupt, of the wrong shape, or was not moved with it. Remaining limit: the
+  refusal is printed and returned by the drainer; it is not written to the registry, so the dashboard does not show it as a failed job. A
+  job queued without a table (the CLI path) still reads the roster at start, as before.
+- **I46, independence.** Lineage keeps, per job file, the served identity of every contributor (writers, the specialist repair step, the
+  review-fix repair) under `served` in `lineage.json`. The panel excludes every contributing model. Claude Code identities are the
+  requested model plus the models the CLI reports in `modelUsage`; that report is self-declared by the CLI and is not checked against the
+  provider. OpenRouter identities are the model the adapter verified. Lineage files written before this change have no `served` record and
+  fall back to their chain.
+- **I53, controller paths.** A loop job may not write any `.py` directly in `scripts/source/`, nor any file under `monitor/`, `config/` or
+  `tools/sandbox/`. Consequence: the pilot jobs under `docs/pilot/` (they develop `scripts/source` modules) are refused by the validator.
+  Their historical loaders run with the rule waived (`prod_harness.controller_rule_waived`). A controller change needs a separate trusted
+  workflow, which does not exist yet. Remaining limit: the rule covers the job's `files`, not what a reviewer or model may say about them.
+
+### Batch D, Codex audit (I45, I58, I59, I60, I61, I62; 2026-11-04)
+
+- **I45 (one validator).** `config_api.authoritative_problems` is the only stage validator: `POST /stages/validate`, `PUT /stages`,
+  `POST /jobs` (the queued table) and `PATCH /loops/{id}/stages` all run it, so an unverified model gets `contract-not-verified` everywhere
+  (tests: `pieces/test_batch_d_api.py`). Limit: the engine's own `stage_config.apply_future_stage` takes the caller's validator; a caller
+  that uses the engine directly, without the API, does not run the contract rule.
+- **I58 (one atomic writer).** `scripts/source/atomic_json.py` is the single authoritative JSON writer: temp file, fsync, replace. A
+  sharing violation (PermissionError, WinError 5 or 32) is retried 40 times at 50 ms; a target still locked raises `SharingViolation` and
+  the old file stays whole (tests: `pieces/test_i58_atomic_writer.py`). Stage tables, the API store, the loop's shared state and every
+  job's `status.json` use it; `status.json` is replaced, never rewritten in place. Limit: about 2 s of retries; a longer lock fails the write
+  (for a paid job this refuses the step, it does not spend on a write that did not land).
+- **I59 (operation intents).** Each mutation records `started` with its key and request fingerprint before its effects, and its outcome
+  after (`scripts/source/api_idempotency.py`, `OperationStore`). A retry replays a finished outcome for 24 h, answers 409
+  `operation-in-progress` for a started intent with no outcome (never run again; an operator removes the record file to free the key), 422
+  `idempotency-key-reused` for another request, and 409 `idempotency-record-corrupt` for an unreadable record. A 5xx or an exception aborts
+  the intent. Limit: a process that stops mid-action leaves a started record that is not expired automatically; the rule is in
+  `docs/API_CONTRACT.md` (conventions, the Idempotency-Key bullet). The loop's original `IdempotencyStore` keeps the behaviour its loop tests pin; the API does not use it.
+- **I60 (slow verify off the loop and the lock).** Every mutation runs in a worker thread. `verify`, `verify-reasoning` and `refresh` are
+  slow: they hold no effects lock, so STOP and `GET /system/health` answer while a model call is in progress (test with a fake slow verifier,
+  `pieces/test_batch_d_api.py`). Limit: the HTTP request stays open until the verify returns (no status endpoint); two verifies of one model
+  may run together, and the last catalog write wins.
+- **I61 (UI).** A stage model change sends its `via` with the model, and the effort with both; plan polling reads until a settled state with
+  backoff (1 s to 15 s) and no cutoff, and a failed read is retried; the pending plan id is kept in sessionStorage so a reload resumes the
+  wait; a mutation with no response says the outcome is UNKNOWN (tests: `ui/tests/batch_d_ui.test.ts`; the POST /jobs expectation in
+  `ui/tests/contract.test.ts` now includes `via`). Limit: the resume works per browser session only.
+- **I62 (docs).** `docs/UI_ENGINE_HANDOFF.md` carries a status note and marks the 3 Nov gaps that are now closed as HISTORICAL. This
+  section and the matrix below replace the "catalog contracts are null" statement.
+
+### Current capability and verification matrix (2026-11-04)
+
+Routes (`monitor/api.py`, contract in `docs/API_CONTRACT.md`):
+
+| Capability | Route | State |
+|---|---|---|
+| Reads: overview, jobs, job detail and events, results and diff, download, models, stages, limits, health | `GET /api/...` | implemented |
+| Validate job, stages and budget (no change) | `POST /api/jobs/validate`, `/api/stages/validate`, `/api/budget/validate` | implemented (one stage validator, I45) |
+| Queue a job with a frozen stage table | `POST /api/jobs` | implemented (paid budget validated and frozen, I44) |
+| Save stage settings (future jobs) | `PUT /api/stages` | implemented (revision check; the same validator) |
+| Change a running job's future stage | `PATCH /api/loops/{id}/stages` | implemented (not-yet-started stages only; new snapshot revision for that job) |
+| Start loops, global STOP | `POST /api/loops/start`, `POST /api/system/stop` | implemented |
+| Plans: create, read, approve | `POST /api/plans`, `GET /api/plans/{id}`, `POST /api/plans/{id}/approve` | implemented, production only (the planner is a paid call) |
+| Model pool: add, remove, search, refresh prices | `/api/models...` | implemented |
+| Verify a contract, verify reasoning | `POST /api/models/verify`, `/verify-reasoning` | implemented (one free call each for OpenRouter; isolated claude call for Claude Code) |
+| Save limits | `PUT /api/system/limits` | implemented (revision check; `job_review_usd` only at the engine's value) |
+| Resume a failed job, per-job cancel, manual merge | none | not exposed (not in the engine) |
+
+Verification (`config/models.json`, probes in `docs/pilot/model-verify-2026-11-04/`; a contract is used only when it is `verified`):
+
+| Model | Via | writer_file_blocks | repair_edit_blocks | reviewer_verdict |
+|---|---|---|---|---|
+| dots-studio/dots-3-note-preview:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3-ultra-550b-a55b:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3.5-super-vl:free | OpenRouter, free | verified | verified | verified |
+| xingchen-agi/xing4.0-29b-a4b:free | OpenRouter, free | not recorded (429 upstream) | verified | not recorded (429 upstream) |
+| cohere/north-mini-code:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | OpenRouter, free | verified | verified | verified |
+| nvidia/nemotron-3.5-lightning:free | OpenRouter, free | verified | verified | verified |
+| z-ai/glm-5.3-flash | OpenRouter, paid | unverified (no paid verify until the end) | unverified | unverified |
+| deepseek/deepseek-v4.1-flash-1017 | OpenRouter, paid | unverified | unverified | unverified |
+| qwen/qwen3.8-27b | OpenRouter, paid | unverified | unverified | unverified |
+| haiku (claude_code, high) | subscription | unverified (not recorded) | unverified | verified |
+| opus, sonnet, fable (claude_code) | subscription | unverified | unverified | unverified |
+
+Not verified here: live endpoint prices for the paid models, the production roster's North and GLM behaviour, and any paid call. The Windows
+run and the real-API e2e are in the checklist, not repeated here.
+
+### Batch C2, Codex audit recovery (I40, I41, I42, I47, I54, I56, I57, I63, I64, I65; 2026-11-04)
+
+- **I40, durable merge queue.** Each submitted merge is `SATVIK_HOME/merge/<job_id>.json`, written before anything else. States: pending,
+  merging (`head` recorded before the push), pushed, done. On a restart an entry in merging or pushed whose head is an ancestor of
+  `origin/main` is recorded merged and not pushed again; any other is tried from the start. A git or I/O error is kept for a retry and, after
+  three, finished as `merge-error` (kept for the owner). *Limit:* a crash between the push and the `done` write is reconciled by ancestry only;
+  a rewritten `main` that drops the head is retried from the start.
+- **I41, claims.** A taken job's claim is `SATVIK_HOME/queue/claims/<file>.claim` (claimed, running, done, refused), with the owner's pid and
+  process start. A refusal for a busy resource or a limit goes back to the queue (the drain stops, the next start takes it); other refusals,
+  invalid files and approved-plan mismatches go to `queue/refused/`, with the reason in the registry (`refused:<file>`). A claimed job whose
+  owner died is requeued; a running one whose owner died is refused and never run again on its own (its paid calls may have run). An
+  unreadable claim is refused. *Limit:* a crash between the rename into `taken/` and the claim write leaves a job with no claim, which is
+  left in `taken/` for the owner to look at.
+- **I42, one protocol.** pending -> claimed (`take_next`, under `queue/.lock`) -> running (`Registry.begin`, atomic under `home/lock`). The
+  launcher's request check is `begin`, not a lookup then a record; a start refused after `begin` restores the row it replaced. Enqueue refuses
+  an identical job that a live owner has claimed (`duplicate-claimed`).
+- **I47, the merge carries the manifest.** A passed job is submitted with its files' reviewed hash and its locked acceptance tests with their
+  hashes. After the rebase (and again before the push) the merge refuses (`reviewed-bytes-changed`) if the job's bytes or the locked tests
+  differ, and it reruns the job's own acceptance tests before the full pieces suite. *Limit:* the reviewed hash is the one the run recorded;
+  a job whose run recorded no evidence uses the worktree's bytes at the pass.
+- **I54, report forgery (partly fixed; trust limit).** Generated code runs in the same pytest process that writes the JUnit report, so no
+  host-side artifact can be fully independent of it. The controller's check now refuses a report with a case from a file that is not a
+  locked test file, or whose declared count differs from its cases (`p0_gates.verify_junit`, tests in `pieces/test_i54_report_forgery.py`).
+  **Trust limit:** a forgery that reports exactly the locked cases, all passing, is not detected. Closing it needs the result producer in a
+  process the generated code cannot touch, which is a redesign; until then a green run is evidence only as far as the sandbox boundary holds.
+- **I56, green checkpoint and bounds.** Each green run's files are written to `<job>/green/checkpoint.json` (atomic, with the tested hash)
+  before any repair. `restore_green` falls back to it, and refuses a damaged one. An exception during a run puts the green candidate back
+  before the failure snapshot. Sandbox captured output keeps its head and tail (2 MB), a JUnit report over 20 MB is not read, and a writable
+  area over 512 MB fails the run. *Limit:* the writable bind and the output are bounded after the container exits, not during the run; the
+  run's timeout bounds what a run can write in the meantime.
+- **I57, clocks and pids.** The ledger keeps a persisted accounting epoch (`epoch` in `ledger/limits.json`): a clock that jumps back uses the
+  latest instant seen, so the day counts reset once. A jump forward is kept too, so spend is never freed by a wrong clock until real time
+  catches up. Leases, claims, gate slots and paid holds are alive only as the same process (pid AND process start, `loop_home.owner_alive`).
+  *Limit:* without Linux `/proc` the start identity is unknown and the pid alone decides, as before.
+- **I63, the hung-test case.** `DockerSandbox(label=...)` tags its containers; the hung-test case counts only its own label and waits up to
+  60 s for the kill and removal to finish before asserting that none survived. The timeout and the JUnit checks are unchanged.
+- **I64, planned jobs.** A planned job's installed spec, locked acceptance tests and negative-control sources are staged with its change, so
+  the merge carries them (`fix_loop.installed_plan_paths`, passed to `write_change_doc`). Unplanned jobs stage only their own files, as before.
+- **I65, legacy scrub.** `run_job` normalises its scrub keys with `redact.values_of`, so a `{slot: key}` dict contributes its key values
+  (never its slot names), and it scrubs with `redact.scrub` (values and credential shapes). In this tree `fix_loop.main` loads the NVIDIA keys
+  as a list; both shapes are handled.
+
 ### Open items
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
@@ -197,6 +362,6 @@ of the other resolve to the same model. Two stages of the same writer may share 
   temperature 0.1, max_tokens_cap 72000 (Ultra is verbose, about 28K output tokens a task; the model's output limit is 65,536). The writers
   stay Dots and Xing, and reviewer_a stays GLM.
 - **I19:** the code is done (`44fee49`). A real haiku/high verify on the PC is pending, by Local agent 2.
-- **I20:** every OpenRouter catalog contract is still null. Local agent 2 verifies each free catalog model and contract against the real API
-  (about 30 free calls) and publishes the results.
+- **I20 (done, historical wording removed):** the free catalog models were probed on 2026-11-04 (19 pass, 0 fail; two Xing contracts were
+  rate-limited and are not recorded). The results are in `config/models.json` and `docs/pilot/model-verify-2026-11-04/`. See the matrix below.
 - **I11:** replies from the PC agents to this session fail with "not found". Git branches are the report channel; there is no fix here.

@@ -19,6 +19,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import atomic_json
+
 try:
     import msvcrt
 except ImportError:                       # not Windows: fcntl does the same job
@@ -134,6 +136,28 @@ def pid_alive(pid) -> bool:
     return True
 
 
+def process_start(pid):
+    """An identity for a process's start, so a reused pid is not taken for its old owner: the kernel's start time on Linux (/proc), else
+    None (only the pid is then known). Stdlib only; no subprocess."""
+    try:
+        text = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii", errors="replace")
+    except (OSError, ValueError):
+        return None
+    fields = text.rsplit(")", 1)[-1].split()        # after the command name: field 3 (state) is index 0, starttime (22) is index 19
+    return fields[19] if len(fields) > 19 else None
+
+
+def owner_alive(pid, start=None) -> bool:
+    """A recorded owner is alive only if its pid is alive AND it is still the process that started under `start` (its process_start when
+    the owner was recorded): a reused pid is a dead owner (I41, I57). With no start identity (None, or not readable here) the pid alone decides."""
+    if not pid_alive(pid):
+        return False
+    if start is None:
+        return True
+    now = process_start(pid)
+    return now is None or str(now) == str(start)
+
+
 _THREAD_LOCKS = {}                         # POSIX fcntl locks do not exclude threads of one process; one thread lock per lock file
 _THREAD_LOCKS_GUARD = threading.Lock()
 
@@ -209,17 +233,8 @@ def _load(path, default):
 
 
 def _write_bytes(path, data: bytes):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_bytes(data)
-    for _ in range(40):                   # Windows refuses a replace while another process has the file open for a moment
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            time.sleep(0.05)
-    os.replace(tmp, path)
+    """Shared state files: the one atomic writer (atomic_json, I58): bounded retries on a Windows sharing violation."""
+    atomic_json.write_bytes_atomic(path, data)
 
 
 def _save(path, obj):
@@ -238,14 +253,15 @@ def _lease_path(root, job_id) -> Path:
 
 def _is_stale(lease, now) -> bool:
     return (not lease.get("released") and now - float(lease.get("heartbeat", 0.0)) > STALE_S
-            and not pid_alive(lease.get("pid", 0)))
+            and not owner_alive(lease.get("pid", 0), lease.get("start")))
 
 
 def _live(root, job_id) -> bool:
-    """A claim or a running request is held while its lease is not released and its process is alive. The 5-minute heartbeat rule governs
-    only a lease TAKEOVER (Lease.acquire, Lease.stale), so a killed job frees its claims at once."""
+    """A claim or a running request is held while its lease is not released and its owner is alive: the same process that took it, by pid
+    AND process start, so a reused pid is a dead owner (I57). The 5-minute heartbeat rule governs only a lease TAKEOVER (Lease.acquire,
+    Lease.stale), so a killed job frees its claims at once."""
     lease = _load(_lease_path(root, job_id), None)
-    return lease is not None and not lease.get("released") and pid_alive(lease.get("pid", 0))
+    return lease is not None and not lease.get("released") and owner_alive(lease.get("pid", 0), lease.get("start"))
 
 
 def _stored_gen(root, job_id) -> int:
@@ -287,7 +303,8 @@ class Lease:
             if cur is not None and not cur.get("released") and not _is_stale(cur, now):
                 raise LeaseHeld(f"job {job_id} is held by pid {cur.get('pid')}")
             gen = (int(cur.get("generation", 0)) if cur else 0) + 1
-            _save(path, {"job_id": job_id, "pid": os.getpid(), "started": now, "heartbeat": now, "generation": gen, "released": False})
+            _save(path, {"job_id": job_id, "pid": os.getpid(), "start": process_start(os.getpid()), "started": now, "heartbeat": now,
+                         "generation": gen, "released": False})
             return gen
 
     def beat(self, job_id, gen):
@@ -452,12 +469,29 @@ class Registry:
             cur = table.get(key)
             now = time.time()
             if cur and cur.get("job") != job_id and cur.get("state") == "running" and _live(root, cur["job"]):
-                raise RequestRunning(f"request {key} is running in job {cur['job']}")
+                err = RequestRunning(f"request {key} is running in job {cur['job']}")
+                err.job = cur["job"]
+                raise err
             passed = bool(cur) and cur.get("base") == base and (cur.get("state") == "passed" or bool(cur.get("was_passed")))
             table[key] = {"job": job_id, "gen": gen, "state": "running", "base": base, "started": now, "finished": None,
                           "seq": self._seq(table), "result": cur.get("result") if passed and cur else None, "was_passed": passed}
             _save(self._path(root), table)
             return "tests-only" if passed else "run"
+
+    def restore(self, key, job_id, gen, prev):
+        """Puts back the row that begin() replaced, when the row is still this job's: a start refused after its request began leaves the
+        request as it was (I42). prev None means there was no row before."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+            cur = table.get(key)
+            if not cur or cur.get("job") != job_id or int(cur.get("gen", -1)) != int(gen):
+                return
+            if prev is None:
+                del table[key]
+            else:
+                table[key] = prev
+            _save(self._path(root), table)
 
     def record(self, key, job_id, gen, state, base, result):
         root = _dir(self._home)
@@ -480,6 +514,16 @@ class Registry:
             table[key] = {"count": count}
             _save(self._path(root), table)
             return count
+
+    def note(self, key, job, state, result=None):
+        """A row for a job that never ran here, such as a refusal the dashboard must show (I41). It holds no lease: the row says what happened."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+            now = time.time()
+            table[key] = {"job": job, "gen": 0, "state": state, "base": None, "result": result, "started": now, "finished": now,
+                          "seq": self._seq(table)}
+            _save(self._path(root), table)
 
     def counters(self) -> dict:
         """Every counter as {name: count}."""
@@ -506,9 +550,9 @@ class Gate:
         while True:
             with _locked(root):
                 table = _load(path, {})
-                held = [e for e in table.get(name, []) if pid_alive(e.get("pid", 0))]
+                held = [e for e in table.get(name, []) if owner_alive(e.get("pid", 0), e.get("start"))]
                 if len(held) < cap:
-                    held.append({"pid": os.getpid(), "gen": gen, "token": token})
+                    held.append({"pid": os.getpid(), "start": process_start(os.getpid()), "gen": gen, "token": token})
                     table[name] = held
                     _save(path, table)
                     break

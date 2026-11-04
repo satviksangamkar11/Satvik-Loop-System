@@ -508,9 +508,10 @@ def test_glm_review_budget_is_reserved_before_the_request_is_sent(tmp_path):
     fake = paid_fake(check)
     built, _ = client(tmp_path, fake)
     built.call("reviewer_a", "system", "user", kind="reviewer")
-    # 10 characters of prompt -> ceil(10 / 3) = 4 prompt tokens, plus the 16,000-token output allowance
-    assert seen["reserved"] == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
-    assert oc.review_reservation("system", "user", 16000, oc.PRICING[GLM_PAID]) == pytest.approx(4 * 0.15e-6 + 16000 * 0.50e-6)
+    # I49: 10 UTF-8 bytes of prompt -> 10 prompt tokens at most (one per byte), plus the chat framing, plus the 16,000-token output allowance
+    bound = (10 + oc.PROMPT_FRAMING_TOKENS) * 0.15e-6 + 16000 * 0.50e-6
+    assert seen["reserved"] == pytest.approx(bound)
+    assert oc.review_reservation("system", "user", 16000, oc.PRICING[GLM_PAID]) == pytest.approx(bound)
 
 
 def test_cost_falls_back_to_tokens_at_the_spec_prices(tmp_path):

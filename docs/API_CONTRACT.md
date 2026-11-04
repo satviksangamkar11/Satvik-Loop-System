@@ -10,8 +10,18 @@ these shapes do not without a version bump. The engine facts behind each field a
   value.
 - **Errors:** always `{"error": {"code": "<stable-code>", "message": "<human text>", "details": {…}}}`, with HTTP 400 (validation), 404
   (unknown id), 409 (state conflict or duplicate), 422 (refused by a rule), 503 (backend or engine unavailable).
-- **Mutations:** send the header `Idempotency-Key: <uuid>`. A repeat with the same key returns the first response and does nothing again.
-  This is how a double click stays safe.
+- **Mutations:** send the header `Idempotency-Key: <uuid>`. The key and a fingerprint of the request (method, path and body) are recorded
+  before the action runs, and its outcome after (`SATVIK_HOME/api/idempotency/<key>.json`, I59). A repeat with the same key and request
+  returns the recorded response and does nothing again. This is how a double click stays safe. The rules for a repeat:
+  - finished, same request, within 24 h of finishing: the recorded response (replayed);
+  - finished, same request, after 24 h: the key is free again and the request runs as new (retention);
+  - no recorded outcome yet (the first request is running, or its process stopped mid-action): 409 `operation-in-progress`. It is not
+    expired and never runs again on its own. An operator checks the effect, then removes that record file to free the key;
+  - the same key with another request: 422 `idempotency-key-reused`;
+  - a record that cannot be read or does not match the format: 409 `idempotency-record-corrupt` (never treated as absent);
+  - a request that raised or answered 5xx leaves no record, so the same key may be sent again.
+  Model calls (verify, verify-reasoning, refresh) run in a worker thread and hold no lock during the call, so STOP and the reads answer
+  while one is in progress (I60).
 - **Updates:** by polling; there is no push in v1.
   | What | Poll every |
   |---|---|
@@ -32,6 +42,9 @@ these shapes do not without a version bump. The engine facts behind each field a
 **Single worker only (`--workers 1`).** The API assumes one uvicorn worker: its process-wide lock (the config and limits writes) and the
 idempotency store (the Idempotency-Key replay) live in that one process. With more workers, two processes could write the same config at once
 and a repeat with the same key could run twice. The run command above pins `--workers 1`; do not raise it.
+
+Stage writes (`PUT /stages`, `POST /jobs` with stages, `PATCH /loops/{id}/stages`) and `POST /stages/validate` all run the same validator, so an
+unverified model is refused with the same code everywhere (I45).
 
 ## 1. Enums (closed sets: show only these)
 - `derived_state` (a job, as the UI shows it): `queued`, `running`, `waiting`, `waiting-unknown`, `stale-warning`, `orphan`, `finished`,

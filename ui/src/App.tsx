@@ -16,7 +16,8 @@ import {
   X,
 } from 'lucide-react';
 
-import { ApiHttpError, SatvikApiClient, buildStageChanges } from './api/client';
+import { ApiHttpError, SatvikApiClient, buildStageChanges, stageRowWithModel } from './api/client';
+import { pendingPlanId, pollPlanUntilSettled, rememberPendingPlan } from './api/planPoll';
 import { IdempotencyManager } from './api/idempotency';
 import { EventStreamBuffer } from './api/normalizer';
 import type {
@@ -668,12 +669,15 @@ export default function App() {
     const files = planFiles.split('\n').map((s) => s.trim()).filter(Boolean);
     try {
       const created = await apiClient.createPlan({ name: planName, request: planPrompt, files }, idemKey);
-      let plan = created;
-      // The plan is drafted asynchronously: read it until it leaves "planning" (bounded).
-      for (let i = 0; i < 30 && plan.state === 'planning'; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        plan = await apiClient.getPlan(created.plan_id);
-      }
+      // The plan is drafted asynchronously: read it until a settled state, with backoff and no cutoff (I61). Remembered for this
+      // session, so a reload resumes the wait.
+      rememberPendingPlan(created.plan_id);
+      const plan = await pollPlanUntilSettled({
+        initial: created,
+        fetchPlan: () => apiClient.getPlan(created.plan_id),
+        onUpdate: (p) => setGeneratedPlan(p),
+      });
+      rememberPendingPlan(null);
       setGeneratedPlan(plan);
       setPlanApproveAssumed(false);
       setApiNotice({
@@ -692,6 +696,29 @@ export default function App() {
       setPendingAction(null);
     }
   }, [apiClient, getOrCreateIdempotencyKey, planFiles, planName, planPrompt, surfaceApiError]);
+
+  // A plan this session was still drafting when the page was reloaded: resume its polling until it settles (I61).
+  useEffect(() => {
+    const planId = pendingPlanId();
+    if (!planId) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const initial = await apiClient.getPlan(planId, controller.signal);
+        const plan = await pollPlanUntilSettled({
+          initial,
+          fetchPlan: () => apiClient.getPlan(planId, controller.signal),
+          signal: controller.signal,
+          onUpdate: (p) => setGeneratedPlan(p),
+        });
+        rememberPendingPlan(null);
+        setGeneratedPlan(plan);
+      } catch {
+        /* aborted (unmount) or the plan cannot be read: nothing to resume */
+      }
+    })();
+    return () => controller.abort();
+  }, [apiClient]);
 
   const handleApprovePlan = useCallback(async () => {
     if (!generatedPlan || !generatedPlan.job_sha256) return;
@@ -1482,7 +1509,7 @@ export default function App() {
                 setStageDrafts((prev) => ({
                   ...prev,
                   [stageViewProfile]: (prev[stageViewProfile] ?? []).map((r) =>
-                    r.stage_key === stKey ? { ...r, configured_model_id: modelId } : r
+                    r.stage_key === stKey ? stageRowWithModel(r, modelId, models) : r
                   ),
                 }))
               }
