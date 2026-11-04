@@ -169,8 +169,8 @@ export const SystemPage: React.FC<SystemPageProps> = ({
         <div>
           <h2 className="text-sm font-bold uppercase tracking-wider font-mono text-sky-400">Limits (PUT /api/system/limits)</h2>
           <p className={`text-xs ${textMuted}`}>
-            PUT needs a revision. GET /system/limits does not send one (Gap C-08), so saving stays locked until the backend provides it.
-            Blank means the backend has not reported a value.
+            Saving sends the revision this page was loaded at. A stale revision (409) or a value the engine does not apply (422) is shown
+            as the backend's message. Blank means the backend has not reported a value.
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono items-end">
@@ -215,7 +215,7 @@ export const SystemPage: React.FC<SystemPageProps> = ({
               saveBlocked ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' : 'bg-sky-500 text-slate-950 hover:bg-sky-400'
             }`}
           >
-            {saveBlocked ? 'Locked: no revision from the backend (C-08)' : `Save limits (rev ${limitsRevision})`}
+            {saveBlocked ? 'Locked: no revision from the backend' : `Save limits (rev ${limitsRevision})`}
           </button>
         </div>
       </div>

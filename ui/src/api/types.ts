@@ -379,6 +379,8 @@ export interface SystemHealth {
 }
 
 export interface SystemLimits {
+  /** The limits' revision (GET /system/limits); PUT /system/limits must send it. null when the backend did not report one. */
+  revision: number | null;
   leases: Array<{ job_id: string; held: boolean | null; heartbeat_age_s: number | null; pid_alive: boolean | null }>;
   claims: Array<{ path: string; job_id: string }>;
   gates: Array<{ gate: string; holders: number | null; capacity: number | null }>;

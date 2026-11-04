@@ -268,13 +268,15 @@ describe('normalizeLimits against system_health.json', () => {
   });
 
   it('invents no sandbox slot count and no review ceiling', () => {
-    expect(Object.keys(limits)).toEqual(['leases', 'claims', 'gates', 'ledger']);
+    expect(Object.keys(limits)).toEqual(['revision', 'leases', 'claims', 'gates', 'ledger']);
+    expect(limits.revision).toBe(1);
     expect(JSON.stringify(limits)).not.toMatch(/2\.5000|65536/);
   });
 
   it('keeps a missing limit as null', () => {
     const empty = normalizeLimits({});
     expect(empty).toEqual({
+      revision: null,
       leases: [],
       claims: [],
       gates: [],
@@ -506,5 +508,47 @@ describe('GET /jobs against jobs.json', () => {
     const list = await client.getJobs();
     expect(list.index_ok).toBe(true);
     expect(list.jobs.map((j) => j.job_id)).toEqual(jobsFx.jobs.map((j) => j.job_id));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. System limits: the revision is kept, and a PUT shows the backend's refusal (I8)
+// ---------------------------------------------------------------------------
+
+describe('System limits save (PUT /system/limits)', () => {
+  it('keeps the revision from GET /system/limits, and null when the backend sent none', () => {
+    expect(normalizeLimits(systemHealthFx.limits).revision).toBe(1);
+    expect(normalizeLimits({ leases: [] }).revision).toBeNull();
+  });
+
+  it('a stale revision (409) is refused with the backend message and its current revision', async () => {
+    const { client, captured } = liveClient(() => ({
+      status: 409,
+      body: { error: { code: 'stale-revision', message: 'the limits are at revision 2, not 1', details: { revision: 2 } } },
+    }));
+    await expect(client.putSystemLimits({ revision: 1, sandbox_slots: 2 }, KEY)).rejects.toMatchObject({
+      status: 409,
+      code: 'stale-revision',
+      details: { revision: 2 },
+    });
+    expect(captured[0].body).toEqual({ revision: 1, sandbox_slots: 2 });
+  });
+
+  it('a value the engine does not apply (422 not-applied-by-engine) is refused with its reason', async () => {
+    const { client } = liveClient(() => ({
+      status: 422,
+      body: {
+        error: {
+          code: 'not-applied-by-engine',
+          message: 'job_review_usd 0.01 would not apply: the engine requires exactly 0.05',
+          details: { required: 0.05, given: 0.01 },
+        },
+      },
+    }));
+    await expect(client.putSystemLimits({ revision: 1, job_review_usd: 0.01 }, KEY)).rejects.toMatchObject({
+      status: 422,
+      code: 'not-applied-by-engine',
+      message: expect.stringContaining('would not apply'),
+    });
   });
 });
