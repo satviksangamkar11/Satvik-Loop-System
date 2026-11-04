@@ -301,6 +301,20 @@ def test_models_shape_matches_fixture(world):
     assert body["index_ok"] is True
 
 
+def test_ui_and_api_contract_tests_read_the_same_fixture_files(world):
+    """B4: the UI contract tests and this file read the same monitor/fixtures files, and the sample fields the checklist names are present:
+    GET /system/limits revision, GET /jobs {jobs, index_ok} (jobs.json), GET /system/health profile."""
+    ui_test = (REPO / "ui" / "tests" / "contract.test.ts").read_text(encoding="utf-8")
+    for name in ("models.json", "overview.json", "stages.json", "system_health.json", "running_job.json", "results_escalate.json", "jobs.json"):
+        assert f"../../monitor/fixtures/{name}" in ui_test, name
+        assert (FIXTURES / name).is_file(), name
+    assert set(fixture("jobs.json")) == {"jobs", "index_ok"}
+    assert isinstance(fixture("system_health.json")["limits"]["revision"], int)
+    assert "profile" in fixture("system_health.json")["health"]
+    contract = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+    assert '"revision": 1' in contract and "### Job list (`GET /jobs`)" in contract and '"profile": "test|production"' in contract
+
+
 def test_the_contract_places_contracts_and_reasoning_mode_under_capabilities(world):
     """M7: the prose and the example agree with the fixture and the API: contracts and reasoning_mode are under `capabilities`."""
     doc = (REPO / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")

@@ -66,6 +66,9 @@ and a repeat with the same key could run twice. The run command above pins `--wo
  "finished": "2026-11-03T17:43:02Z", "free_requests_used": 3, "review_usd_spent": 0.0}
 ```
 
+### Job list (`GET /jobs`)
+`GET /jobs?filter=all|running|queued|finished|failed` answers `{"jobs": [JobSummary…], "index_ok": true|false}`. The sample is `monitor/fixtures/jobs.json`.
+
 ### JobDetail (`GET /loops/{id}`)
 JobDetail is a JobSummary plus these fields:
 ```json

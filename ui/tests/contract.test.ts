@@ -11,9 +11,11 @@ import systemHealthFx from '../../monitor/fixtures/system_health.json';
 import runningJobFx from '../../monitor/fixtures/running_job.json';
 import untriggeredJobFx from '../../monitor/fixtures/untriggered_stage_job.json';
 import resultsEscalateFx from '../../monitor/fixtures/results_escalate.json';
+import jobsFx from '../../monitor/fixtures/jobs.json';
 
 import {
   normalizeEventPage,
+  normalizeJobSummary,
   normalizeJobDetail,
   normalizeLimits,
   normalizeModel,
@@ -483,5 +485,26 @@ describe('mutation payloads match the contract', () => {
     const payload = buildStagesPayload(stageRows);
     expect(Object.keys(payload)).toHaveLength(10);
     expect(payload.reviewer_a.model).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. GET /jobs: {jobs, index_ok} (monitor/fixtures/jobs.json, read unchanged)
+// ---------------------------------------------------------------------------
+
+describe('GET /jobs against jobs.json', () => {
+  it('normalizes every fixture job to the same id, state and end state', () => {
+    expect(Object.keys(jobsFx).sort()).toEqual(['index_ok', 'jobs']);
+    const jobs = jobsFx.jobs.map((j) => normalizeJobSummary(j));
+    expect(jobs.map((j) => j.job_id)).toEqual(jobsFx.jobs.map((j) => j.job_id));
+    expect(jobs.map((j) => j.derived_state)).toEqual(jobsFx.jobs.map((j) => j.derived_state));
+    expect(jobs.map((j) => j.end_state)).toEqual(jobsFx.jobs.map((j) => j.end_state));
+  });
+
+  it('the client returns the jobs and index_ok from the wire', async () => {
+    const { client } = liveClient(() => ({ status: 200, body: jobsFx }));
+    const list = await client.getJobs();
+    expect(list.index_ok).toBe(true);
+    expect(list.jobs.map((j) => j.job_id)).toEqual(jobsFx.jobs.map((j) => j.job_id));
   });
 });
