@@ -335,6 +335,8 @@ export interface StageSetting {
   via: Via | null;
   model_selectable: boolean | null;
   inherits: string | null;
+  /** The contract a model must have `verified` to be used for this stage (GET /stages `required_contract`). */
+  required_contract: SemanticContract | null;
   effort: Effort | null;
   revision: number | null;
   source: string | null;

@@ -452,7 +452,9 @@ export class SatvikApiClient {
       body: {
         job_path: payload.job_path,
         rerun: payload.rerun,
-        stages: buildStagesPayload(payload.stages),
+        // Only the selectable rows are overrides. A locked or inherited row (model_selectable false, model null, e.g. reviewer_a in
+        // the test profile) cannot be set, and the API refuses a null model for it (bad-model), so it is left out.
+        stages: buildStagesPayload(payload.stages.filter((row) => row.model_selectable === true)),
         stage_revision: payload.stage_revision,
         paid_budget_usd: payload.paid_budget_usd,
       },
@@ -662,6 +664,19 @@ export class SatvikApiClient {
   }
 }
 
+/**
+ * One problem as text. The API sends `details.problems` as plain strings (POST /jobs/validate) or as objects {code, stage, message}
+ * (POST /stages/validate, POST /jobs); an object is shown by its message, never as "[object Object]".
+ */
+export function problemText(problem: unknown): string {
+  if (typeof problem === 'string') return problem;
+  if (isRecord(problem)) {
+    if (typeof problem.message === 'string') return problem.message;
+    if (typeof problem.code === 'string') return problem.code;
+  }
+  return 'unreadable problem';
+}
+
 function errorFromEnvelope(
   status: number,
   body: unknown,
@@ -669,11 +684,15 @@ function errorFromEnvelope(
   idempotencyKey?: string
 ): ApiHttpError {
   const errObj = isRecord(body) && isRecord(body.error) ? body.error : {};
+  const details = isRecord(errObj.details) ? { ...errObj.details } : {};
+  if (Array.isArray(details.problems)) {
+    details.problems = details.problems.map(problemText);
+  }
   return new ApiHttpError({
     status,
     code: typeof errObj.code === 'string' ? errObj.code : `http-${status}`,
     message: typeof errObj.message === 'string' ? errObj.message : `HTTP ${status} from ${endpoint}`,
-    details: isRecord(errObj.details) ? errObj.details : {},
+    details,
     endpoint,
     idempotencyKey,
   });

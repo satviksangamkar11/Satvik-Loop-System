@@ -510,6 +510,7 @@ export function normalizeStageSetting(raw: Record<string, any>): StageSetting | 
     via: oneOfOrNull<Via>(raw.via, ['openrouter', 'claude_code']),
     model_selectable: boolOrNull(raw.model_selectable),
     inherits: strOrNull(raw.inherits),
+    required_contract: oneOfOrNull<SemanticContract>(raw.required_contract, SEMANTIC_CONTRACTS),
     effort: oneOfOrNull<Effort>(raw.effort, EFFORTS_ALL),
     revision: numOrNull(raw.revision),
     source: strOrNull(raw.source),

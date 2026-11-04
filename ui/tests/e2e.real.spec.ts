@@ -133,9 +133,6 @@ test.describe('Satvik Loop Control Center (LIVE mode, real backend)', () => {
 
     // First submit: queued (201) on the first project, already pending (409) on the later ones. Second submit: always 409.
     await page.getByTestId('queue-job-btn').click();
-    await page.waitForTimeout(2500);
-    console.log('DEBUG-NOTICE', JSON.stringify(await page.getByTestId('api-notice').allInnerTexts().catch(() => 'no-notice-testid')));
-    console.log('DEBUG-BODY', (await page.locator('body').innerText()).slice(0, 1500).replace(/\n+/g, ' | '));
     await expect(page.getByText(/^Queued as|409-duplicate-pending/).first()).toBeVisible();
 
     await page.getByTestId('queue-job-btn').click();
