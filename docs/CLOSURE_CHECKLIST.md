@@ -42,7 +42,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
      `npm run test:e2e` passes against the real API.
 6. [x] **Done: PR #39 merged → `main` `96efdef`, pinned to head `c4dc55f`.** **One PR to `main`** with the API, the UI repair, the integration fixes and the contract sync. Done when it is merged and pinned to its
    head SHA.
-7. [ ] **Ran (`68097a5`): 7 pages render live data, 0 console errors; suite 1317 passed, 1 failed (I34). Ticks when I34 is fixed.** **Windows check (Local agent 2):** a fresh worktree of `main`;
+7. [x] **Done: Windows rerun on main `f8c4b73`: 1325 passed, 3 skipped, 0 failed (`5bebf88`).** **Ran (`68097a5`): 7 pages render live data, 0 console errors; suite 1317 passed, 1 failed (I34).** **Windows check (Local agent 2):** a fresh worktree of `main`;
    - run `pip install -r monitor/requirements.txt`, then `python -m uvicorn monitor.api:app --port 8765` with the real `SATVIK_HOME`;
    - in `ui/`, run `npm ci` and then `npm run dev:live`;
    - open each of the 7 pages, take screenshots, and push them to branch `windows-ui-check-2026-11-04`.
@@ -86,7 +86,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I31 ✅ (`69c5312`) | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
 | I32 ✅ (`d1c1e08`: startup rebuild + CLI, 8 tests) | Nothing calls `job_history.rebuild_index`: history.db is built only by finish/merge hooks, so a missing or corrupt index never comes back on its own | Rebuild from the files when the index is missing or unreadable (API startup) plus a CLI | A test: delete history.db, start the API, index_ok true |
 | I33 ✅ (`49fd9f4`, `e5e7585`) | The PC records verify results only in its local config/models.json; recording them in the repo makes 10 Python tests and 3 real-API e2e tests fail, because they assumed an all-null catalog | Tests build their own catalog (branch `i20-tests`); the real results go to main with them | Suite green with the real catalog on main |
-| I34 ✅ cloud (`ead70b4`, `e5e7585`; merged #40 `f8c4b73`); Windows rerun sent to Local agent 2 (branch `windows-rerun-2026-11-04`) | Windows: `test_rebuild_index_…corrupt_index…` fails with WinError 32; a sqlite connection to a corrupt history.db is left open, so rebuild cannot delete it (would also break the I32 startup rebuild on Windows) | Close every connection on every path (branch `i34-win`) | A test proves no connection stays open; passes on Windows |
+| I34 ✅ cloud (`ead70b4`, `e5e7585`; merged #40 `f8c4b73`); passes on Windows `5bebf88` | Windows: `test_rebuild_index_…corrupt_index…` fails with WinError 32; a sqlite connection to a corrupt history.db is left open, so rebuild cannot delete it (would also break the I32 startup rebuild on Windows) | Close every connection on every path (branch `i34-win`) | A test proves no connection stays open; passes on Windows |
 | I35 ✅ (`ac1f22c`: finished from the registry; end state/tests/verdict truly absent for pre-archive jobs, documented) | Dashboard shows Unknown end_state/tests/verdict/finished for pre-archive tl-*/fl-* jobs (Windows check) | Investigate: honest missing data (document) or an unread source (fix) (`i34-win`) | Decided with evidence |
 
 ## C. Owner-only (not blocking)
