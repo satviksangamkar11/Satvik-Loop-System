@@ -42,7 +42,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
      `npm run test:e2e` passes against the real API.
 6. [x] **Done: PR #39 merged → `main` `96efdef`, pinned to head `c4dc55f`.** **One PR to `main`** with the API, the UI repair, the integration fixes and the contract sync. Done when it is merged and pinned to its
    head SHA.
-7. [ ] **Ran (`68097a5`): 7 pages render live data, 0 console errors; suite 1317 passed, 1 failed (I34). Ticks when I34 is fixed.** **Windows check (Local agent 2):** a fresh worktree of `main`;
+7. [x] **Done: Windows rerun on main `f8c4b73`: 1325 passed, 3 skipped, 0 failed (`5bebf88`).** **Ran (`68097a5`): 7 pages render live data, 0 console errors; suite 1317 passed, 1 failed (I34).** **Windows check (Local agent 2):** a fresh worktree of `main`;
    - run `pip install -r monitor/requirements.txt`, then `python -m uvicorn monitor.api:app --port 8765` with the real `SATVIK_HOME`;
    - in `ui/`, run `npm ci` and then `npm run dev:live`;
    - open each of the 7 pages, take screenshots, and push them to branch `windows-ui-check-2026-11-04`.
@@ -63,8 +63,8 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I8 ✅ (`08361b1`: System page saves with revision; 409 stale and not-applied-by-engine shown. No job_review_usd input in the UI) | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
 | I9 ✅ (`69c5312`) | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
 | I10 ✅ (`69c5312`) | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
-| I11 | Replies from the PC agents to this session fail ("not found") | Known platform limit; git branches are the report channel | Documented (no fix possible here) |
-| I12 | The p2-api commits are only in this container's local worktree | Merge onto the pushed working branch as soon as the API agent reports (item 3) | On GitHub |
+| I11 ✅ documented (As integrated, open items) | Replies from the PC agents to this session fail ("not found") | Known platform limit; git branches are the report channel | Documented (no fix possible here) |
+| I12 ✅ (on GitHub, merged in #39) | The p2-api commits are only in this container's local worktree | Merge onto the pushed working branch as soon as the API agent reports (item 3) | On GitHub |
 | I13 ✅ (passes on Windows, `68097a5`) | (Cloud 2026-11-04 `e5e7585`: 1323 passed, 4 skipped, root-only only; UI unit 56, fixture e2e 12, real e2e 21.) The cloud suite has one root-only failure (`test_plan_job.py::…_read_only`) | Environmental; must pass on Windows (item 7) | Passes in the Windows suite run |
 | I14 | Production `reviewer_b` is North, which doesn't work | Owner decision (section C) | — |
 | I15 ✅ (`bd6ed97`) | `PUT /system/limits job_review_usd` is stored, but the engine's production gate still requires exactly 0.05, so a different value would not apply (found in the API report) | The API refuses any job_review_usd other than the engine's accepted value with `not-applied-by-engine`, until the engine reads it; the UI shows that reason | A test of the refusal; the UI shows the reason |
@@ -86,7 +86,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I31 ✅ (`69c5312`) | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
 | I32 ✅ (`d1c1e08`: startup rebuild + CLI, 8 tests) | Nothing calls `job_history.rebuild_index`: history.db is built only by finish/merge hooks, so a missing or corrupt index never comes back on its own | Rebuild from the files when the index is missing or unreadable (API startup) plus a CLI | A test: delete history.db, start the API, index_ok true |
 | I33 ✅ (`49fd9f4`, `e5e7585`) | The PC records verify results only in its local config/models.json; recording them in the repo makes 10 Python tests and 3 real-API e2e tests fail, because they assumed an all-null catalog | Tests build their own catalog (branch `i20-tests`); the real results go to main with them | Suite green with the real catalog on main |
-| I34 ✅ cloud (`ead70b4`, test helper `e5e7585`); Windows rerun pending | Windows: `test_rebuild_index_…corrupt_index…` fails with WinError 32; a sqlite connection to a corrupt history.db is left open, so rebuild cannot delete it (would also break the I32 startup rebuild on Windows) | Close every connection on every path (branch `i34-win`) | A test proves no connection stays open; passes on Windows |
+| I34 ✅ cloud (`ead70b4`, `e5e7585`; merged #40 `f8c4b73`); passes on Windows `5bebf88` | Windows: `test_rebuild_index_…corrupt_index…` fails with WinError 32; a sqlite connection to a corrupt history.db is left open, so rebuild cannot delete it (would also break the I32 startup rebuild on Windows) | Close every connection on every path (branch `i34-win`) | A test proves no connection stays open; passes on Windows |
 | I35 ✅ (`ac1f22c`: finished from the registry; end state/tests/verdict truly absent for pre-archive jobs, documented) | Dashboard shows Unknown end_state/tests/verdict/finished for pre-archive tl-*/fl-* jobs (Windows check) | Investigate: honest missing data (document) or an unread source (fix) (`i34-win`) | Decided with evidence |
 
 ## C. Owner-only (not blocking)
