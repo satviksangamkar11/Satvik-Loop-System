@@ -240,7 +240,7 @@ async def models_remove(model_id: str, request: Request):
 @app.post("/api/models/verify")
 async def models_verify(request: Request):
     body = await _json(request)
-    return _run(request, body, lambda home, b: (200, config_api.verify_contract(home, b.get("model_id"), b.get("contract"))))
+    return _run(request, body, lambda home, b: (200, config_api.verify_contract(home, b.get("model_id"), b.get("contract"), b.get("effort"))))
 
 
 @app.post("/api/models/verify-reasoning")
