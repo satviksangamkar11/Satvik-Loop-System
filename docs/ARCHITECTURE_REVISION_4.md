@@ -188,6 +188,29 @@ of the other resolve to the same model. Two stages of the same writer may share 
   is used for the probe only, so a pass at one effort is not recorded as tied to that effort.
 - **`planner_json` has no Claude Code check.** A Claude Code model reports it `unverified`, so it is never eligible for the planner stage.
 
+### Batch C, Codex audit (I38, I39, I43, I46, I53; 2026-11-04)
+
+- **I38, STOP in production.** The stop check reaches the P1b runner and is checked before each new model step, each repair step, and
+  each retry or wait (the adapter's wait hook). A call already in flight finishes; its reply is kept, and the job ends `stopped` with its
+  files restored. Remaining limit: the outer loop still checks STOP only between jobs, and a call in flight runs to its own timeout.
+- **I39, merge sandbox.** `SUITE_INCLUDE` holds every folder the tests read by path (`pieces`, `scripts`, `config`, `tests`, `docs`,
+  `monitor`, `ui`, `tools`, `specs`). The image pins fastapi 0.162.0, starlette 1.7.0 and httpx 0.28.1, each above its bound in
+  `monitor/requirements.txt`. `pieces/test_sandbox_image_deps.py` fails when a suite import or a path is not covered. Remaining limit:
+  uvicorn is not pinned (the suite does not import it); the pins are exact versions, so a new suite import needs a new pin.
+- **I43, API-queued jobs.** A job queued with its stage table carries `api` in its queue name (`<ns>-api-<pid>-<name>.json`). It is refused
+  (not run, reported `refused`) when its table is missing, corrupt, of the wrong shape, or was not moved with it. Remaining limit: the
+  refusal is printed and returned by the drainer; it is not written to the registry, so the dashboard does not show it as a failed job. A
+  job queued without a table (the CLI path) still reads the roster at start, as before.
+- **I46, independence.** Lineage keeps, per job file, the served identity of every contributor (writers, the specialist repair step, the
+  review-fix repair) under `served` in `lineage.json`. The panel excludes every contributing model. Claude Code identities are the
+  requested model plus the models the CLI reports in `modelUsage`; that report is self-declared by the CLI and is not checked against the
+  provider. OpenRouter identities are the model the adapter verified. Lineage files written before this change have no `served` record and
+  fall back to their chain.
+- **I53, controller paths.** A loop job may not write any `.py` directly in `scripts/source/`, nor any file under `monitor/`, `config/` or
+  `tools/sandbox/`. Consequence: the pilot jobs under `docs/pilot/` (they develop `scripts/source` modules) are refused by the validator.
+  Their historical loaders run with the rule waived (`prod_harness.controller_rule_waived`). A controller change needs a separate trusted
+  workflow, which does not exist yet. Remaining limit: the rule covers the job's `files`, not what a reviewer or model may say about them.
+
 ### Open items
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass
