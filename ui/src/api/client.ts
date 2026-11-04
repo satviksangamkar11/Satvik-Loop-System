@@ -86,12 +86,12 @@ export function buildModelPath(modelId: string): string {
  */
 export function buildStagesPayload(
   rows: StageSetting[]
-): Record<string, { model: string | null; via: Via | null; effort: Effort | null; settings: Record<string, unknown> }> {
-  const out: Record<string, { model: string | null; via: Via | null; effort: Effort | null; settings: Record<string, unknown> }> = {};
+): Record<string, { model: string | null; via?: Via; effort: Effort | null; settings: Record<string, unknown> }> {
+  const out: Record<string, { model: string | null; via?: Via; effort: Effort | null; settings: Record<string, unknown> }> = {};
   for (const row of rows) {
     out[row.stage_key] = {
       model: row.configured_model_id,
-      via: row.via,
+      ...viaField(row),
       effort: row.effort,
       settings: row.settings,
     };
@@ -99,12 +99,20 @@ export function buildStagesPayload(
   return out;
 }
 
+/**
+ * The row's transport, sent only when the row has one (I61). The API refuses an explicit `via: null` override (bad-via), so a locked
+ * or inherited row with no transport sends no `via` key at all.
+ */
+function viaField(row: StageSetting): { via?: Via } {
+  return row.via === 'openrouter' || row.via === 'claude_code' ? { via: row.via } : {};
+}
+
 /** Rows of PUT /stages and POST /stages/validate (`changes`). Each row carries its model's `via` with the model (I61). */
 export function buildStageChanges(rows: StageSetting[]): StageChange[] {
   return rows.map((row) => ({
     stage: row.stage_key,
     model: row.configured_model_id,
-    via: row.via,
+    ...viaField(row),
     effort: row.effort,
     settings: row.settings,
   }));

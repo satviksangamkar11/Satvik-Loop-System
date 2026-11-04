@@ -55,6 +55,12 @@ describe('a stage model change carries its via and effort (I61)', () => {
     expect(buildStagesPayload([changed])[changed.stage_key].via).toBe('claude_code');
   });
 
+  it('a row with no transport sends no via key at all (the API refuses an explicit null via)', () => {
+    const noVia = { ...row, via: null };
+    expect(Object.keys(buildStageChanges([noVia])[0])).not.toContain('via');
+    expect(Object.keys(buildStagesPayload([noVia])[noVia.stage_key])).not.toContain('via');
+  });
+
   it('the wire body of a save carries via next to model', async () => {
     const captured: Array<{ body: any }> = [];
     vi.stubGlobal(
