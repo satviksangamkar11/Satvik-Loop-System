@@ -18,6 +18,9 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 - [x] **Loop-built helpers:** `api_budget.py` (`c85ebe0`) and `api_idempotency.py` (`c5a9267`) on `main`, merged by the loop itself at $0.
 
 ## B. Remaining
+
+**9. [ ] Codex read-only audit (GPT 6.1 Sol, medium; `docs/pilot/codex-review-2026-11-04/`, reviewed `810b0f3`).** 27 findings registered as I36–I62. Done when each is fixed with a test or explicitly documented, and the suite passes.
+
 1. [x] **`ah-shape` loop job.** Done: all 3 helpers on main (`999668e`), evidence on `ah-run-2026-11-04` (`ec62c18`). Done when `scripts/source/api_shape.py` is on `origin/main`, and Local agent 1's evidence branch
    `ah-run-2026-11-04` is pushed. If it escalated, read its `results/<job_id>/` (`events.jsonl`, `review_NN.txt`, `test_NN.txt`), fix the spec
    or the test only if the test is wrong, and re-queue with `try_enqueue(..., rerun=True)`.
@@ -88,6 +91,34 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I33 ✅ (`49fd9f4`, `e5e7585`) | The PC records verify results only in its local config/models.json; recording them in the repo makes 10 Python tests and 3 real-API e2e tests fail, because they assumed an all-null catalog | Tests build their own catalog (branch `i20-tests`); the real results go to main with them | Suite green with the real catalog on main |
 | I34 ✅ cloud (`ead70b4`, `e5e7585`; merged #40 `f8c4b73`); passes on Windows `5bebf88` | Windows: `test_rebuild_index_…corrupt_index…` fails with WinError 32; a sqlite connection to a corrupt history.db is left open, so rebuild cannot delete it (would also break the I32 startup rebuild on Windows) | Close every connection on every path (branch `i34-win`) | A test proves no connection stays open; passes on Windows |
 | I35 ✅ (`ac1f22c`: finished from the registry; end state/tests/verdict truly absent for pre-archive jobs, documented) | Dashboard shows Unknown end_state/tests/verdict/finished for pre-archive tl-*/fl-* jobs (Windows check) | Investigate: honest missing data (document) or an unread source (fix) (`i34-win`) | Decided with evidence |
+
+| I36 | Codex (critical): A stage override takes the role's paid flag, provider and prices, not the selected model's (`stage_config.py:399`, `openrouter_call.py:868`) | Batch A | Fixed with a test, or documented as a trust limit |
+| I37 | Codex (critical): Planner `controls` paths are written unvalidated (absolute or `../` escapes the plan folder); extra controls allowed (`plan_job.py:273`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I38 | Codex (high): Production dispatch drops `stop_check`: STOP does not stop the ladder between steps (`fix_loop.py:976`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I39 | Codex (high): Merge sandbox lacks `monitor/` (and `ui/` fixtures) and FastAPI/httpx: the full suite fails at merge (`merge_queue.py:39`, Dockerfile) | Batch C | Fixed with a test, or documented as a trust limit |
+| I40 | Codex (high): Pending merges are memory-only; crash before/after push loses or double-counts delivery (`merge_queue.py:66`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I41 | Codex (high): Taking a queue file is permanent before start succeeds; refused jobs are not requeued (`fix_loop.py:1689`, `loops.py:23`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I42 | Codex (high): Enqueue dedupe and dequeue/start are not one atomic transition; Launcher bypasses `Registry.begin` (`launch.py:206`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I43 | Codex (high): A missing/corrupt stage sidecar silently runs current defaults instead of the frozen snapshot (`fix_loop.py:1636`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I44 | Codex (high): `paid_budget_usd` is not persisted or enforced; 0 skips validation; `valid:false` ignored (`actions.py:117`) | Batch A | Fixed with a test, or documented as a trust limit |
+| I45 | Codex (high): Contract verification is enforced only by /stages/validate, not by save, queue or apply_future_stage (`config_api.py:492`) | Batch D | Fixed with a test, or documented as a trust limit |
+| I46 | Codex (high): Independence uses the fresh-write origin only; specialist repair lineage recorded as `anthropic`, not excluded from the panel (`p1b_routing.py:439`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I47 | Codex (high): Merge does not recheck reviewed hashes or rerun the job's locked acceptance tests after rebase (`merge_queue.py:93`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I48 | Codex (high): Pace timestamp is recorded before waiting for the model slot, so real sends can exceed 15/min (`openrouter_call.py:891`) | Batch A | Fixed with a test, or documented as a trust limit |
+| I49 | Codex (high): Paid worst case uses chars/3 and roster prices, not live endpoint prices (`openrouter_call.py:495`) | Batch A | Fixed with a test, or documented as a trust limit |
+| I50 | Codex (medium): Paid reservations have no per-call identity; crash strands budget; midnight clears holds (`shared_limits.py:87`) | Batch A | Fixed with a test, or documented as a trust limit |
+| I51 | Codex (high): Planner exactly-once is check-then-write with no lock; intent reuse ignores the request hash (`actions.py:239`, `plan_job.py:94`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I52 | Codex (high): Plan approval queues only the job JSON, not its spec/tests/controls; approval hash covers job JSON only (`plan_job.py:268`, `actions.py:309`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I53 | Codex (high): Protected controller files list is incomplete (omits stage_config, model_catalog, nemotron_code, monitor/) (`p0_gates.py:22`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I54 | Codex (high): Sandbox test results are produced in the same process as generated code; JUnit forgery possible (`sandbox_runner.py:123`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I55 | Codex (high): Secret filtering inconsistent: planner inputs can include secrets/, planner raw replies unscrubbed, repair evidence scrub list empty (`plan_job.py:162`, `p1b_production.py:812`) | Batch B | Fixed with a test, or documented as a trust limit |
+| I56 | Codex (high): Green candidate kept only in memory; exceptional repair failure or full disk loses it; no sandbox output/disk quota (`p1b_production.py:583`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I57 | Codex (medium): Wall-clock jumps and PID reuse not handled (`shared_limits.py:82`, `loop_home.py:509`) | Batch C | Fixed with a test, or documented as a trust limit |
+| I58 | Codex (medium): Windows sharing-violation retries only in some writers; production status rewritten in place (`stage_config.py:534`, `store.py:65`) | Batch D | Fixed with a test, or documented as a trust limit |
+| I59 | Codex (high): Idempotency record saved after effects; 24 h expiry; corrupt treated as absent (`store.py:100`, `api_idempotency.py:59`) | Batch D | Fixed with a test, or documented as a trust limit |
+| I60 | Codex (medium): Blocking model verify runs inside async handlers under the mutation lock; STOP/health stall (`api.py:263`) | Batch D | Fixed with a test, or documented as a trust limit |
+| I61 | Codex (medium): UI sends model without `via`; plan polling stops after ~60 s; transport errors say 'Nothing was changed' (`App.tsx:1485`, `client.ts:101`) | Batch D | Fixed with a test, or documented as a trust limit |
+| I62 | Codex (low): Docs mix historical gaps and integrated behaviour (handoff forbids implemented future-stage edits; As integrated says catalog is null) | Batch D | Fixed with a test, or documented as a trust limit |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
