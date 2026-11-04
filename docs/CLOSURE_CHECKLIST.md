@@ -25,7 +25,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 3. [x] **Done 2026-11-04 (`8dd7228`):** full Docker suite 1275 passed, 4 skipped, only the root-only failure; the API uses the real helpers (`1166ec5`). **Merge `p2-api` onto the working branch,** and merge `origin/main` too, which brings in the loop helpers. Then point the API at
    `scripts/source/api_budget.py`, `api_idempotency.py` and `api_shape.py`, and remove any local stubs. Done when the full Docker suite
    passes: `python -m pytest pieces -p no:cacheprovider -q` gives only the root-only failure.
-4. [ ] **Contract sync.** `docs/API_CONTRACT.md` and `monitor/fixtures/` must include:
+4. [x] **Done (`7d9949e`, merged `2c74b35`): both suites read monitor/fixtures; revision, {jobs, index_ok} + jobs.json, profile present; BACKEND_GAPS.md removed.** **Contract sync.** `docs/API_CONTRACT.md` and `monitor/fixtures/` must include:
    - `GET /system/limits.revision`;
    - `GET /jobs` → `{jobs, index_ok}` plus `fixtures/jobs.json`;
    - `GET /system/health.profile`.
@@ -57,14 +57,14 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I3 ✅ (`bd6ed97`) | Planner calls emit no events (`plan_job` is not hooked) | `plan_job` emits `attempt-start` / `attempt-end` with stage `planner` (item 3) | A test sees planner events |
 | I4 ✅ (`bd6ed97`) | Backup-writer review stage names are best effort (`reviewer_b` until a READY, then `reviewer_a`) | Record the real slot in `_review` / the events (item 3) | A test of a backup review shows the correct stage |
 | I5 ✅ | Lease leak (fixed in #36) not yet confirmed in a real run. **Confirmed 2026-11-04:** 6 of 6 ah-* leases have `released: true` (branch `i5-lease-check`) | Check the `ah-run` leases: each job's own client lease is `released: true` | Confirmed from the evidence |
-| I6 | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
+| I6 ✅ (`8447113`, deleted) | `ui/BACKEND_GAPS.md` is out of date | Remove it or rewrite it after the integration (item 4) | No stale gap file |
 | I7 ✅ | `npm ci` reports 5 moderate vulnerabilities | **Done 2026-11-04:** `npm audit --omit=dev` → 0 vulnerabilities (runtime clean). All 5 moderate are dev-only: `minimatch` under eslint and typescript-eslint, lint tooling only, not in the built app | Recorded |
-| I8 | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
+| I8 ✅ (`08361b1`: System page saves with revision; 409 stale and not-applied-by-engine shown. No job_review_usd input in the UI) | System limits were locked in the UI until `GET /system/limits` had a `revision` | The API adds `revision`; the UI enables the PUT (item 5) | The System page saves limits live, and a 409 shows on a stale revision |
 | I9 | Plan approval became one `approve_assumed` boolean (per-item boxes removed) | Keep (matches the contract); document it (item 8) | In the contract notes |
 | I10 | Decisions to document: the fallback-write settings merge, the `writers-share-model` rule, `waiting-unknown` / `stale-warning` semantics | `ARCHITECTURE_REVISION_4.md` "As integrated" (item 8) | Documented |
 | I11 | Replies from the PC agents to this session fail ("not found") | Known platform limit; git branches are the report channel | Documented (no fix possible here) |
 | I12 | The p2-api commits are only in this container's local worktree | Merge onto the pushed working branch as soon as the API agent reports (item 3) | On GitHub |
-| I13 | (Cloud 2026-11-04 `847ecfc`: 1299 passed, 4 skipped, root-only only; UI unit 51, real e2e 18.) The cloud suite has one root-only failure (`test_plan_job.py::…_read_only`) | Environmental; must pass on Windows (item 7) | Passes in the Windows suite run |
+| I13 | (Cloud 2026-11-04 `2c74b35`: 1308 passed, 4 skipped, root-only only; UI unit 56, fixture e2e 12, real e2e 18.) The cloud suite has one root-only failure (`test_plan_job.py::…_read_only`) | Environmental; must pass on Windows (item 7) | Passes in the Windows suite run |
 | I14 | Production `reviewer_b` is North, which doesn't work | Owner decision (section C) | — |
 | I15 ✅ (`bd6ed97`) | `PUT /system/limits job_review_usd` is stored, but the engine's production gate still requires exactly 0.05, so a different value would not apply (found in the API report) | The API refuses any job_review_usd other than the engine's accepted value with `not-applied-by-engine`, until the engine reads it; the UI shows that reason | A test of the refusal; the UI shows the reason |
 | I16 ✅ (`bd6ed97`) | Claude Code models report contracts as `verified` from the fixture, not from a measured probe: a false verification, the exact class of the UI audit's critical finding | Report `unverified` (with `text_validated` true) until a real `POST /models/verify` result is recorded for that model and contract | A test: a fresh Claude Code entry shows `unverified` |
@@ -76,12 +76,12 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I22 ✅ (`556768c`: shared virtual clock across 4 real processes, ~0.06 s) | `test_shared_limits.py::test_pace_sends_at_most_15_in_any_60_seconds_across_processes` takes 60.05 s (a real minute) | Review whether it can use a fake clock across processes; if not, keep it and record it as a by-design timing test | Decided and recorded |
 | I23 ✅ (`c339c75`: fallback uses reviewer_b's own stage effort) | Production: validating a Claude Code `reviewer_b` change is refused with `bad-effort` on `review_fix_repair` (an engine rule found by the issues agent) | Investigate in `stage_config.validate`: an inherited-model stage should not fail effort validation because of another stage's model change | A test: a valid Claude Code `reviewer_b` change validates |
 | I24 ✅ (`6b2a0ec`) | The B5 integration subagent stopped at the usage limit with uncommitted work in its worktree (`.claude/worktrees/agent-a769e14f201efa8b2`, branch `b5-integration`: seed script, live Playwright config, real-API spec) | Resume it, or commit its work and continue it in a fresh Haiku 5.5 medium subagent on the same worktree | B5 done |
-| I25 | `attempt-end.status` is the raw HTTP code, not ok/failed/rejected (found by B5) | API derives the attempt status (subagent `api-mismatch`) | A test |
-| I26 | `attempt-end` rows lack stage/role/mode/model/via/effort | Fill from the matching attempt-start (`api-mismatch`) | A test |
-| I27 | A locked stage row sent unchanged (model null) is refused 400 bad-model | Accept it unchanged; a changed model gives model-not-selectable (`api-mismatch`) | A test |
-| I28 | job_review_usd: in-range values other than 0.05 must give not-applied-by-engine (I15 wording) | `api-mismatch` | A test |
-| I29 | Archived job detail has spec/files null: the archive lacks `<name>.job.json` | Archive copies the job file (`api-mismatch`) | A test |
-| I30 | Contract prose puts contracts/reasoning_mode at Model level; example, fixture and API nest them under capabilities | Fix the prose (`api-mismatch`) | Doc fixed |
+| I25 ✅ (`3b69b15`) | `attempt-end.status` is the raw HTTP code, not ok/failed/rejected (found by B5) | API derives the attempt status (subagent `api-mismatch`) | A test |
+| I26 ✅ (`0758e5f`) | `attempt-end` rows lack stage/role/mode/model/via/effort | Fill from the matching attempt-start (`api-mismatch`) | A test |
+| I27 ✅ (`83ce7d5`) | A locked stage row sent unchanged (model null) is refused 400 bad-model | Accept it unchanged; a changed model gives model-not-selectable (`api-mismatch`) | A test |
+| I28 ✅ (`cd5fca0`) | job_review_usd: in-range values other than 0.05 must give not-applied-by-engine (I15 wording) | `api-mismatch` | A test |
+| I29 ✅ (`2cc5c96`; new archives only, the earlier ah-budget archive stays spec null) | Archived job detail has spec/files null: the archive lacks `<name>.job.json` | Archive copies the job file (`api-mismatch`) | A test |
+| I30 ✅ (`f54f6a8`) | Contract prose puts contracts/reasoning_mode at Model level; example, fixture and API nest them under capabilities | Fix the prose (`api-mismatch`) | Doc fixed |
 | I31 | `index_ok` false and `engine_version` null on a fresh seeded home | Observations: expected (index not built, not a git checkout). Record in As integrated (item 8) | Documented |
 
 ## C. Owner-only (not blocking)
