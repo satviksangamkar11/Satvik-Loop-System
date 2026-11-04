@@ -474,12 +474,29 @@ class Registry:
             cur = table.get(key)
             now = time.time()
             if cur and cur.get("job") != job_id and cur.get("state") == "running" and _live(root, cur["job"]):
-                raise RequestRunning(f"request {key} is running in job {cur['job']}")
+                err = RequestRunning(f"request {key} is running in job {cur['job']}")
+                err.job = cur["job"]
+                raise err
             passed = bool(cur) and cur.get("base") == base and (cur.get("state") == "passed" or bool(cur.get("was_passed")))
             table[key] = {"job": job_id, "gen": gen, "state": "running", "base": base, "started": now, "finished": None,
                           "seq": self._seq(table), "result": cur.get("result") if passed and cur else None, "was_passed": passed}
             _save(self._path(root), table)
             return "tests-only" if passed else "run"
+
+    def restore(self, key, job_id, gen, prev):
+        """Puts back the row that begin() replaced, when the row is still this job's: a start refused after its request began leaves the
+        request as it was (I42). prev None means there was no row before."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+            cur = table.get(key)
+            if not cur or cur.get("job") != job_id or int(cur.get("gen", -1)) != int(gen):
+                return
+            if prev is None:
+                del table[key]
+            else:
+                table[key] = prev
+            _save(self._path(root), table)
 
     def record(self, key, job_id, gen, state, base, result):
         root = _dir(self._home)

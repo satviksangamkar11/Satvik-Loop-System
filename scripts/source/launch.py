@@ -202,32 +202,42 @@ class Launcher:
         reason = start_refusal(stop_requested(home), self._running(), recent, self.budget())
         if reason:
             return {"ok": False, "reason": reason}
-        if key is not None:                                # the request key: a live run under it blocks a second start
-            prev = self.api.registry.lookup(key)
-            if prev and prev.get("state") == "running" and self.api.lease.held(prev["job"]):
-                return {"ok": False, "reason": "request-running", "job": prev["job"]}
         job_id, gen = self._reserve(name)
         wt, branch = home / "wt" / job_id, f"job/{job_id}"
+        rkey = key or job_id                               # no request key: the row is keyed by job id, as before
         try:
             git(["fetch", "-q", "origin", "main"], self.repo)
             base = git(["rev-parse", "origin/main"], self.repo).stdout.strip()
-            git(["worktree", "add", "-q", "-b", branch, str(wt), base], self.repo)
         except Exception:
             self.api.lease.release(job_id, gen)
             raise
+        # The request check and the running row are one atomic step (registry.begin, under home/lock): a live run under the same key
+        # refuses this start, however many launchers look at once (I42). prev is the row begin replaces, kept to restore on a refusal.
+        prev = self.api.registry.lookup(rkey)
+        try:
+            self.api.registry.begin(rkey, job_id, gen, base)
+        except loop_home.RequestRunning as exc:
+            self.api.lease.release(job_id, gen)
+            return {"ok": False, "reason": "request-running", "job": getattr(exc, "job", None)}
+        try:
+            git(["worktree", "add", "-q", "-b", branch, str(wt), base], self.repo)
+        except Exception:
+            self.api.registry.restore(rkey, job_id, gen, prev)
+            self.api.lease.release(job_id, gen)
+            raise
+        begun = (rkey, prev)
         slots = self.sandbox_slots if self.sandbox_slots is not None else _sandbox_slots()
         slot = self.api.gate.slot("sandbox", gen, timeout_s=0, capacity=slots)
         try:
             slot.__enter__()
         except TimeoutError:                       # the gate raises TimeoutError when no slot frees within timeout_s
-            return self._undo(job_id, wt, gen, {"ok": False, "reason": "no-sandbox-slot"})
+            return self._undo(job_id, wt, gen, {"ok": False, "reason": "no-sandbox-slot"}, begun)
         taken, conflicts = self._take_claims(job_id, gen, rel_paths)
         if not taken:
             slot.__exit__(None, None, None)
-            return self._undo(job_id, wt, gen, {"ok": False, "reason": "claim-conflict", "conflicts": conflicts})
+            return self._undo(job_id, wt, gen, {"ok": False, "reason": "claim-conflict", "conflicts": conflicts}, begun)
         self._slots[job_id] = slot
-        self._keys[job_id] = key or job_id                 # no request key: the row is keyed by job id, as before
-        self.api.registry.record(key or job_id, job_id, gen, "running", base, None)
+        self._keys[job_id] = rkey
         return {"ok": True, "job_id": job_id, "gen": gen, "worktree": str(wt), "branch": branch,
                 "base": base, "job_dir": str(wt / "_loop" / job_id)}
 
@@ -301,7 +311,10 @@ class Launcher:
             except loop_home.LeaseHeld:
                 continue
 
-    def _undo(self, job_id, wt, gen, refusal):
+    def _undo(self, job_id, wt, gen, refusal, begun=None):
+        """A start that is refused after its request began puts the request row back as it was (begun = (key, the row before))."""
+        if begun is not None:
+            self.api.registry.restore(begun[0], job_id, gen, begun[1])
         self.api.lease.release(job_id, gen)
         git(["worktree", "remove", "--force", str(wt)], self.repo)
         git(["branch", "-D", f"job/{job_id}"], self.repo)

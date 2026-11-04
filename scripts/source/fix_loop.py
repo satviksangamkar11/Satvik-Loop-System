@@ -1765,8 +1765,10 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
     identical requests at once leave one pending file. A job is a duplicate only while it is ACTIVE: the same job file (sha-256) pending in
     queue/, or its name running in the registry with a held lease (claimed or started). A finished job's old queue/taken/ file is history,
     not active work. A job whose last state is passed or merged is queued again only with rerun=True.
-    Returns {"queued": True, "path": ...} or {"queued": False, "reason": "duplicate-pending" | "duplicate-running" | "already-completed",
-    "job": ...}. enqueue() itself is unchanged and still returns a Path."""
+    The queue's claim protocol (I42): a job goes pending -> claimed (take_next, under this same queue/.lock) -> running (the launcher's
+    registry.begin, under home/lock), so an identical job file is a duplicate in every one of those states while its owner lives.
+    Returns {"queued": True, "path": ...} or {"queued": False, "reason": "duplicate-pending" | "duplicate-claimed" | "duplicate-running" |
+    "already-completed", "job": ...}. enqueue() itself is unchanged and still returns a Path."""
     import hashlib
     data = Path(job_path).read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -1785,6 +1787,17 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
                     return {"queued": False, "reason": "duplicate-pending", "job": pending.name}
             except OSError:
                 continue                                  # taken by a drainer while we looked: it is checked below as running
+        claims = folder / "claims"                        # a job a live owner has claimed (taken, not yet running or just starting) is active too (I42)
+        for claim in sorted(claims.glob("*" + CLAIM_SUFFIX)) if claims.is_dir() else []:
+            job = folder / "taken" / claim.name[:-len(CLAIM_SUFFIX)]
+            try:
+                info = json.loads(claim.read_text(encoding="utf-8"))
+                same = job.is_file() and hashlib.sha256(job.read_bytes()).hexdigest() == digest
+            except (OSError, ValueError):
+                continue
+            if same and isinstance(info, dict) and info.get("state") in ("claimed", "running") \
+                    and lh.owner_alive(info.get("pid", 0), info.get("start")):
+                return {"queued": False, "reason": "duplicate-claimed", "job": job.name}
         row = lh.Registry(home).lookup(name) if name else None
         if row and row.get("state") == "running" and lh.Lease(home).held(row.get("job")):
             return {"queued": False, "reason": "duplicate-running", "job": row.get("job")}
