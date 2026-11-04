@@ -4,7 +4,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 "done when" line. Do the items in order, skip none, and mark each one `[x]` only with its evidence.
 
 **Rules:**
-- Work goes to Haiku 5.5 high subagents only.
+- Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
 - Local work goes to Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`), or Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) when agent 1's
   context is full.
 - No other sessions. No paid calls (`SATVIK_PROFILE=test`, $0). No UI redesign.
