@@ -145,6 +145,17 @@ def process_start(pid):
     return fields[19] if len(fields) > 19 else None
 
 
+def owner_alive(pid, start=None) -> bool:
+    """A recorded owner is alive only if its pid is alive AND it is still the process that started under `start` (its process_start when
+    the owner was recorded): a reused pid is a dead owner (I41, I57). With no start identity (None, or not readable here) the pid alone decides."""
+    if not pid_alive(pid):
+        return False
+    if start is None:
+        return True
+    now = process_start(pid)
+    return now is None or str(now) == str(start)
+
+
 _THREAD_LOCKS = {}                         # POSIX fcntl locks do not exclude threads of one process; one thread lock per lock file
 _THREAD_LOCKS_GUARD = threading.Lock()
 
@@ -491,6 +502,16 @@ class Registry:
             table[key] = {"count": count}
             _save(self._path(root), table)
             return count
+
+    def note(self, key, job, state, result=None):
+        """A row for a job that never ran here, such as a refusal the dashboard must show (I41). It holds no lease: the row says what happened."""
+        root = _dir(self._home)
+        with _locked(root):
+            table = _load(self._path(root), {})
+            now = time.time()
+            table[key] = {"job": job, "gen": 0, "state": state, "base": None, "result": result, "started": now, "finished": now,
+                          "seq": self._seq(table)}
+            _save(self._path(root), table)
 
     def counters(self) -> dict:
         """Every counter as {name: count}."""

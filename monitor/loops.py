@@ -33,15 +33,21 @@ def run(home, repo):
             job = fix_loop.load_job(path)
         except ValueError as exc:
             print(f"{path.name}: invalid job: {exc}", flush=True)
+            fix_loop.refuse_taken(path, home, f"invalid: {exc}")       # refused for good, with its reason (I41)
             continue
         try:
             frozen = fix_loop.frozen_stage_table(path)    # the stage table frozen at queue time (None for a job queued without one)
         except fix_loop.SnapshotRequired as exc:          # an API-queued job without its table never runs on the current defaults (I43)
             print(f"{path.name}: refused: {exc}", flush=True)
+            fix_loop.refuse_taken(path, home, str(exc))
             continue
-        res = fix_loop.run_launched(job, repo, api, launcher, merge_queue=mq, stage_snapshot=frozen)
+        res = fix_loop.run_launched(job, repo, api, launcher, merge_queue=mq, stage_snapshot=frozen, claim=path)
         print(job["name"], res["state"], res.get("reason"), flush=True)
+        requeued = fix_loop.settle_taken(path, home, res) == "requeued"
         _drain_pending(mq)
+        if requeued:
+            print(f"{path.name}: refused for now ({res.get('reason')}); it stays queued for the next start", flush=True)
+            break
     print("stop switch on" if launch.stop_requested(home) else "queue empty", flush=True)
 
 
