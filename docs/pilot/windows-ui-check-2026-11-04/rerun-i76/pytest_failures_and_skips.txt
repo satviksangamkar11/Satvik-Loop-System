@@ -1,0 +1,7 @@
+24:SKIPPED [1] pieces\test_batch_a_paid.py:308: no /proc on this platform
+25:SKIPPED [1] pieces\test_guards.py:103: pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)
+26:SKIPPED [1] pieces\test_guards.py:117: docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)
+27:SKIPPED [1] pieces\test_guards.py:128: no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)
+28:SKIPPED [1] pieces\test_i68_process_identity.py:69: no /proc on this platform
+29:SKIPPED [1] pieces\test_i68_process_identity.py:78: no /proc on this platform
+30:SKIPPED [1] pieces\test_plan_job.py:573: this OS refuses to create the symlink ([WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1628\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1628\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'); the refusal is only testable where symlinks can be made
