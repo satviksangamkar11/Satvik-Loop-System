@@ -1,0 +1,29 @@
+22:______________________ test_a_reused_pid_is_a_dead_owner ______________________
+33:E       assert (None is not None)
+67:E           AssertionError: the restored files are not the files of the last green run
+70:________________ test_a_lease_whose_pid_was_reused_is_not_held ________________
+81:E       AssertionError: assert True is False
+82:E        +  where True = held('job-a')
+83:E        +    where held = <loop_home.Lease object at 0x0000016D43657FB0>.held
+84:E        +      where <loop_home.Lease object at 0x0000016D43657FB0> = <class 'loop_home.Lease'>(WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1613/test_a_lease_whose_pid_was_reu0'))
+85:E        +        where <class 'loop_home.Lease'> = lh.Lease
+88:________________ test_a_gate_slot_held_by_a_reused_pid_is_free ________________
+129:E               TimeoutError: no free slot for sandbox within 0s
+132:____________ test_a_paid_hold_of_a_reused_pid_is_released_as_spent ____________
+142:E       AssertionError: assert ({'c1': {'job'...: 12836, ...}} == {}
+143:E         
+144:E         Left contains 1 more item:
+145:E         {'c1': {'at': 1793838290.0,
+146:E                 'job': 'j',
+147:E                 'pid': 12836,
+148:E                 'start': 'not-this-process',
+149:E                 'usd': 1000}}
+150:E         Use -v to get more diff)
+153:___________________ test_a_symlink_into_secrets_is_refused ____________________
+177:E       OSError: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1613\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1613\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'
+181:FAILED pieces/test_i41_queue_claims.py::test_a_reused_pid_is_a_dead_owner - a...
+182:FAILED pieces/test_i56_bounds_and_checkpoint.py::test_restore_green_puts_the_green_files_back_from_disk_when_memory_is_gone
+183:FAILED pieces/test_i57_clock_and_pid.py::test_a_lease_whose_pid_was_reused_is_not_held
+184:FAILED pieces/test_i57_clock_and_pid.py::test_a_gate_slot_held_by_a_reused_pid_is_free
+185:FAILED pieces/test_i57_clock_and_pid.py::test_a_paid_hold_of_a_reused_pid_is_released_as_spent
+186:FAILED pieces/test_plan_job.py::test_a_symlink_into_secrets_is_refused - OSEr...
