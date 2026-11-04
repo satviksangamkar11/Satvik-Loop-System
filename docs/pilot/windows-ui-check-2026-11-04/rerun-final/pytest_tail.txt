@@ -1,0 +1,40 @@
+E        +  where True = exists()
+E        +    where exists = (((WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1616/test_a_provider_failure_before0/repo') / '_loop') / 'calc') / 'candidate').exists
+
+pieces\test_p1b_review_package.py:293: AssertionError
+---------------------------- Captured stdout call -----------------------------
+calc: provider-unavailable
+_ test_a_worker_killed_after_one_candidate_write_is_restored_by_the_next_launch _
+
+tmp_path = WindowsPath('C:/Users/Satvik/AppData/Local/Temp/pytest-of-Satvik/pytest-1616/test_a_worker_killed_after_one0')
+
+    def test_a_worker_killed_after_one_candidate_write_is_restored_by_the_next_launch(tmp_path):
+        root = with_original(make_prod_root(tmp_path))
+        job_path = write_job(root, prod_job())
+        code = (f"import sys; sys.path.insert(0, {str(REPO / 'pieces')!r}); import test_pre_pilot_review as t; "
+                f"t.child_main({str(root)!r}, {str(job_path)!r})")
+        child_env = {**os.environ, "SATVIK_PROFILE": "production"}                   # the child process has its own import: it needs the profile too
+        killed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=child_env)
+        assert killed.returncode == 9, killed.stderr[-2000:]
+        assert (root / "pieces" / "calc.py").read_text(encoding="utf-8") == GOOD_CODE    # the abandoned candidate is on disk
+        assert status_of(root)["state"] == "running"
+    
+        provider = ph.Provider({DOTS: [good_reply()], GLM: [ph.READY], NORTH: [ph.READY]})
+        result = fl.run_job(fl.load_job(job_path), root, sandbox=FakeSandbox(), openrouter=ph.client(tmp_path, provider), scrub_keys=[])
+        first = prompt_of(provider, DOTS, 0)
+>       assert ORIGINAL_CODE in first and GOOD_CODE not in first    # the restart began from the original, not the abandoned candidate
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert ('def calculate_total(prices):\n    return 0\n' in 'SPEC:\ncalculate_total(prices) returns the sum of the prices.\n\nEXPECTED FILES:\n\npieces/calc.py:\ndef calculate_to...le)\n\nReply in exactly this format (an example, one file):\nFILE: pieces/calc.py\n```python\ntotal = sum(prices)\n```')
+
+pieces\test_pre_pilot_review.py:237: AssertionError
+---------------------------- Captured stdout call -----------------------------
+calc: passed
+=========================== short test summary info ===========================
+SKIPPED [1] pieces\test_batch_a_paid.py:308: no /proc on this platform
+SKIPPED [1] pieces\test_guards.py:103: pieces/p3_audio_evidence.py is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:117: docs/AGENT_RULES.md is not in this repository (the Reverse-Video project owns it and runs this guard)
+SKIPPED [1] pieces\test_guards.py:128: no job files in this repository's _loop/jobs (the Reverse-Video project owns them and runs this guard)
+SKIPPED [1] pieces\test_i68_process_identity.py:69: no /proc on this platform
+SKIPPED [1] pieces\test_i68_process_identity.py:78: no /proc on this platform
+SKIPPED [1] pieces\test_plan_job.py:573: this OS refuses to create the symlink ([WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1616\\test_a_symlink_into_secrets_is0\\repo\\secrets\\notes.txt' -> 'C:\\Users\\Satvik\\AppData\\Local\\Temp\\pytest-of-Satvik\\pytest-1616\\test_a_symlink_into_secrets_is0\\repo\\pieces\\notes.py'); the refusal is only testable where symlinks can be made
+2 failed, 1490 passed, 7 skipped, 7 subtests passed in 394.72s (0:06:34)

@@ -1,0 +1,12 @@
+> satvik-loop-control-center-ui@2.0.0 test:unit
+> vitest run
+
+
+ RUN  v5.1.0 D:/aai work/wt-rerun-final/ui
+
+
+ Test Files  3 passed (3)
+      Tests  68 passed (68)
+   Start at  17:27:01
+   Duration  670ms (transform 44%, tests 39%, import 14%, worker 2%)
+

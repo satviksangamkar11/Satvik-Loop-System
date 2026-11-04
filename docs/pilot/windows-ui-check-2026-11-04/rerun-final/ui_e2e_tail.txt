@@ -1,0 +1,21 @@
+
+> satvik-loop-control-center-ui@2.0.0 test:e2e
+> playwright test
+
+
+Running 12 tests using 1 worker
+
+  ok  1 [desktop-1440] › tests\e2e.spec.ts:27:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › LIVE mode connects and each of the 7 pages renders its heading (1.6s)
+  ok  2 [desktop-1440] › tests\e2e.spec.ts:37:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › a failed contract verify is shown as not verified (722ms)
+  ok  3 [desktop-1440] › tests\e2e.spec.ts:55:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › soft STOP asks for confirmation and reports the backend state (435ms)
+  ok  4 [desktop-1440] › tests\e2e.spec.ts:62:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › queueing the same job twice shows the 409 duplicate message (642ms)
+  ok  5 [tablet-768] › tests\e2e.spec.ts:27:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › LIVE mode connects and each of the 7 pages renders its heading (1.1s)
+  ok  6 [tablet-768] › tests\e2e.spec.ts:37:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › a failed contract verify is shown as not verified (671ms)
+  ok  7 [tablet-768] › tests\e2e.spec.ts:55:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › soft STOP asks for confirmation and reports the backend state (477ms)
+  ok  8 [tablet-768] › tests\e2e.spec.ts:62:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › queueing the same job twice shows the 409 duplicate message (639ms)
+  ok  9 [mobile-320] › tests\e2e.spec.ts:27:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › LIVE mode connects and each of the 7 pages renders its heading (1.1s)
+  ok 10 [mobile-320] › tests\e2e.spec.ts:37:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › a failed contract verify is shown as not verified (1.4s)
+  ok 11 [mobile-320] › tests\e2e.spec.ts:55:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › soft STOP asks for confirmation and reports the backend state (412ms)
+  ok 12 [mobile-320] › tests\e2e.spec.ts:62:3 › Satvik Loop Control Center (LIVE mode, fixture-backed backend) › queueing the same job twice shows the 409 duplicate message (617ms)
+
+  12 passed (14.1s)

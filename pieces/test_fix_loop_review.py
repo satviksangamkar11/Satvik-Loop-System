@@ -273,7 +273,7 @@ def test_the_coder_pool_is_built_per_call_not_once_per_job():
 
 def test_the_codex_report_is_scrubbed_before_the_next_prompt():
     src = Path(fl.__file__).read_text(encoding="utf-8")
-    assert "_scrub(report_path.read_text" in src
+    assert "_scrub(read_text_exact(report_path)" in src          # the report is read as exact bytes (I75), then scrubbed
 
 
 def test_the_reviewers_of_one_job_run_at_the_same_time(tmp_path):
