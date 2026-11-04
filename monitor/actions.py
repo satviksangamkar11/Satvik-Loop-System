@@ -241,15 +241,16 @@ def _run_planner(home, rec, root):
         run = PLANNER_HOOK["run"] or plan_job.plan
         planned = run(root=root, job_name=rec["name"], plan_dir=plan_dir, request=rec["request"], files=rec["files"])
         state, sha, assumed, reason = planned["state"], planned.get("job_sha256"), planned.get("assumed") or [], planned.get("reason")
+        package_sha = planned.get("plan_sha256")
         if state == "planned":
             try:
                 fix_loop.load_job(plan_dir / "job.json")
             except ValueError as exc:
                 state, reason = "job-invalid", str(exc)
     except Exception as exc:                                  # the planner failed: the record says so, the process does not die
-        state, sha, assumed, reason = "planner-failed", None, [], f"{type(exc).__name__}"
-    rec = dict(read_json(_plans_dir(home) / f"{rec['plan_id']}.json", rec), state=state, job_sha256=sha, assumed=assumed, reason=reason,
-               plan_dir=str(plan_dir))
+        state, sha, assumed, reason, package_sha = "planner-failed", None, [], f"{type(exc).__name__}", None
+    rec = dict(read_json(_plans_dir(home) / f"{rec['plan_id']}.json", rec), state=state, job_sha256=sha, plan_sha256=package_sha,
+               assumed=assumed, reason=reason, plan_dir=str(plan_dir))
     _save_plan(home, rec)
 
 
@@ -268,16 +269,22 @@ def create_plan(body):
         raise ApiError(400, "bad-request", "files is a list of repo paths")
     if len(files) > MAX_PLAN_FILES:
         raise ApiError(400, "too-many-files", f"at most {MAX_PLAN_FILES} files may be sent to the planner", {"max": MAX_PLAN_FILES})
+    root = repo()
+    problem = plan_job.input_problem(root, files, request)              # I55: a secret file, key or credential is never sent to the planner
+    if problem:
+        raise ApiError(400, "secret-input", problem)
     if _profile_name() == "test":
         raise ApiError(422, "planner-refused-in-test", "test profile: free only, and its planner is fake")
     if (home / "STOP").exists():
         raise ApiError(409, "stop-on", "STOP is on: no new starts")
+    conflict = plan_job.intent_conflict(root, name, request, files)      # a plan name is bound to its request (I51)
+    if conflict is not None:
+        raise ApiError(409, "plan-request-conflict", conflict, {"name": name})
     import uuid
     plan_id = uuid.uuid4().hex
     rec = {"plan_id": plan_id, "name": name, "request": request, "files": files, "state": "planning", "job_sha256": None, "assumed": [],
            "reason": None, "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     _save_plan(home, rec)
-    root = repo()
     if PLANNER_HOOK.get("sync"):
         _run_planner(home, rec, root)
     else:
@@ -289,29 +296,37 @@ def get_plan(plan_id):
     home = satvik_home()
     rec = _plan_record(home, plan_id)
     return {"plan_id": rec["plan_id"], "state": rec["state"], "assumed": rec.get("assumed") or [], "job_sha256": rec.get("job_sha256"),
-            "reason": rec.get("reason")}
+            "plan_sha256": rec.get("plan_sha256"), "reason": rec.get("reason")}
 
 
 def approve_plan(plan_id, job_sha256, approve_assumed):
     """POST /plans/{id}/approve: queues the planned job (its stage table frozen now) and starts one loop. The approval starts the job.
-    409 plan-changed when the job file no longer matches its hash; 422 assumed-not-approved while ASSUMED lines are unapproved."""
+    The approval covers the whole plan: its job file, spec, PLAN.md, expected lines and acceptance and control files are hashed together
+    (plan_sha256), and the queued job carries that hash. 409 plan-changed when any of it no longer matches; 422 assumed-not-approved while
+    ASSUMED lines are unapproved. The launch checks the package again and installs its spec and files into the worktree before validation."""
     home = satvik_home()
     rec = _plan_record(home, plan_id)
     if rec["state"] != "planned":
         raise ApiError(409, "not-planned", f"the plan is {rec['state']}, not planned")
     plan_dir = Path(rec["plan_dir"])
-    if job_sha256 != rec.get("job_sha256") or plan_job.file_sha256(plan_dir / "job.json") != rec.get("job_sha256"):
+    try:
+        plan_job.read_package(plan_dir, rec.get("plan_sha256"))
+    except plan_job.PlanChanged:
+        raise ApiError(409, "plan-changed", "the planned job, its spec or its test files changed since it was planned")
+    if job_sha256 != rec.get("job_sha256"):
         raise ApiError(409, "plan-changed", "the planned job changed since it was planned")
     if rec.get("assumed") and approve_assumed is not True:
         raise ApiError(422, "assumed-not-approved", "approve the ASSUMED lines first (approve_assumed=true)", {"assumed": rec["assumed"]})
     if (home / "STOP").exists():
         raise ApiError(409, "stop-on", "STOP is on: no new starts")
     snap = freeze_stages({})
-    res = fix_loop.try_enqueue(plan_dir / "job.json", home, stages=snap)
+    approved_plan = {"plan_dir": str(plan_dir), "job_sha256": rec["job_sha256"], "plan_sha256": rec["plan_sha256"]}
+    res = fix_loop.try_enqueue(plan_dir / "job.json", home, stages=snap, plan=approved_plan)
     if not res["queued"]:
         raise ApiError(409 if res["reason"] != "already-completed" else 422, res["reason"], "the planned job is already queued or completed",
                        {"job": res.get("job")})
-    approved = {"job_sha256": rec["job_sha256"], "assumed": rec.get("assumed") or [], "approved": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    approved = {"job_sha256": rec["job_sha256"], "plan_sha256": rec["plan_sha256"], "assumed": rec.get("assumed") or [],
+                "approved": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     atomic_write_json(plan_dir / "APPROVED.json", approved)
     rec = dict(rec, state="started", queued_as=Path(res["path"]).name)
     _save_plan(home, rec)

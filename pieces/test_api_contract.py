@@ -769,8 +769,12 @@ def test_plan_approval_refusals(world):
     plan_dir = world.repo / "_loop" / "plan-one" / "plan"
     plan_dir.mkdir(parents=True)
     shutil.copy(world.repo / "docs" / "pilot" / "four-loop" / "fl-top.json", plan_dir / "job.json")
+    (plan_dir / "PLAN.md").write_text("# Plan" + chr(10), encoding="utf-8")                                   # the whole package is approved (I52)
+    (plan_dir / "SPEC.md").write_text("- ASSUMED: the default is 3" + chr(10), encoding="utf-8")
+    (plan_dir / "expected_lines.json").write_text("{}", encoding="utf-8")
     sha = plan_job.file_sha256(plan_dir / "job.json")
     rec = {"plan_id": "p1", "name": "plan-one", "request": "r", "files": [], "state": "planned", "job_sha256": sha,
+           "plan_sha256": plan_job.package_sha256(plan_job.package_members(plan_dir)),
            "assumed": ["ASSUMED: the default is 3"], "reason": None, "plan_dir": str(plan_dir)}
     actions._save_plan(world.home, rec)
     assert world.client.get("/api/plans/p1").json()["state"] == "planned"

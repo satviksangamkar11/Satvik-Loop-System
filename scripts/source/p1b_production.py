@@ -35,6 +35,7 @@ import openrouter_call as oc
 import opus_repair
 import p0_gates as gates
 import p1b_routing as p1b
+import redact
 import sandbox_runner as sr
 import stage_config as sc
 
@@ -396,9 +397,20 @@ def _repo_python_files(root):
 
 
 def _scrubbed(text, scrub_keys):
-    for key in scrub_keys:
-        text = text.replace(key, "[REDACTED]")
-    return text
+    """The one scrub for every artifact of a production run (I55): the loaded key values and the credential shapes (redact.scrub). scrub_keys
+    is the run's set of exact values, as run() builds it."""
+    return redact.scrub(text, scrub_keys)
+
+
+def loaded_scrub_values(scrub_keys=()):
+    """The exact values a production run scrubs from its evidence: the values in scrub_keys (a list of strings, or the {slot: key} dict that
+    load_keys returns), the keys the adapter loads (secrets/ or the environment), and key-like environment variables. Never empty of what is
+    loaded: a run that was given no keys still scrubs the ones it has (I55; the old list was empty for a production run)."""
+    try:
+        loaded = oc.load_keys()
+    except Exception:                                    # no key file or variable: nothing loaded, the environment is still scrubbed
+        loaded = {}
+    return tuple(redact.values_of(scrub_keys or (), loaded, redact.env_key_values()))
 
 
 def _scrubbed_obj(value, scrub_keys):
@@ -1145,6 +1157,7 @@ def run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, origi
     """Runs the production unit (_run), then releases the lease the job's client took for itself (client.release_job), whatever the outcome.
     frozen_snapshot: the stage table frozen when the job was queued (stage_config.snapshot, saved beside the queue file); None reads the roster
     now, as before."""
+    scrub_keys = loaded_scrub_values(scrub_keys)
     try:
         return _run(job, root, status_dir_job, sandbox=sandbox, protected=protected, acceptance_lock=acceptance_lock, originals=originals,
                     evidence=evidence, client=client, parse_files=parse_files, check_path=check_path, content_problem=content_problem,

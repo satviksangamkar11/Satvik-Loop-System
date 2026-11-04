@@ -306,6 +306,332 @@ def test_acceptance_files_must_match_the_job_exactly(repo, tmp_path, monkeypatch
     assert plan(repo)["state"] == "planner-invalid"
 
 
+# ---------------------------------------------------------------- I51: one call per plan name, bound to its request (Codex audit)
+
+def test_a_different_request_under_the_same_name_is_refused_and_the_old_plan_is_not_served(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    other = pj.plan(root=repo, job_name="calc", plan_dir=repo / "_loop" / "calc" / "plan", request="a different request",
+                    files=["pieces/calc.py"], claude_cmd=[sys.executable, FAKE], timeout_s=5)
+    assert other["state"] == "request-conflict" and other["job_sha256"] is None
+    assert len(calls(log)) == 1, "a different request makes no second call"
+    assert pj.intent_conflict(repo, "calc", "a different request", ["pieces/calc.py"]) is not None
+    assert pj.intent_conflict(repo, "calc", "Write calculate_total: the sum of the prices.", ["pieces/calc.py"]) is None
+
+
+def test_the_same_request_with_other_files_is_a_different_request(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    (repo / "pieces" / "test_calc.py").write_text("def test_calc():" + chr(10) + "    pass" + chr(10), encoding="utf-8")
+    other = plan(repo, files=["pieces/calc.py", "pieces/test_calc.py"])
+    assert other["state"] == "request-conflict" and len(calls(log)) == 1
+
+
+def test_an_intent_another_plan_created_is_read_and_never_called_again(repo):
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    plan_dir.mkdir(parents=True)
+    fingerprint = pj.request_fingerprint("calc", "r", ["pieces/calc.py"], "claude_code", "opus", "medium")
+    (plan_dir / "INTENT.json").write_text(json.dumps({"fingerprint": fingerprint}), encoding="utf-8")
+    calls_made = []
+    result = pj.plan(root=repo, job_name="calc", plan_dir=plan_dir, request="r", files=["pieces/calc.py"],
+                     runner=lambda *a, **k: calls_made.append(1))
+    assert result["state"] == "planner-uncertain" and calls_made == []
+
+
+def test_the_intent_is_created_exclusively(tmp_path):
+    path = tmp_path / "INTENT.json"
+    pj._create_intent(path, {"a": 1})
+    with pytest.raises(FileExistsError):
+        pj._create_intent(path, {"a": 2})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_two_plans_for_one_name_at_once_make_one_planner_call(repo):
+    import threading
+    import time
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    calls_made, results = [], []
+
+    def runner(prompt, cwd, claude_cmd, timeout_s):
+        calls_made.append(1)
+        time.sleep(0.3)                                     # the second plan checks while this call is out
+        return 0, envelope(good_answer())
+
+    def go(request):
+        results.append(pj.plan(root=repo, job_name="calc", plan_dir=plan_dir, request=request, files=["pieces/calc.py"], runner=runner))
+
+    threads = [threading.Thread(target=go, args=("r",)), threading.Thread(target=go, args=("r",))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls_made) == 1, "one plan name, one planner call"
+    states = {r["state"] for r in results}
+    assert "planned" in states and states <= {"planned", "planner-uncertain"}, states     # the loser is uncertain or reads the answer
+
+
+def test_create_plan_refuses_a_different_request_under_a_planned_name(repo, tmp_path, monkeypatch, profile):
+    from monitor import actions
+    from monitor.store import ApiError
+    profile("production")
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SATVIK_REPO", str(repo))
+    calls_made = []
+
+    def fake_runner(prompt, cwd, claude_cmd, timeout_s):
+        calls_made.append(1)
+        return 0, envelope(good_answer())
+    monkeypatch.setitem(actions.PLANNER_HOOK, "run", lambda **kw: pj.plan(runner=fake_runner, **kw))
+    monkeypatch.setitem(actions.PLANNER_HOOK, "sync", True)
+    status, _body = actions.create_plan({"name": "calc", "request": "Write calculate_total", "files": ["pieces/calc.py"]})
+    assert status == 202
+    with pytest.raises(ApiError) as refused:
+        actions.create_plan({"name": "calc", "request": "Write something else", "files": ["pieces/calc.py"]})
+    assert refused.value.status == 409 and refused.value.code == "plan-request-conflict"
+    assert len(calls_made) == 1
+
+
+# ---------------------------------------------------------------- I37: every path is checked before any write (Codex audit)
+
+def nothing_written_but_the_intent(plan_dir):
+    return not any((plan_dir / name).exists() for name in ("PLAN.md", "SPEC.md", "expected_lines.json", "job.json", "files"))
+
+
+@pytest.mark.parametrize("bad", ["../x", "/abs/x", "C:\\x", "pieces/../../x"])
+def test_an_escaping_control_path_is_refused_before_any_write(repo, tmp_path, monkeypatch, bad):
+    answer = good_answer(controls={bad: "x" + chr(10)})
+    answer["job"]["negative_controls"][0]["replace"]["pieces/calc.py"] = bad
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    before = Path("/abs/x").exists()
+    result = plan(repo)
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    assert result["state"] == "planner-invalid", result
+    assert nothing_written_but_the_intent(plan_dir)
+    assert not (plan_dir / "x").exists() and Path("/abs/x").exists() == before
+
+
+@pytest.mark.parametrize("bad", ["../x", "/abs/x", "C:\\x"])
+def test_an_escaping_acceptance_path_is_refused_before_any_write(repo, tmp_path, monkeypatch, bad):
+    answer = good_answer(acceptance={bad: "def test_x():" + chr(10) + "    assert True" + chr(10)})
+    answer["job"]["acceptance_tests"] = [bad]
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid", result
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
+def test_an_extra_control_the_job_does_not_reference_is_refused(repo, tmp_path, monkeypatch):
+    extra = "tests/controls/extra.py"
+    answer = good_answer(controls={**good_answer()["controls"], extra: "x" + chr(10)})
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid" and "does not reference" in result["reason"] and extra in result["reason"]
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
+def test_a_missing_control_source_is_refused(repo, tmp_path, monkeypatch):
+    answer = good_answer(controls={})
+    fake_run(tmp_path, monkeypatch, envelope(answer))
+    result = plan(repo)
+    assert result["state"] == "planner-invalid" and "negative control" in result["reason"]
+    assert nothing_written_but_the_intent(repo / "_loop" / "calc" / "plan")
+
+
+# ---------------------------------------------------------------- I52: the approval covers the whole plan (Codex audit)
+
+class FakeLease:
+    def keep_alive(self, job_id, gen):
+        return lambda: None
+
+
+class FakeApi:
+    def __init__(self, home):
+        self.home, self.lease = home, FakeLease()
+
+
+class FakeLauncher:
+    def __init__(self, repo, wt):
+        self.repo, self.wt, self.started, self.finished = repo, wt, [], []
+
+    def start(self, name, files, key=None, job=None):
+        self.started.append(name)
+        return {"ok": True, "job_id": f"{name}-1", "gen": 1, "base": "HEAD", "worktree": str(self.wt)}
+
+    def finish(self, job_id, gen, state, base, extra=None):
+        self.finished.append(state)
+
+
+def planned_and_approved(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    assert plan(repo)["state"] == "planned"
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    rec = {"job_sha256": pj.file_sha256(plan_dir / "job.json"),
+           "plan_sha256": pj.package_sha256(pj.package_members(plan_dir))}
+    return plan_dir, {"plan_dir": str(plan_dir), "job_sha256": rec["job_sha256"], "plan_sha256": rec["plan_sha256"]}
+
+
+def test_the_plan_package_hashes_every_file_and_read_package_refuses_any_change(repo, tmp_path, monkeypatch):
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    members = pj.read_package(plan_dir, approved["plan_sha256"])
+    assert set(members) == {"job.json", "PLAN.md", "SPEC.md", "expected_lines.json", "files/" + ACCEPT, "files/" + CONTROL}
+    for rel in ("SPEC.md", "PLAN.md", "expected_lines.json", "files/" + ACCEPT, "files/" + CONTROL):
+        original = (plan_dir / rel).read_bytes()
+        (plan_dir / rel).write_bytes(original + b"# changed" + chr(10).encode())
+        with pytest.raises(pj.PlanChanged):
+            pj.read_package(plan_dir, approved["plan_sha256"])
+        (plan_dir / rel).write_bytes(original)
+    pj.read_package(plan_dir, approved["plan_sha256"])                    # restored: the approval holds again
+
+
+def test_a_changed_spec_after_planning_is_refused_at_launch_and_nothing_starts(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    (plan_dir / "SPEC.md").write_text("- KNOWN: something else entirely." + chr(10), encoding="utf-8")
+    launcher = FakeLauncher(repo, tmp_path / "wt")
+    res = fl.run_launched(fl.load_job(plan_dir / "job.json"), repo, FakeApi(tmp_path / "home"), launcher, run=lambda *a, **k: 1 / 0,
+                          plan=approved)
+    assert res["state"] == "refused" and res["reason"].startswith("plan-changed") and launcher.started == []
+
+
+def test_the_approved_plan_is_installed_into_the_worktree_before_the_run(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    seen = {}
+
+    def run(job, root, **kwargs):
+        seen["spec"] = (root / job["spec"]).read_text(encoding="utf-8")
+        seen["acceptance"] = (root / ACCEPT).read_text(encoding="utf-8")
+        seen["control"] = (root / CONTROL).read_text(encoding="utf-8")
+        return {"name": job["name"], "state": "passed", "round": 1}
+    monkeypatch.setattr(fl, "write_change_doc", lambda *a, **k: None)
+    launcher = FakeLauncher(repo, wt)
+    res = fl.run_launched(fl.load_job(plan_dir / "job.json"), repo, FakeApi(tmp_path / "home"), launcher, run=run, plan=approved)
+    assert res["state"] == "passed", res
+    assert seen["spec"] == (plan_dir / "SPEC.md").read_text(encoding="utf-8")
+    assert seen["acceptance"] == (plan_dir / "files" / ACCEPT).read_text(encoding="utf-8")
+    assert seen["control"] == (plan_dir / "files" / CONTROL).read_text(encoding="utf-8")
+
+
+def test_a_changed_acceptance_file_refuses_the_queued_job_and_nothing_starts(repo, tmp_path, monkeypatch):
+    import fix_loop as fl
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    queued = fl.enqueue(plan_dir / "job.json", home, plan=approved)
+    assert fl.read_plan(queued) == approved
+    queued.write_bytes(queued.read_bytes() + b" ")                       # the queued copy changes after approval
+    launcher = FakeLauncher(repo, tmp_path / "wt")
+    out = fl.drain_queue(FakeApi(home), launcher, run=lambda *a, **k: 1 / 0)
+    assert out == [(queued.name, "plan-changed")] and launcher.started == []
+
+
+def test_an_approval_with_a_changed_test_file_is_409_plan_changed(repo, tmp_path, monkeypatch, profile):
+    from monitor import actions
+    from monitor.store import ApiError
+    profile("production")
+    monkeypatch.setenv("SATVIK_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SATVIK_REPO", str(repo))
+    plan_dir, approved = planned_and_approved(repo, tmp_path, monkeypatch)
+    rec = {"plan_id": "p2", "name": "calc", "request": "r", "files": [], "state": "planned", "job_sha256": approved["job_sha256"],
+           "plan_sha256": approved["plan_sha256"], "assumed": [], "reason": None, "plan_dir": str(plan_dir)}
+    actions._save_plan(tmp_path / "home", rec)
+    (plan_dir / "files" / ACCEPT).write_text("def test_sums_two_prices():" + chr(10) + "    assert 1 == 1" + chr(10), encoding="utf-8")
+    with pytest.raises(ApiError) as changed:
+        actions.approve_plan("p2", approved["job_sha256"], False)
+    assert changed.value.status == 409 and changed.value.code == "plan-changed"
+
+
+# ---------------------------------------------------------------- I55: no secret goes to the planner, and none is kept (Codex audit)
+
+def test_a_file_under_secrets_is_refused_before_any_call_or_intent(repo, tmp_path, monkeypatch):
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "openrouter_key.txt").write_text("sk-or-v1-abcdefghijklmnop" + chr(10), encoding="utf-8")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=["secrets/openrouter_key.txt"])
+    assert result["state"] == "planner-refused" and "secret" in result["reason"], result
+    assert calls(log) == [] and not (repo / "_loop" / "calc" / "plan" / "INTENT.json").exists()
+
+
+@pytest.mark.parametrize("rel", ["config/api_token.txt", "pieces/my_secret.py", "deploy/.env", "keys/server.pem", "home/id_rsa"])
+def test_a_secret_shaped_file_name_is_refused(repo, tmp_path, monkeypatch, rel):
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x" + chr(10), encoding="utf-8")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=[rel])
+    assert result["state"] == "planner-refused", result
+    assert calls(log) == []
+
+
+def test_a_symlink_into_secrets_is_refused(repo, tmp_path, monkeypatch):
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "notes.txt").write_text("x" + chr(10), encoding="utf-8")
+    (repo / "pieces" / "notes.py").symlink_to(repo / "secrets" / "notes.txt")
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, files=["pieces/notes.py"])
+    assert result["state"] == "planner-refused" and calls(log) == []
+
+
+def test_a_request_holding_a_credential_shape_is_refused(repo, tmp_path, monkeypatch):
+    log = fake_run(tmp_path, monkeypatch, envelope(good_answer()))
+    result = plan(repo, request="Write calculate_total; use key sk-or-v1-abcdefghijklmnop123456 for it")
+    assert result["state"] == "planner-refused" and "credential-shaped" in result["reason"]
+    assert calls(log) == []
+
+
+def test_a_loaded_key_value_in_the_reply_is_scrubbed_and_the_reply_is_refused(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("SATVIK_TEST_KEY_VALUE", "loaded-value-0123456789")
+    fake_run(tmp_path, monkeypatch, envelope(good_answer(spec_md="# Spec" + chr(10) + "- KNOWN: uses loaded-value-0123456789 here" + chr(10))))
+    result = plan(repo)
+    plan_dir = repo / "_loop" / "calc" / "plan"
+    assert result["state"] == "planner-refused" and "loaded-key" in result["reason"], result
+    saved = (plan_dir / "raw_response.json").read_text(encoding="utf-8")
+    assert "loaded-value-0123456789" not in saved and "[REDACTED]" in saved
+    assert not (plan_dir / "job.json").exists() and not (plan_dir / "SPEC.md").exists()
+
+
+def test_a_bearer_token_in_the_reply_is_scrubbed_from_the_saved_answer(repo, tmp_path, monkeypatch):
+    fake_run(tmp_path, monkeypatch, envelope(good_answer(spec_md="# Spec" + chr(10) + "- KNOWN: header Bearer abcdefghijklmnop" + chr(10))))
+    result = plan(repo)
+    saved = (repo / "_loop" / "calc" / "plan" / "raw_response.json").read_text(encoding="utf-8")
+    assert result["state"] == "planner-refused" and "bearer" in result["reason"]
+    assert "abcdefghijklmnop" not in saved
+
+
+def test_the_planner_error_text_is_scrubbed_from_the_attempt_event(repo):
+    def boom(prompt, cwd, claude_cmd, timeout_s):
+        raise OSError("the key sk-or-v1-abcdefghijklmnop123456 was rejected")
+    with pytest.raises(OSError):
+        plan(repo, runner=boom)
+    start, end = events_of(repo)
+    assert end["failed"] is True and "sk-or-" not in end["error"] and "[REDACTED]" in end["error"]
+
+
+def test_redact_names_what_it_found_and_leaves_no_secret_text():
+    import redact
+    text, kinds = redact.scan("a sk-ant-abcdefgh1234 and Bearer abcdefghijkl and loaded-value-0123456789", ["loaded-value-0123456789"])
+    assert "sk-ant-" not in text and "abcdefghijkl" not in text and "loaded-value" not in text
+    assert kinds == ["loaded-key", "anthropic-key", "bearer"]
+
+
+def test_the_repair_evidence_scrub_uses_the_loaded_values(monkeypatch):
+    import p1b_production as p1
+    monkeypatch.setenv("SATVIK_TEST_KEY_VALUE", "loaded-value-0123456789")
+    values = p1.loaded_scrub_values({"free": "other-loaded-value-99"})
+    text = p1._scrubbed("a loaded-value-0123456789 b other-loaded-value-99 c sk-or-v1-abcdefghijk", values)
+    assert "loaded-value" not in text and "other-loaded" not in text and "sk-or-" not in text
+
+
+def test_a_production_run_scrubs_the_keys_it_was_given(monkeypatch):
+    import p1b_production as p1
+    seen = {}
+    monkeypatch.setattr(p1, "_run", lambda job, root, status_dir_job, **kw: seen.update(kw) or {"name": "x", "state": "passed"})
+    p1.run(job={}, root=".", status_dir_job=Path("."), sandbox=None, protected=None, acceptance_lock=None, originals=None, evidence={},
+           client=None, parse_files=None, check_path=None, content_problem=None, scrub_keys={"free": "given-key-value-123456"})
+    assert "given-key-value-123456" in seen["scrub_keys"]
+
+
 # ---------------------------------------------------------------- what is written, and that the job is then fixed
 
 def test_the_plan_folder_holds_the_plan_spec_job_and_files_and_the_job_is_read_only(repo, tmp_path, monkeypatch):

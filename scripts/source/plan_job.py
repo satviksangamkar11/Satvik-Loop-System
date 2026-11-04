@@ -27,6 +27,7 @@ import fix_loop as fl
 import p0_gates as gates
 import openrouter_call as oc
 import p1b_routing as p1b
+import redact
 
 PLAN_TIMEOUT_S = 1800
 MAX_FILES = 30
@@ -91,10 +92,12 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         return _outcome("planner-refused", f"the {oc.active_profile()} profile has no planner (planner={model})")
     root, plan_dir = Path(root), Path(plan_dir)
     intent_path, raw_path = plan_dir / "INTENT.json", plan_dir / "raw_response.json"
+    problem = input_problem(root, files, request)                     # I55: no secret file, key or credential is sent (before any intent)
+    if problem:
+        return _outcome("planner-refused", problem)
+    fingerprint = request_fingerprint(job_name, request, files, via, model, effort)
     if intent_path.is_file():
-        if raw_path.is_file():
-            return _from_answer(raw_path.read_text(encoding="utf-8"), root, job_name, plan_dir)     # reused: no call
-        return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
+        return _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir)
     if len(files) > MAX_FILES:
         return _outcome("planner-refused", f"at most {MAX_FILES} files may be sent to the planner; got {len(files)}")
     if runner is None and via == "claude_code" and cc.real_call_refused(list(claude_cmd or ["claude"])):   # the guard: no real call under pytest or SATVIK_NO_OPUS=1
@@ -106,18 +109,75 @@ def plan(root, job_name, plan_dir, request, files, runner=None, claude_cmd=None,
         runner = openrouter_runner(client or oc.OpenRouter(oc.load_keys(), root / "_loop" / "openrouter"))
     prompt = _prompt(root, request, files)
     plan_dir.mkdir(parents=True, exist_ok=True)
-    intent_path.write_text(json.dumps({"job": job_name, "via": via, "model": model, "effort": effort, "files": list(files),
-                                       "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "timeout_s": timeout_s,
-                                       "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2), encoding="utf-8")
+    try:                                       # the lock: only one plan creates INTENT.json; the other one reads it and never calls
+        _create_intent(intent_path, {"job": job_name, "via": via, "model": model, "effort": effort, "files": list(files),
+                                     "request_sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(), "fingerprint": fingerprint,
+                                     "timeout_s": timeout_s, "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    except FileExistsError:
+        return _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir)
     try:
         with tempfile.TemporaryDirectory(prefix="plan_cwd_") as empty:
             with _planner_attempt(plan_dir, model, via, effort) as attempt:
                 _code, raw = runner(prompt, cwd=empty, claude_cmd=claude_cmd, timeout_s=timeout_s)
+                raw = _scrub_reply(raw)                               # I55: scrubbed and scanned before it is kept or read
                 attempt["raw"] = raw
     except subprocess.TimeoutExpired:
         return _outcome("planner-uncertain", f"the call did not finish in {timeout_s} s: the outcome is unknown, and it is never retried")
     raw_path.write_text(raw, encoding="utf-8")
     return _from_answer(raw, root, job_name, plan_dir)
+
+
+def request_fingerprint(job_name, request, files, via, model, effort):
+    """The identity of one planning request: the job name, the request text, the files in order and the planner that answers it. A plan
+    name is bound to this fingerprint: a different request under the same name is never served the earlier plan (I51)."""
+    body = json.dumps({"job": job_name, "request": request, "files": list(files), "via": via, "model": model, "effort": effort},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _create_intent(path, data):
+    """INTENT.json created exclusively (os.open with O_EXCL) and synced before the call. Of two plans for one name, only the one that
+    creates the file may call the planner; the other finds the file and reads it (_existing_intent)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, indent=2))
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _existing_intent(intent_path, raw_path, fingerprint, root, job_name, plan_dir):
+    """An intent already holds this plan name. The same request is served from its saved answer (no call); a different request is refused
+    (request-conflict); an intent with no saved answer, or one still being written, is uncertain and never retried."""
+    try:
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _outcome("planner-uncertain", "the intent is unreadable or still being written: the outcome is unknown, and it is never retried")
+    if not isinstance(intent, dict) or intent.get("fingerprint") != fingerprint:
+        return _outcome("request-conflict", "this job name already holds a plan for a different request, files or planner: a new request under the "
+                                            "same name is refused, and the earlier plan is not served")
+    if raw_path.is_file():
+        return _from_answer(raw_path.read_text(encoding="utf-8"), root, job_name, plan_dir)     # reused: no call
+    return _outcome("planner-uncertain", "the intent was written but no answer was saved: the outcome is unknown, and it is never retried")
+
+
+def intent_conflict(root, job_name, request, files):
+    """None when the plan name has no intent yet, or its intent is for this same request; else why a new plan under the name is refused.
+    The API asks this before it accepts a request (409 plan-request-conflict)."""
+    intent_path = Path(root) / "_loop" / job_name / "plan" / "INTENT.json"
+    if not intent_path.is_file():
+        return None
+    try:
+        spec = oc.roster_state()["ROLE_SPECS"]["planner"]
+    except oc.RosterRefused:
+        return None                                       # the planner call refuses by itself
+    fingerprint = request_fingerprint(job_name, request, files, oc.via_of(spec), spec["model"], spec.get("effort"))
+    try:
+        intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "the plan name's intent is unreadable: a different request under this name is refused"
+    if isinstance(intent, dict) and intent.get("fingerprint") == fingerprint:
+        return None
+    return "this job name already holds a plan for a different request, files or planner"
 
 
 @contextmanager
@@ -134,7 +194,7 @@ def _planner_attempt(plan_dir, model, via, effort):
     try:
         yield attempt
     except BaseException as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        error = redact.scrub(f"{type(exc).__name__}: {exc}", _secret_values())
         raise
     finally:
         if error is None:
@@ -159,6 +219,68 @@ def _envelope_error(raw):
     return None
 
 
+SECRET_PART = re.compile(r"(?i)(^|[._-])(secrets?|credentials?|tokens?|passwords?|api[._-]?keys?)([._-]|$)")
+SECRET_FILE = re.compile(r"(?i)(\.env(\.|$)|\.(key|pem|p12|pfx|jks|kdbx|netrc)$|^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|^\.(npmrc|pypirc)$)")
+
+
+def _secret_values():
+    """The exact key values to scrub from anything the planner writes: the keys the adapter loads (secrets/ or the environment) and the
+    key-like environment variables (redact.env_key_values)."""
+    try:
+        keys = oc.load_keys()
+    except Exception:
+        keys = {}
+    return redact.values_of(keys, redact.env_key_values())
+
+
+def _file_problem(root, rel):
+    """None when `rel` may be sent to the planner as a file; else why not. It must be a repo path the engine accepts, a file, and have no part
+    named like a secret (secrets/, a *secret* or *token* name, a key, .env or netrc file), and the same holds for the file it resolves to, so a
+    symlink into secrets/ is refused too (I55)."""
+    problem = _path_problem(rel, root, "planner file")
+    if problem:
+        return problem
+    if not (Path(root) / rel).is_file():
+        return f"planner file is not a file under the repo: {rel}"
+    resolved = (Path(root) / rel).resolve().relative_to(Path(root).resolve())
+    for path in (Path(rel), resolved):
+        for part in path.parts:
+            if SECRET_PART.search(part) or SECRET_FILE.search(part):
+                return f"planner file {rel!r} has a secret-shaped part ({part!r}): it is not sent to the planner"
+    return None
+
+
+def input_problem(root, files, request):
+    """Why the planner may not be given these files or this request (None when it may): a file under secrets/ or with a secret-shaped name, or a
+    request that holds a loaded key or a credential shape. Checked before any intent is written or any call is made (I55)."""
+    for rel in files:
+        problem = _file_problem(Path(root), rel)
+        if problem:
+            return problem
+    _text, kinds = redact.scan(request, _secret_values())
+    if kinds:
+        return f"the request holds credential-shaped text ({', '.join(kinds)}): it is not sent to the planner"
+    return None
+
+
+def _scrub_reply(raw):
+    """The planner's raw reply, scrubbed (redact.scan) before it is kept or read. A reply that held a loaded key or a credential shape is kept
+    scrubbed in a JSON envelope with its kinds in `redaction_hits`, and _from_answer refuses it: its text is never used as an answer (I55)."""
+    if not isinstance(raw, str):
+        return raw
+    scrubbed, kinds = redact.scan(raw, _secret_values())
+    if not kinds:
+        return scrubbed
+    try:
+        envelope = json.loads(scrubbed)
+    except ValueError:
+        envelope = None
+    if not isinstance(envelope, dict):
+        envelope = {"is_error": True, "result": scrubbed[:4000]}
+    envelope["redaction_hits"] = kinds
+    return json.dumps(envelope)
+
+
 def _prompt(root, request, files):
     parts = [INSTRUCTIONS, "REQUEST:", request, "", "FILES (chosen by the controller):"]
     base = root.resolve()
@@ -166,6 +288,9 @@ def _prompt(root, request, files):
         path = (root / rel).resolve()
         if base not in path.parents or not path.is_file():
             raise ValueError(f"planner file is not a file under the repo: {rel}")
+        problem = _file_problem(root, rel)                              # the same rule as input_problem: a secret is never read into a prompt
+        if problem:
+            raise ValueError(problem)
         parts.append(f"### {rel}" + NL + path.read_text(encoding="utf-8"))
     return NL.join(parts)
 
@@ -177,6 +302,9 @@ def _from_answer(raw, root, job_name, plan_dir):
         return _outcome("planner-invalid", "the output is not JSON")
     if not isinstance(envelope, dict):
         return _outcome("planner-invalid", "the output is not a JSON object")
+    if envelope.get("redaction_hits"):                                   # I55: a reply that held a key or a credential is never used
+        kinds = ", ".join(str(k) for k in envelope["redaction_hits"])
+        return _outcome("planner-refused", f"the planner's reply held credential-shaped text ({kinds}): it is refused and not used")
     reported = [key for key in ("mcp_servers", "mcpServers", "mcp", "plugins") if envelope.get(key)]
     if reported:
         return _outcome("planner-refused", f"the session reports MCP servers or plugins ({', '.join(reported)}); the planner runs with none")
@@ -192,7 +320,7 @@ def _from_answer(raw, root, job_name, plan_dir):
         return _outcome("planner-invalid", "the answer text is not JSON")
     if not isinstance(answer, dict):
         return _outcome("planner-invalid", "the answer is not a JSON object")
-    problems = _problems(answer, job_name)
+    problems = _problems(answer, job_name, root, plan_dir)
     if problems:
         return _outcome("planner-invalid", "; ".join(problems))
     return _write(answer, plan_dir)
@@ -219,7 +347,66 @@ def spec_problems(spec_md):
     return out
 
 
-def _problems(answer, job_name):
+def _path_problem(rel, root, context):
+    """None when `rel` is a repo-relative path the engine accepts (fix_loop._validate_path: no absolute, drive or `..` path, no secrets
+    component, inside the repo); else why not. A backslash is refused too, so no Windows-style path reaches the plan folder."""
+    if not isinstance(rel, str) or not rel:
+        return f"{context}: a path must be a non-empty string"
+    if "\\" in rel or rel.startswith("/") or re.match(r"^[A-Za-z]:", rel):
+        return f"{context}: absolute, drive or backslash path not allowed: {rel!r}"
+    try:
+        fl._validate_path(rel, Path(root), context)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _control_sources(job):
+    """Every source the job's negative controls reference (the planner's controls must be exactly these)."""
+    return {src for c in (job.get("negative_controls") or []) if isinstance(c, dict)
+            for src in (c.get("replace") or {}).values() if isinstance(src, str)}
+
+
+def _path_problems(answer, job, root, plan_dir):
+    """Every path the answer would write or the job would install, checked before any write: the acceptance files are exactly the job's
+    acceptance_tests, the controls are exactly the negative controls' sources (no extra file), and each destination is a safe relative path
+    whose resolved location is inside plan_dir/files."""
+    problems = []
+    base = (Path(plan_dir) / "files").resolve()
+    for key, expected, label in (("acceptance", set(job.get("acceptance_tests") or []), "acceptance"),
+                                 ("controls", _control_sources(job), "controls")):
+        files = answer.get(key)
+        if not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
+            problems.append(f"{label} must map each file path to its text")
+            continue
+        for rel in files:
+            problem = _path_problem(rel, root, f"{label} path")
+            if problem:
+                problems.append(problem)
+                continue
+            if not (base / rel).resolve().is_relative_to(base):
+                problems.append(f"{label} path escapes the plan folder: {rel!r}")
+        extra = sorted(str(p) for p in set(files) - expected)
+        if extra:
+            problems.append(f"{label} has files the job does not reference: {extra}")
+        if label == "acceptance" and set(files) != expected:
+            problems.append("acceptance files must be exactly the job's acceptance_tests")
+        if label == "controls" and set(files) != expected:
+            problems.append(f"controls must be exactly the negative control sources; missing {sorted(expected - set(files))}")
+    for rel in [job.get("spec")] + list(job.get("files") or []) + list(job.get("tests") or []) + list(job.get("acceptance_tests") or []):
+        problem = _path_problem(rel, root, "job path")
+        if problem:
+            problems.append(problem)
+    for c in job.get("negative_controls") or []:
+        for target, src in ((c.get("replace") or {}).items() if isinstance(c, dict) else []):
+            for rel in (target, src):
+                problem = _path_problem(rel, root, "negative control path")
+                if problem:
+                    problems.append(problem)
+    return problems
+
+
+def _problems(answer, job_name, root, plan_dir):
     missing = [key for key in ("plan_md", "spec_md", "job", "acceptance", "controls", "expected_lines") if key not in answer]
     if missing:
         return [f"missing {', '.join(missing)}"]
@@ -229,6 +416,7 @@ def _problems(answer, job_name):
     problems = []
     if job.get("name") != job_name:
         problems.append("the job name differs from the job being planned")
+    problems += _path_problems(answer, job, root, plan_dir)          # before anything is written: a path that escapes is refused here
     try:
         p1b.check_production_job(job)
     except p1b.JobRefused as exc:
@@ -239,11 +427,9 @@ def _problems(answer, job_name):
     except jsonschema.ValidationError as exc:
         problems.append("job schema: " + exc.message)
     problems += spec_problems(str(answer["spec_md"]))
-    if set(answer["acceptance"]) != set(job.get("acceptance_tests") or []):
-        problems.append("acceptance files must be exactly the job's acceptance_tests")
     for control in job.get("negative_controls") or []:
         for source in (control.get("replace") or {}).values():
-            if source not in answer["controls"]:
+            if isinstance(answer["controls"], dict) and source not in answer["controls"]:
                 problems.append(f"negative control source {source} is missing from controls")
     lines = answer["expected_lines"]
     if not isinstance(lines, dict) or any(not isinstance(v, int) for v in lines.values()):
@@ -264,24 +450,71 @@ def _write(answer, plan_dir):
     if job_path.is_file():                              # a restart: the artifacts of this answer are already written and read-only
         return _summary(plan_dir)
     job = answer["job"]
+    base = (plan_dir / "files").resolve()
+    targets = {}
+    for rel, text in {**answer["acceptance"], **answer["controls"]}.items():   # every destination is checked before the first write
+        target = (plan_dir / "files" / rel).resolve()
+        if not target.is_relative_to(base):
+            raise ValueError(f"refusing to write outside the plan folder: {rel!r}")
+        targets[target] = str(text)
     plan_dir.mkdir(parents=True, exist_ok=True)
     (plan_dir / "PLAN.md").write_text(str(answer["plan_md"]), encoding="utf-8")
     (plan_dir / "SPEC.md").write_text(str(answer["spec_md"]), encoding="utf-8")
     (plan_dir / "expected_lines.json").write_text(json.dumps(answer["expected_lines"], indent=2, sort_keys=True), encoding="utf-8")
-    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")
-    os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
-    for rel, text in {**answer["acceptance"], **answer["controls"]}.items():
-        target = plan_dir / "files" / rel
+    for target, text in targets.items():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(text), encoding="utf-8")
+        target.write_text(text, encoding="utf-8")
+    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")   # job.json last: its presence means the plan is complete
+    os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
     return _summary(plan_dir)
+
+
+PACKAGE_TEXT = ("job.json", "PLAN.md", "SPEC.md", "expected_lines.json")     # the plan's own files; the acceptance and control files sit under files/
+
+
+class PlanChanged(Exception):
+    """The plan folder does not hold the package it was approved with (a file changed, went missing or was added)."""
+
+
+def package_members(plan_dir):
+    """Every file of a planned job, as {name: bytes}: job.json, PLAN.md, SPEC.md, expected_lines.json and each file under files/ (its acceptance
+    tests and negative-control sources, by repo path). The approval hashes all of it, not only the job file (I52)."""
+    plan_dir = Path(plan_dir)
+    members = {name: (plan_dir / name).read_bytes() for name in PACKAGE_TEXT}
+    base = plan_dir / "files"
+    if base.is_dir():
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                members["files/" + path.relative_to(base).as_posix()] = path.read_bytes()
+    return members
+
+
+def package_sha256(members):
+    """The hash of a package: the SHA-256 of the sorted (name, SHA-256 of its bytes) pairs."""
+    digest = {name: hashlib.sha256(data).hexdigest() for name, data in sorted(members.items())}
+    return hashlib.sha256(json.dumps(digest, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def read_package(plan_dir, expected_sha256):
+    """The plan folder's package, read once, when it still hashes to `expected_sha256` (the hash the plan was approved with). Raises
+    PlanChanged otherwise (also when no hash was recorded), so an approved plan that changed is never queued or started."""
+    if not expected_sha256:
+        raise PlanChanged("no package hash was recorded for this plan")
+    try:
+        members = package_members(plan_dir)
+    except OSError as exc:
+        raise PlanChanged(f"the plan folder is incomplete: {exc}") from exc
+    if package_sha256(members) != expected_sha256:
+        raise PlanChanged("the planned job, its spec or its acceptance and control files changed since the plan was made")
+    return members
 
 
 def _summary(plan_dir):
     spec = (plan_dir / "SPEC.md").read_text(encoding="utf-8")
     assumed = [line.split(":", 1)[1].strip() for line in spec.splitlines() if re.match(r"^\s*(?:[-*]\s+)?ASSUMED:", line)]
-    return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"), "assumed": assumed}
+    return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"),
+            "plan_sha256": package_sha256(package_members(plan_dir)), "assumed": assumed}
 
 
 def _outcome(state, reason):
-    return {"state": state, "reason": reason, "job_sha256": None, "assumed": []}
+    return {"state": state, "reason": reason, "job_sha256": None, "plan_sha256": None, "assumed": []}
