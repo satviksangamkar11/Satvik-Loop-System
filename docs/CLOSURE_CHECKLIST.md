@@ -4,7 +4,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 "done when" line. Do the items in order, skip none, and mark each one `[x]` only with its evidence.
 
 **Rules:**
-- Work goes to Haiku 5.5 high subagents only.
+- Work goes to Haiku 5.5 subagents only: medium effort for every new submission from 2026-11-04 (B5 and issues-i19 were already running at high).
 - Local work goes to Local agent 1 (`session_016GQpGGyAsk3SytLChxhEfL`), or Local agent 2 (`session_016GQpGKnhg52NCaYuiekaQw`) when agent 1's
   context is full.
 - No other sessions. No paid calls (`SATVIK_PROFILE=test`, $0). No UI redesign.
@@ -75,7 +75,7 @@ Last updated: 2026-11-04 04:00 IST. The working branch is `claude/satvik-loop-ha
 | I21 | Planner events go to the repo-root `_loop/<job>/events.jsonl`, but `job_history` / `read_job_events` scan only `results/<id>/` and `wt/<id>/_loop/`, so the API never shows planner events | Make the readers include the plan job's folder (or have `plan_job` write where the job's other events go) | A test: a planned job's view shows its planner attempt |
 | I22 | `test_shared_limits.py::test_pace_sends_at_most_15_in_any_60_seconds_across_processes` takes 60.05 s (a real minute) | Review whether it can use a fake clock across processes; if not, keep it and record it as a by-design timing test | Decided and recorded |
 | I23 | Production: validating a Claude Code `reviewer_b` change is refused with `bad-effort` on `review_fix_repair` (an engine rule found by the issues agent) | Investigate in `stage_config.validate`: an inherited-model stage should not fail effort validation because of another stage's model change | A test: a valid Claude Code `reviewer_b` change validates |
-| I24 | The B5 integration subagent stopped at the usage limit with uncommitted work in its worktree (`.claude/worktrees/agent-a769e14f201efa8b2`, branch `b5-integration`: seed script, live Playwright config, real-API spec) | Resume it, or commit its work and continue it in a fresh Haiku 5.5 high subagent on the same worktree | B5 done |
+| I24 | The B5 integration subagent stopped at the usage limit with uncommitted work in its worktree (`.claude/worktrees/agent-a769e14f201efa8b2`, branch `b5-integration`: seed script, live Playwright config, real-API spec) | Resume it, or commit its work and continue it in a fresh Haiku 5.5 medium subagent on the same worktree | B5 done |
 
 ## C. Owner-only (not blocking)
 - Delete `r72-token-budget` (`5905bda`) and `pilot-loop-status.solo.json`, and remove `wt-pilot-r5`. Review `wt-B-pilot*`.
