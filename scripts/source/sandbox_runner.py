@@ -26,6 +26,12 @@ CONTROLLER_INI = "[pytest]\njunit_family = xunit1\naddopts =\n"
 
 EXCLUDED_NAMES = {"_moss", "_loop", "secrets", ".git", "__pycache__", ".pytest_cache", ".hypothesis", "node_modules", ".venv", "venv"}
 EXCLUDED_SUFFIXES = (".env", ".key", ".pem", ".p12", ".pfx")
+# Bounds on what a sandbox run can put on the host (I56): the captured output is kept to its head and tail, a JUnit report over the limit is
+# not read at all (no report: the run is not a pass), and a work area that grows past the limit makes the run a failure.
+MAX_OUTPUT_CHARS = 2_000_000
+OUTPUT_KEEP_EACH_END = 200_000
+MAX_JUNIT_BYTES = 20_000_000
+MAX_WRITABLE_BYTES = 512 * 1024 * 1024
 
 
 @dataclass
@@ -45,7 +51,11 @@ def _ignore(directory, names):
 
 
 class DockerSandbox:
-    def __init__(self, image: str = DEFAULT_IMAGE, include=None, cpus: str = "1", memory: str = "1g", pids: int = 256, docker: str = "docker"):
+    def __init__(self, image: str = DEFAULT_IMAGE, include=None, cpus: str = "1", memory: str = "1g", pids: int = 256, docker: str = "docker",
+                 label: str | None = None):
+        """label: an optional tag every container of this sandbox carries (satvik-sandbox-run=<label>), so a caller can find its own containers
+        and no others (I63)."""
+        self.label = label
         self.image = image
         self.include = list(include or [])
         self.cpus, self.memory, self.pids = cpus, memory, pids
@@ -126,7 +136,16 @@ class DockerSandbox:
                    "-q", "--tb=short", "-rfE", "--junitxml", "/out/junit.xml"] + [str(PurePosixPath(t)) for t in tests]
             res = self._run_container(tmpd, cmd, readonly=ro_files, timeout_s=timeout_s, extra_mounts=[(tmpd / "p0", "/p0", "ro"), (tmpd / "out", "/out", "rw")])
             junit = tmpd / "out" / "junit.xml"
-            res.junit = junit.read_text(encoding="utf-8") if junit.is_file() else None
+            if junit.is_file() and junit.stat().st_size > MAX_JUNIT_BYTES:
+                res.junit = None                    # over the bound: no report is read, so the controller refuses the run (fail closed)
+                res.output += f"\nSANDBOX: the JUnit report is {junit.stat().st_size} bytes, over {MAX_JUNIT_BYTES}; not read"
+            else:
+                res.junit = junit.read_text(encoding="utf-8") if junit.is_file() else None
+            written = _tree_bytes(work)
+            if written > MAX_WRITABLE_BYTES:
+                res.returncode = res.returncode or 1
+                res.junit = None
+                res.output += f"\nSANDBOX: the writable area holds {written} bytes, over {MAX_WRITABLE_BYTES}; the run is not a pass"
             return res
 
     def _includes(self, root, tests, readonly, overlay):
@@ -140,7 +159,7 @@ class DockerSandbox:
 
     def _run_container(self, tmpd: Path, cmd, readonly=None, timeout_s=600, extra_mounts=()) -> RunResult:
         name = "satvik-p0-" + uuid.uuid4().hex[:12]
-        args = ["run", "--rm", "--name", name,
+        args = ["run", "--rm", "--name", name] + (["--label", f"satvik-sandbox-run={self.label}"] if self.label else []) + [
                 "--network", "none", "--user", "65534:65534", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                 "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
                 "--pids-limit", str(self.pids), "--memory", self.memory, "--memory-swap", self.memory, "--cpus", self.cpus,
@@ -154,11 +173,11 @@ class DockerSandbox:
         args += [self.image] + list(cmd)
         try:
             proc = subprocess.run([self.docker] + args, capture_output=True, text=True, timeout=timeout_s, env=_docker_cli_env())
-            return RunResult(proc.returncode, proc.stdout + proc.stderr, None, False)
+            return RunResult(proc.returncode, _bounded_output(proc.stdout + proc.stderr), None, False)
         except subprocess.TimeoutExpired as exc:
             self._kill(name)
             out = (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
-            return RunResult(124, out + f"\nSANDBOX: pytest timed out after {timeout_s} s; container {name} killed", None, True)
+            return RunResult(124, _bounded_output(out + f"\nSANDBOX: pytest timed out after {timeout_s} s; container {name} killed"), None, True)
         except OSError as exc:
             return RunResult(125, f"SANDBOX: docker could not start: {exc}", None, False)
 
@@ -185,6 +204,26 @@ def _docker_cli_env() -> dict:
     keep = {"PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
             "SYSTEMROOT", "SYSTEMDRIVE", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP", "WINDIR", "COMSPEC", "PATHEXT"}
     return {k: v for k, v in os.environ.items() if k in keep}
+
+
+def _bounded_output(text: str) -> str:
+    """The captured output, at most MAX_OUTPUT_CHARS: its head and its tail are kept and the middle is marked as dropped (I56)."""
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    dropped = len(text) - 2 * OUTPUT_KEEP_EACH_END
+    return text[:OUTPUT_KEEP_EACH_END] + f"\n...SANDBOX: {dropped} characters of output dropped...\n" + text[-OUTPUT_KEEP_EACH_END:]
+
+
+def _tree_bytes(path: Path) -> int:
+    """The bytes under path (0 when it is missing). Symbolic links are not followed."""
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                pass
+    return total
 
 
 def _bind(host, target: str, readonly: bool) -> str:

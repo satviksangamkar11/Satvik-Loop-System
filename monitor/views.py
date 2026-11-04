@@ -28,7 +28,7 @@ END_STATES = frozenset({"passed", "review-open", "escalate", "needs_review", "bl
                         "quota-exhausted", "deadline", "integrity-mismatch", "acceptance-tampered", "exception", "invalid-spec",
                         "job-too-large", "sandbox-unavailable", "acceptance-invalid", "refused", "stopped"})
 END_MAP = {"error": "exception"}          # the launcher's finish for a run that raised (launch.Launcher.finish "error")
-MERGE_STATES = frozenset({"merged", "merge-conflict", "tests-failed", "push-failed", "main-moved", "pending", "none"})
+MERGE_STATES = frozenset({"merged", "merge-conflict", "tests-failed", "push-failed", "main-moved", "merge-error", "reviewed-bytes-changed", "pending", "none"})
 WAIT_WHYS = frozenset({"model-slot", "account-pace", "429-backoff", "retry-backoff"})
 STAGE_ORDER = sc.STAGE_NAMES            # the ten configurable stages, in the contract's order
 

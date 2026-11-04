@@ -863,8 +863,9 @@ def run_job(
         pytest_runner = run_pytest
     if status_dir is None:
         status_dir = root / "_loop"
-    if scrub_keys is None:
-        scrub_keys = []
+    # The loaded key VALUES (I65). A {slot: key} dict contributes its values, never its slot names (iterating it did, before this fix); the
+    # values are the same list redact.scrub and the production path use, so every scrub in this run sees the same keys.
+    scrub_keys = _sibling_module("redact").values_of(scrub_keys)
 
     global nemotron_code_for_loop
     if nemotron_code_for_loop is None:
@@ -980,9 +981,7 @@ def run_job(
     stuck_set = None
 
     def _scrub(text: str) -> str:
-        for k in scrub_keys:
-            text = text.replace(k, "[REDACTED]")
-        return text
+        return _sibling_module("redact").scrub(text, scrub_keys)     # the loaded values and the credential shapes (I65)
 
     def _write_status(round_no: int | str, coder_status: str, files_ok: bool, tests_passed_: bool, reason: str | None):
         nonlocal state, review_verdict
@@ -1549,7 +1548,7 @@ def install_plan(wt: Path, job: dict, members: dict) -> None:
 
 
 def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=None, key: str | None = None, stage_snapshot: dict | None = None,
-                 plan: dict | None = None, **run_kwargs) -> dict:
+                 plan: dict | None = None, claim: Path | None = None, **run_kwargs) -> dict:
     """Start one job in its own worktree (Launcher.start: limits, request lookup, claims), run it there with the lease kept alive, record the
     finish, and queue a passed job for the merge queue. A refused start runs nothing. A run that raises is finished as "error" and re-raised.
     stage_snapshot: the job's frozen stage table (queued with it, stage_config.snapshot), used as its snapshot when it starts; None reads the
@@ -1566,6 +1565,8 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
     if not start["ok"]:
         return {"name": name, "state": "refused", "reason": start["reason"]}
     job_id, gen, base = start["job_id"], start["gen"], start["base"]
+    if claim is not None:                                # the taken job is now running: its claim says so (I41)
+        _write_claim(claim, "running")
     stop_beat = api.lease.keep_alive(job_id, gen)
     wt = Path(start["worktree"])
     try:
@@ -1592,17 +1593,37 @@ def run_launched(job: dict, root: Path, api, launcher, merge_queue=None, run=Non
         stop_beat()
     state = result["state"]
     try:
-        write_change_doc(wt, job_id, job, dict(result, state=state), base)
+        write_change_doc(wt, job_id, job, dict(result, state=state), base,
+                         installed=installed_plan_paths(job) if package is not None else ())   # a planned job's installed files (I64)
     except BaseException:
         launcher.finish(job_id, gen, "error", base)
         raise
     launcher.finish(job_id, gen, state, base, {"round": result.get("round")})
     if state == "passed" and merge_queue is not None:
-        merge_queue.submit(job_id, gen)
+        merge_queue.submit(job_id, gen, manifest=merge_manifest(job, wt, dict(result, state=state)))
     return dict(result, job_id=job_id)
 
 
-def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) -> Path:
+def merge_manifest(job: dict, wt: Path, result: dict) -> dict:
+    """The job manifest the merge carries (I47): the job's own files as they were reviewed and tested (their combined hash, taken from the
+    run's evidence when it has one, else from the worktree now), and its locked acceptance tests with their bytes. The merge re-checks both
+    after the rebase and reruns the acceptance tests."""
+    gates = _p0()
+    files = list(job["files"])
+    locked = list(job.get("acceptance_tests") or [])
+    evidence = (result or {}).get("evidence") or {}
+    reviewed = evidence.get("reviewed_hash") or gates.combined_hash(wt, files)
+    return {"files": files, "reviewed_hash": reviewed, "acceptance_tests": locked, "acceptance_hashes": gates.hash_paths(wt, locked)}
+
+
+def installed_plan_paths(job: dict) -> list:
+    """The repo paths an approved plan installs into the worktree (install_plan): the spec, the locked acceptance tests and the negative-control
+    sources. They are committed with the change, so the merge carries them (I64)."""
+    controls = [src for c in (job.get("negative_controls") or []) for src in (c.get("replace") or {}).values()]
+    return list(dict.fromkeys([job["spec"], *(job.get("acceptance_tests") or []), *controls]))
+
+
+def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str, installed=()) -> Path:
     """docs/changes/<job_id>.md in the job's worktree, committed on the job branch so the merge carries it. A passed job's own files (job
     "files": the code and its tests) go into the same commit: they are what the merge delivers. A job that did not pass commits the doc only
     (its files were restored to the originals)."""
@@ -1621,8 +1642,9 @@ def write_change_doc(wt: Path, job_id: str, job: dict, result: dict, base: str) 
     git = _sibling_module("launch").git
     git(["add", doc.relative_to(wt).as_posix()], wt)
     if result.get("state") == "passed":                      # the delivered code: new, changed or deleted job files
-        tracked = set(git(["ls-files", "--", *job["files"]], wt).stdout.split())
-        paths = [rel for rel in job["files"] if (Path(wt) / rel).exists() or rel in tracked]
+        delivered = list(dict.fromkeys([*job["files"], *installed]))   # plus the approved plan's installed files (I64)
+        tracked = set(git(["ls-files", "--", *delivered], wt).stdout.split())
+        paths = [rel for rel in delivered if (Path(wt) / rel).exists() or rel in tracked]
         if paths:
             git(["add", "-A", "--", *paths], wt)
     git(["commit", "-q", "-m", f"change doc: {job_id} ({result.get('state')})"], wt)
@@ -1748,8 +1770,10 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
     identical requests at once leave one pending file. A job is a duplicate only while it is ACTIVE: the same job file (sha-256) pending in
     queue/, or its name running in the registry with a held lease (claimed or started). A finished job's old queue/taken/ file is history,
     not active work. A job whose last state is passed or merged is queued again only with rerun=True.
-    Returns {"queued": True, "path": ...} or {"queued": False, "reason": "duplicate-pending" | "duplicate-running" | "already-completed",
-    "job": ...}. enqueue() itself is unchanged and still returns a Path."""
+    The queue's claim protocol (I42): a job goes pending -> claimed (take_next, under this same queue/.lock) -> running (the launcher's
+    registry.begin, under home/lock), so an identical job file is a duplicate in every one of those states while its owner lives.
+    Returns {"queued": True, "path": ...} or {"queued": False, "reason": "duplicate-pending" | "duplicate-claimed" | "duplicate-running" |
+    "already-completed", "job": ...}. enqueue() itself is unchanged and still returns a Path."""
     import hashlib
     data = Path(job_path).read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -1768,6 +1792,17 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
                     return {"queued": False, "reason": "duplicate-pending", "job": pending.name}
             except OSError:
                 continue                                  # taken by a drainer while we looked: it is checked below as running
+        claims = folder / "claims"                        # a job a live owner has claimed (taken, not yet running or just starting) is active too (I42)
+        for claim in sorted(claims.glob("*" + CLAIM_SUFFIX)) if claims.is_dir() else []:
+            job = folder / "taken" / claim.name[:-len(CLAIM_SUFFIX)]
+            try:
+                info = json.loads(claim.read_text(encoding="utf-8"))
+                same = job.is_file() and hashlib.sha256(job.read_bytes()).hexdigest() == digest
+            except (OSError, ValueError):
+                continue
+            if same and isinstance(info, dict) and info.get("state") in ("claimed", "running") \
+                    and lh.owner_alive(info.get("pid", 0), info.get("start")):
+                return {"queued": False, "reason": "duplicate-claimed", "job": job.name}
         row = lh.Registry(home).lookup(name) if name else None
         if row and row.get("state") == "running" and lh.Lease(home).held(row.get("job")):
             return {"queued": False, "reason": "duplicate-running", "job": row.get("job")}
@@ -1776,32 +1811,137 @@ def try_enqueue(job_path: Path, home: Path, rerun: bool = False, stages: dict | 
         return {"queued": True, "path": str(enqueue(job_path, home, stages=stages, plan=plan))}
 
 
+CLAIM_SUFFIX = ".claim"            # taken/<file>.claim: the claim's state and its owner (pid and process start), written at each step (I41)
+REFUSED_DIR = "refused"            # queue/refused/<file>: a job refused for good (its reason is in the claim and the registry) (I41)
+# A refused start with one of these reasons is a limit or a busy resource, not a verdict on the job: the job goes back to the queue.
+RETRY_REFUSALS = frozenset({"stop-file", "provider-unavailable", "no-budget-snapshot", "free-requests", "review-spend", "no-sandbox-slot",
+                            "claim-conflict", "request-running"})
+
+
+def claim_file(job_file: Path) -> Path:
+    """The claim of a job file in queue/taken/ or queue/refused/: queue/claims/<file>.claim. The claims have their own folder so the taken and
+    refused folders hold job files only."""
+    job_file = Path(job_file)
+    return job_file.parent.parent / "claims" / (job_file.name + CLAIM_SUFFIX)
+
+
+def _write_claim(job_file: Path, state: str, reason: str | None = None) -> None:
+    """The claim of a taken job: its state, and the owner that wrote it (this process: pid and process start)."""
+    lh = _sibling_module("loop_home")
+    pid = os.getpid()
+    data = {"state": state, "pid": pid, "start": lh.process_start(pid), "updated": time.time()}
+    if reason is not None:
+        data["reason"] = reason
+    claim_file(job_file).parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(claim_file(job_file), data)
+
+
+def _move_sidecars(src: Path, dest: Path) -> None:
+    """The stage table and the plan of a job file move with it. A move that fails leaves the job without its table, which refuses it at start
+    (I43): never a silent fallback."""
+    for side in (stages_file, plan_file):
+        if side(src).is_file():
+            try:
+                os.replace(side(src), side(dest))
+            except OSError:
+                pass
+
+
+def _recover_orphans(home: Path) -> None:
+    """Orphaned claims are recovered (I41), under queue/.lock. A job claimed but not started whose owner is dead goes back to the queue. A job
+    that was running when its owner died is refused: its paid calls may already have happened, so it is never run again on its own. A claim
+    that cannot be read is refused too. A taken file with no claim (history from before claims) is left alone."""
+    lh = _sibling_module("loop_home")
+    taken = queue_dir(home) / "taken"
+    claims = queue_dir(home) / "claims"
+    for claim in sorted(claims.glob("*" + CLAIM_SUFFIX) if claims.is_dir() else []):
+        job = taken / claim.name[:-len(CLAIM_SUFFIX)]
+        if not job.is_file():                                 # a refused or finished job: nothing to recover
+            continue
+        try:
+            data = json.loads(claim.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if not isinstance(data, dict):
+            refuse_taken(job, home, "claim-unreadable")
+            continue
+        state = data.get("state")
+        if state not in ("claimed", "running") or lh.owner_alive(data.get("pid", 0), data.get("start")):
+            continue
+        if state == "claimed":
+            _requeue(job, home)
+            lh.Registry(home).bump("claim-recovered")
+        else:
+            refuse_taken(job, home, "owner-died-running")
+
+
+def _requeue(job: Path, home: Path) -> Path:
+    """A taken job goes back to the queue under its own name (its arrival order is kept), with its sidecars; its claim is dropped."""
+    dest = queue_dir(home) / job.name
+    os.replace(job, dest)
+    _move_sidecars(job, dest)
+    claim_file(job).unlink(missing_ok=True)
+    return dest
+
+
+def refuse_taken(job_file: Path, home: Path, reason: str) -> Path:
+    """A taken job that will not run goes to queue/refused/ with its reason in its claim and in the registry (a row under refused:<file>), so
+    the dashboard shows it and no drainer takes it again (I41)."""
+    job = Path(job_file)
+    refused = queue_dir(home) / REFUSED_DIR
+    refused.mkdir(parents=True, exist_ok=True)
+    dest = refused / job.name
+    os.replace(job, dest)
+    _move_sidecars(job, dest)
+    claim_file(job).unlink(missing_ok=True)
+    _write_claim(dest, "refused", reason=reason)
+    _sibling_module("loop_home").Registry(home).note(f"refused:{job.name}", job.name, "refused", {"reason": reason})
+    return dest
+
+
+def settle_taken(job_file: Path, home: Path, res: dict) -> str:
+    """Where a taken job goes once its start or run has an answer (I41): a finished run is "done" (its file stays in taken/ as history); a
+    refusal for a retryable reason goes back to the queue ("requeued"); any other refusal goes to refused/ ("refused")."""
+    job = Path(job_file)
+    if res.get("state") != "refused":
+        _write_claim(job, "done")
+        return "done"
+    reason = str(res.get("reason"))
+    if reason in RETRY_REFUSALS:
+        _requeue(job, home)
+        return "requeued"
+    refuse_taken(job, home, reason)
+    return "refused"
+
+
 def take_next(home: Path) -> Path | None:
-    """Claim the oldest queued job by renaming it into queue/taken/, with its frozen stage table (queue/<file>.stages) if it has one. A rename
+    """Claim the oldest queued job: rename it into queue/taken/ with its stage table and plan, and write its claim (state "claimed", owner pid
+    and process start). This runs under queue/.lock, the same lock the duplicate check holds (I42), after orphaned claims are recovered. A rename
     that loses to another drainer is skipped, so each job is taken once. Returns the claimed path, or None when the queue is empty."""
     folder = queue_dir(home)
     if not folder.exists():
         return None
     taken = folder / "taken"
     taken.mkdir(exist_ok=True)
-    for path in sorted(folder.glob("*.json")):
-        try:
-            os.replace(path, taken / path.name)
-        except OSError:
-            continue
-        for side, dest in ((stages_file(path), stages_file(taken / path.name)), (plan_file(path), plan_file(taken / path.name))):
-            if side.is_file():
-                try:
-                    os.replace(side, dest)
-                except OSError:
-                    pass
-        return taken / path.name
+    lh = _sibling_module("loop_home")
+    with lh._os_lock(folder / ".lock"):
+        _recover_orphans(home)
+        for path in sorted(folder.glob("*.json")):
+            dest = taken / path.name
+            try:
+                os.replace(path, dest)
+            except OSError:
+                continue
+            _move_sidecars(path, dest)
+            _write_claim(dest, "claimed")
+            return dest
     return None
 
 
 def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[tuple[str, str]]:
     """Run queued jobs one after another, oldest first, until the queue is empty. Returns [(file name, state)]. A job file that does not
-    load is reported as "invalid" and the drain goes on."""
+    load is refused ("invalid") and the drain goes on. A refusal for a busy resource or a limit puts the job back in the queue and stops the
+    drain: the next start takes it (I41)."""
     out = []
     load = loader or load_job
     while True:
@@ -1811,21 +1951,27 @@ def drain_queue(api, launcher, merge_queue=None, run=None, loader=None) -> list[
         try:
             job = load(path)
         except (ValueError, OSError) as exc:
+            refuse_taken(path, api.home, f"invalid: {exc}")
             out.append((path.name, "invalid"))
             continue
         try:
             frozen = frozen_stage_table(path)       # the table frozen at queue time; None for a job queued without one; SnapshotRequired refuses
         except SnapshotRequired as exc:
             print(f"{path.name}: refused: {exc}", flush=True)
+            refuse_taken(path, api.home, str(exc))
             out.append((path.name, "refused"))
             continue
         approved = read_plan(path)                  # the approved plan of a planned job; None otherwise
         if approved is not None and _file_sha256(path) != approved.get("job_sha256"):
-            out.append((path.name, "plan-changed"))  # the queued copy is not the approved job file: nothing starts
+            refuse_taken(path, api.home, "plan-changed")   # the queued copy is not the approved job file: nothing starts
+            out.append((path.name, "plan-changed"))
             continue
-        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run, plan=approved,
+        res = run_launched(job, Path(launcher.repo), api, launcher, merge_queue=merge_queue, run=run, plan=approved, claim=path,
                            **({"stage_snapshot": frozen} if frozen is not None else {}))
+        settled = settle_taken(path, api.home, res)
         out.append((path.name, res["state"]))
+        if settled == "requeued":
+            return out
 
 
 def request_job(root, name: str, request: str, files=(), claude_cmd=None, runner=None, api=None, launcher=None, merge_queue=None, run=None) -> dict:

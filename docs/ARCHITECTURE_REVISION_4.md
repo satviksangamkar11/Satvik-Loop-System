@@ -311,6 +311,48 @@ Verification (`config/models.json`, probes in `docs/pilot/model-verify-2026-11-0
 Not verified here: live endpoint prices for the paid models, the production roster's North and GLM behaviour, and any paid call. The Windows
 run and the real-API e2e are in the checklist, not repeated here.
 
+### Batch C2, Codex audit recovery (I40, I41, I42, I47, I54, I56, I57, I63, I64, I65; 2026-11-04)
+
+- **I40, durable merge queue.** Each submitted merge is `SATVIK_HOME/merge/<job_id>.json`, written before anything else. States: pending,
+  merging (`head` recorded before the push), pushed, done. On a restart an entry in merging or pushed whose head is an ancestor of
+  `origin/main` is recorded merged and not pushed again; any other is tried from the start. A git or I/O error is kept for a retry and, after
+  three, finished as `merge-error` (kept for the owner). *Limit:* a crash between the push and the `done` write is reconciled by ancestry only;
+  a rewritten `main` that drops the head is retried from the start.
+- **I41, claims.** A taken job's claim is `SATVIK_HOME/queue/claims/<file>.claim` (claimed, running, done, refused), with the owner's pid and
+  process start. A refusal for a busy resource or a limit goes back to the queue (the drain stops, the next start takes it); other refusals,
+  invalid files and approved-plan mismatches go to `queue/refused/`, with the reason in the registry (`refused:<file>`). A claimed job whose
+  owner died is requeued; a running one whose owner died is refused and never run again on its own (its paid calls may have run). An
+  unreadable claim is refused. *Limit:* a crash between the rename into `taken/` and the claim write leaves a job with no claim, which is
+  left in `taken/` for the owner to look at.
+- **I42, one protocol.** pending -> claimed (`take_next`, under `queue/.lock`) -> running (`Registry.begin`, atomic under `home/lock`). The
+  launcher's request check is `begin`, not a lookup then a record; a start refused after `begin` restores the row it replaced. Enqueue refuses
+  an identical job that a live owner has claimed (`duplicate-claimed`).
+- **I47, the merge carries the manifest.** A passed job is submitted with its files' reviewed hash and its locked acceptance tests with their
+  hashes. After the rebase (and again before the push) the merge refuses (`reviewed-bytes-changed`) if the job's bytes or the locked tests
+  differ, and it reruns the job's own acceptance tests before the full pieces suite. *Limit:* the reviewed hash is the one the run recorded;
+  a job whose run recorded no evidence uses the worktree's bytes at the pass.
+- **I54, report forgery (partly fixed; trust limit).** Generated code runs in the same pytest process that writes the JUnit report, so no
+  host-side artifact can be fully independent of it. The controller's check now refuses a report with a case from a file that is not a
+  locked test file, or whose declared count differs from its cases (`p0_gates.verify_junit`, tests in `pieces/test_i54_report_forgery.py`).
+  **Trust limit:** a forgery that reports exactly the locked cases, all passing, is not detected. Closing it needs the result producer in a
+  process the generated code cannot touch, which is a redesign; until then a green run is evidence only as far as the sandbox boundary holds.
+- **I56, green checkpoint and bounds.** Each green run's files are written to `<job>/green/checkpoint.json` (atomic, with the tested hash)
+  before any repair. `restore_green` falls back to it, and refuses a damaged one. An exception during a run puts the green candidate back
+  before the failure snapshot. Sandbox captured output keeps its head and tail (2 MB), a JUnit report over 20 MB is not read, and a writable
+  area over 512 MB fails the run. *Limit:* the writable bind and the output are bounded after the container exits, not during the run; the
+  run's timeout bounds what a run can write in the meantime.
+- **I57, clocks and pids.** The ledger keeps a persisted accounting epoch (`epoch` in `ledger/limits.json`): a clock that jumps back uses the
+  latest instant seen, so the day counts reset once. A jump forward is kept too, so spend is never freed by a wrong clock until real time
+  catches up. Leases, claims, gate slots and paid holds are alive only as the same process (pid AND process start, `loop_home.owner_alive`).
+  *Limit:* without Linux `/proc` the start identity is unknown and the pid alone decides, as before.
+- **I63, the hung-test case.** `DockerSandbox(label=...)` tags its containers; the hung-test case counts only its own label and waits up to
+  60 s for the kill and removal to finish before asserting that none survived. The timeout and the JUnit checks are unchanged.
+- **I64, planned jobs.** A planned job's installed spec, locked acceptance tests and negative-control sources are staged with its change, so
+  the merge carries them (`fix_loop.installed_plan_paths`, passed to `write_change_doc`). Unplanned jobs stage only their own files, as before.
+- **I65, legacy scrub.** `run_job` normalises its scrub keys with `redact.values_of`, so a `{slot: key}` dict contributes its key values
+  (never its slot names), and it scrubs with `redact.scrub` (values and credential shapes). In this tree `fix_loop.main` loads the NVIDIA keys
+  as a list; both shapes are handled.
+
 ### Open items
 
 - **I13:** the root-only test `test_plan_job.py::…_read_only` fails in the cloud container, because root can always write. It must pass

@@ -253,6 +253,46 @@ def restore_files(root, originals):
             path.write_text(text, encoding="utf-8")
 
 
+GREEN_DIR = "green"                 # job folder/green/checkpoint.json: the last green run's files on disk, before any repair (I56)
+GREEN_FILE = "checkpoint.json"
+
+
+def _texts_hash(files_text) -> str:
+    """The same digest as p0_gates.combined_hash, computed from the texts a checkpoint holds (utf-8, as they were written)."""
+    import hashlib
+    h = hashlib.sha256()
+    for rel in sorted(files_text):
+        text = files_text[rel]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
+        h.update(rel.encode("utf-8") + b"\0" + (digest or "absent").encode("ascii") + b"\n")
+    return h.hexdigest()
+
+
+def write_green_checkpoint(folder, files_text: dict, tested_hash: str) -> Path:
+    """Writes the green checkpoint atomically (temp file, then rename): the files as they passed the locked tests, with their hash. A reader
+    sees all of it or none. Called before any repair step can change the files (I56)."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / GREEN_FILE
+    tmp = folder / f".{GREEN_FILE}.{os.getpid()}.{time.time_ns()}.tmp"
+    tmp.write_text(json.dumps({"tested_hash": tested_hash, "files": files_text}, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def read_green_checkpoint(folder):
+    """The green checkpoint {tested_hash, files} from disk, or None when it is missing, unreadable or does not hash to its own tested_hash
+    (fail closed: a damaged checkpoint is never restored)."""
+    try:
+        data = json.loads((Path(folder) / GREEN_FILE).read_text(encoding="utf-8"))
+        files = data["files"]
+        if not isinstance(files, dict) or _texts_hash(files) != data["tested_hash"]:
+            return None
+        return {"tested_hash": data["tested_hash"], "files": files}
+    except (OSError, ValueError, KeyError, TypeError, UnicodeEncodeError):
+        return None
+
+
 def _snapshot(root, files, dest):
     """The candidate as it stood when the job stopped: the job's authorized files only, kept for inspection and never restored from."""
     for rel in files:
@@ -986,12 +1026,18 @@ class Production:
     def restore_green(self):
         """Puts the job files of the last green run back (a FIX FIRST repair that turned the tests red is undone): the candidate is again the
         code that passed every test and was reviewed, so the reviews of that code and its JUnit file belong to it again."""
-        if self.green_files is None:
+        green_files, tested_hash = self.green_files, self.tested_hash
+        if green_files is None and self.job_dir is not None:      # the memory copy is gone (a failed repair): the checkpoint on disk (I56)
+            cp = read_green_checkpoint(self.job_dir / GREEN_DIR)
+            if cp is not None:
+                green_files, tested_hash = cp["files"], cp["tested_hash"]
+        if green_files is None:
             raise AssertionError("restore_green before any green run")
-        restore_files(self.root, self.green_files)
+        restore_files(self.root, green_files)
         self.last_junit = self.green_junit
-        if gates.combined_hash(self.root, self.files) != self.tested_hash:
+        if gates.combined_hash(self.root, self.files) != tested_hash:
             raise AssertionError("the restored files are not the files of the last green run")
+        self.tested_hash = tested_hash
         self.candidate_reviews = [h for h in self.reviewed_hashes if h == self.tested_hash]
         self._step("checkout", "restore-green", "the last green code is back on disk")
         self._event("restore-green")
@@ -1012,6 +1058,8 @@ class Production:
             self.tested_hash = gates.combined_hash(self.root, self.files)
             self.green_junit = result.junit
             self.green_files = {rel: (self.root / rel).read_text(encoding="utf-8") if (self.root / rel).is_file() else None for rel in self.files}
+            if self.job_dir is not None:                # the checkpoint goes to disk now, before any repair can change the files (I56)
+                write_green_checkpoint(self.job_dir / GREEN_DIR, self.green_files, self.tested_hash)
         self._step("sandbox", "tests", "green" if green else f"red: {len(failing)} failing")
         self._event("tests", green=green, failing=sorted(failing))
         systemic = result.timed_out or result.junit is None or (not green and not failing)
@@ -1260,6 +1308,11 @@ def _run(job, root, status_dir_job, *, sandbox, protected, acceptance_lock, orig
         outcome = p1b.Outcome("stopped", f"stop switch is on: {exc}")
     except Exception as exc:                        # any other failure: the job does not pass, its files are restored (see _finish)
         outcome = p1b.Outcome("exception", f"{type(exc).__name__}: {exc}")
+        if models is not None:
+            try:                                    # the green candidate goes back before the snapshot below keeps the checkout (I56)
+                models.restore_green()
+            except Exception:                       # no green run, or no usable checkpoint: the files stay as the failure left them
+                pass
     evidence["review_hashes"] = list(models.reviewed_hashes)
     evidence["budget"] = _budget_summary(client, models)
     evidence["openrouter_retries"] = list(client.retry_log)   # every retry of the job: model, attempt, wait, error (scrubbed in _finish)
