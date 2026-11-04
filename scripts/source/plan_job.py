@@ -23,6 +23,7 @@ import jsonschema
 
 import claude_code as cc
 import event_log
+from exact_text import read_text_exact, write_text_exact
 import fix_loop as fl
 import p0_gates as gates
 import openrouter_call as oc
@@ -458,13 +459,13 @@ def _write(answer, plan_dir):
             raise ValueError(f"refusing to write outside the plan folder: {rel!r}")
         targets[target] = str(text)
     plan_dir.mkdir(parents=True, exist_ok=True)
-    (plan_dir / "PLAN.md").write_text(str(answer["plan_md"]), encoding="utf-8")
-    (plan_dir / "SPEC.md").write_text(str(answer["spec_md"]), encoding="utf-8")
-    (plan_dir / "expected_lines.json").write_text(json.dumps(answer["expected_lines"], indent=2, sort_keys=True), encoding="utf-8")
+    write_text_exact(plan_dir / "PLAN.md", str(answer["plan_md"]))          # package members are hashed as bytes: written as bytes (I75)
+    write_text_exact(plan_dir / "SPEC.md", str(answer["spec_md"]))
+    write_text_exact(plan_dir / "expected_lines.json", json.dumps(answer["expected_lines"], indent=2, sort_keys=True))
     for target, text in targets.items():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-    job_path.write_text(json.dumps(job, indent=2, sort_keys=True) + NL, encoding="utf-8")   # job.json last: its presence means the plan is complete
+        write_text_exact(target, text)                                       # the planned acceptance and control files, as bytes (I75)
+    write_text_exact(job_path, json.dumps(job, indent=2, sort_keys=True) + NL)   # job.json last: its presence means the plan is complete
     os.chmod(job_path, stat.S_IREAD)                    # the planned job is fixed from here on
     return _summary(plan_dir)
 
@@ -510,7 +511,7 @@ def read_package(plan_dir, expected_sha256):
 
 
 def _summary(plan_dir):
-    spec = (plan_dir / "SPEC.md").read_text(encoding="utf-8")
+    spec = read_text_exact(plan_dir / "SPEC.md")
     assumed = [line.split(":", 1)[1].strip() for line in spec.splitlines() if re.match(r"^\s*(?:[-*]\s+)?ASSUMED:", line)]
     return {"state": "planned", "reason": None, "job_sha256": file_sha256(plan_dir / "job.json"),
             "plan_sha256": package_sha256(package_members(plan_dir)), "assumed": assumed}

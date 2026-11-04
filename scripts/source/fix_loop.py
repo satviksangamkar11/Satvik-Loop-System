@@ -16,6 +16,7 @@ import yaml
 import jsonschema
 
 import atomic_json
+from exact_text import read_text_exact, write_text_exact
 
 
 JOB_SCHEMA = {
@@ -209,7 +210,7 @@ def _atomic_write(path: Path, text: str) -> None:
 def _read_file_safe(root: Path, rel: str) -> str | None:
     p = root / rel
     if p.exists():
-        return p.read_bytes().decode("utf-8")      # exact bytes (no newline translation): the originals are restored byte for byte (I69)
+        return read_text_exact(p)                  # exact bytes (no newline translation): the originals are restored byte for byte (I69)
     return None
 
 
@@ -222,12 +223,12 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
     manifest = orig_dir / "manifest.json"
     was_running = False
     try:
-        was_running = json.loads((status_dir_job / "status.json").read_text(encoding="utf-8")).get("state") == "running"
+        was_running = json.loads((status_dir_job / "status.json").read_bytes()).get("state") == "running"
     except (OSError, ValueError, AttributeError):
         pass
     if was_running and manifest.is_file():
         try:
-            existed = json.loads(manifest.read_text(encoding="utf-8"))
+            existed = json.loads(manifest.read_bytes())
         except (OSError, ValueError):
             existed = {}
         for rel, had in (existed.items() if isinstance(existed, dict) else []):
@@ -255,9 +256,9 @@ def _prepare_job_folder(status_dir_job: Path, root: Path, expected_files: list[s
         if text is not None:
             dest = orig_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(text.encode("utf-8"))      # exact bytes (I74): text mode would write each \r\n as \r\r\n on Windows
+            write_text_exact(dest, text)                # exact bytes (I74): text mode would write each \r\n as \r\r\n on Windows
     orig_dir.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(json.dumps(saved), encoding="utf-8")
+    write_text_exact(manifest, json.dumps(saved))
     return originals
 
 
@@ -338,7 +339,7 @@ def _save_attempt(status_dir_job: Path, root: Path, expected_files: list[str]) -
         if src.is_file():
             dest = status_dir_job / "attempt" / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            write_text_exact(dest, read_text_exact(src))             # the attempt as it stood, byte for byte (I75)
 
 
 def _load_module_by_path(module_name: str, path: Path):
@@ -403,7 +404,7 @@ def _text_not_weaker(old: str, new: str) -> bool:
 
 def _test_change_forbidden(path: Path, content: str, pytest_output) -> bool:
     """True when a fix round may NOT replace this existing test file with `content`."""
-    old = path.read_text(encoding="utf-8")
+    old = read_text_exact(path)                        # compared as bytes: the disk is what acceptance hashes (I75)
     if old == content:
         return False
     if _parses(path):                                  # a working test: repairable only for an error in its own code, and never weaker
@@ -447,7 +448,7 @@ def _parses(path: Path) -> bool:
     """True when the python file exists and has valid syntax (a test file that cannot even be parsed is not 'frozen': it can never run)."""
     import ast
     try:
-        ast.parse(path.read_text(encoding="utf-8"))
+        ast.parse(read_text_exact(path))
         return True
     except (OSError, SyntaxError, ValueError):
         return False
@@ -915,7 +916,7 @@ def run_job(
                 "updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
 
     if production:
-        line_counts = {rel: len((root / rel).read_text(encoding="utf-8").splitlines()) if (root / rel).is_file() else 0 for rel in expected_files}
+        line_counts = {rel: len(read_text_exact(root / rel).splitlines()) if (root / rel).is_file() else 0 for rel in expected_files}
         try:
             _p1b().check_job_size(line_counts)
         except _p1b().JobTooLarge as exc:          # the planner splits it first; no sandbox run and no model call
@@ -1063,7 +1064,7 @@ def run_job(
                 disk = root / rel
                 refused_paths = {r[0] if isinstance(r, (list, tuple)) else r for r in refused}
                 if rel not in parsed_files and rel not in refused_paths and disk.is_file():
-                    parsed_files[rel] = disk.read_text(encoding="utf-8")
+                    parsed_files[rel] = read_text_exact(disk)
         if reason is None:
             expected_set = set(expected_files)
             parsed_set = set(parsed_files.keys())
@@ -1107,7 +1108,7 @@ def run_job(
             import difflib
             for rel, content in parsed_files.items():
                 if rel in tests and (root / rel).exists():
-                    old_text = (root / rel).read_text(encoding="utf-8")
+                    old_text = read_text_exact(root / rel)
                     if old_text != content:                              # only reachable for an accepted test-bug repair or a syntax-error repair
                         tests_repaired.append(rel)
                         diff = "".join(difflib.unified_diff(old_text.splitlines(True), content.splitlines(True), f"{rel} (before round {round_no})", f"{rel} (after round {round_no})"))
@@ -1164,7 +1165,7 @@ def run_job(
             fail_sigs.clear()
             ever_passed = True
             tests_passed = True
-            last_good = {rel: (root / rel).read_text(encoding="utf-8") for rel in expected_files if (root / rel).is_file()}   # snapshot of the last version that passed
+            last_good = {rel: read_text_exact(root / rel) for rel in expected_files if (root / rel).is_file()}   # snapshot of the last version that passed
             last_pytest_output = None
             if review_enabled and review_pass_count < review_rounds:
                 review_files_paths = [root / rf for rf in review_files]
@@ -1213,7 +1214,7 @@ def run_job(
                 for _rn in reviewers_list:                                 # Opus F14: READY and NONE reports are scrubbed for keys too, not only FIX FIRST
                     _rp = status_dir_job / f"review_{review_pass_count}_{_rn}.md"
                     if _rp.is_file():
-                        _rp.write_text(_scrub(_rp.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
+                        write_text_exact(_rp, _scrub(read_text_exact(_rp, errors="replace")))
                 _judge_verdict = None
                 _review_end_hash = gates.combined_hash(root, list(review_files) + list(expected_files))
                 _code_changed = _review_end_hash != _review_start_hash or gates.combined_hash(root, expected_files) != tested_hash
@@ -1226,7 +1227,7 @@ def run_job(
                         _rp = status_dir_job / f"review_{review_pass_count}_{_rn}.md"
                         _txt = _rp.read_text(encoding="utf-8", errors="replace") if _rp.is_file() else "(no report)"
                         _panel.append("### Reviewer " + _rn + " (verdict " + str(_review_results.get(_rn, {}).get("verdict")) + ")" + chr(10) + _txt)
-                    _files_text = chr(10).join("### FILE " + p.name + chr(10) + "```" + chr(10) + p.read_text(encoding="utf-8", errors="replace") + chr(10) + "```" for p in review_files_paths if p.is_file())
+                    _files_text = chr(10).join("### FILE " + p.name + chr(10) + "```" + chr(10) + read_text_exact(p, errors="replace") + chr(10) + "```" for p in review_files_paths if p.is_file())
                     _judge_user = "Reviewer reports:" + chr(10) + chr(10) + (chr(10) + chr(10)).join(_panel) + chr(10) + chr(10) + "Files under review:" + chr(10) + chr(10) + _files_text
                     try:
                         _jreply, _jinfo = _judge_fn(JUDGE_SYSTEM, _judge_user)
@@ -1271,9 +1272,9 @@ def run_job(
                         pass
                     elif verdict == "FIX FIRST":
                         all_ready = False
-                        report_text = _scrub(report_path.read_text(encoding="utf-8")) if report_path.exists() else ""
+                        report_text = _scrub(read_text_exact(report_path)) if report_path.exists() else ""
                         if report_path.exists():
-                            report_path.write_text(report_text, encoding="utf-8")
+                            write_text_exact(report_path, report_text)
                         coder_text, _test_lines, _n_coder = split_test_findings(report_text, tests)
                         if _test_lines:                                    # a finding about a frozen test goes to the observer, and still blocks acceptance
                             test_findings.extend((rname, ln) for ln in _test_lines)

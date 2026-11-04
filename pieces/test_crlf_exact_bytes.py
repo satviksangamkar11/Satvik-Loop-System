@@ -3,6 +3,7 @@
 Linux does not translate newlines, so each test that stands for the Windows behaviour turns text mode on for its own duration
 (windows_text_io): read_text turns CRLF into LF and write_text turns LF into CRLF, as open() does on Windows. Under that, the
 text-mode code paths fail on Linux the same way they failed on the owner's Windows run."""
+import ast
 import json
 import pathlib
 import sys
@@ -116,3 +117,87 @@ def test_i74_a_worker_killed_mid_run_is_restored_byte_for_byte_on_the_next_launc
     again = fl._prepare_job_folder(job_dir, root, ["pieces/calc.py"])                          # the next launch
     assert (root / "pieces" / "calc.py").read_bytes() == text.encode("utf-8")
     assert again["pieces/calc.py"] == text
+
+
+# ---------------------------------------------------------------- I75: the sweep of the other content paths, and a guard
+
+@pytest.mark.parametrize("text", CRLF_TEXTS)
+def test_i75_the_attempt_snapshot_is_the_exact_bytes(tmp_path, windows_text_io, text):
+    root, job_dir = _job_folders(tmp_path)
+    (root / "pieces" / "calc.py").write_bytes(text.encode("utf-8"))
+    fl._save_attempt(job_dir, root, ["pieces/calc.py"])
+    assert (job_dir / "attempt" / "pieces" / "calc.py").read_bytes() == text.encode("utf-8")
+
+
+@pytest.mark.parametrize("text", CRLF_TEXTS)
+def test_i75_a_frozen_test_is_compared_with_the_bytes_on_disk(tmp_path, windows_text_io, text):
+    path = tmp_path / "test_calc.py"
+    path.write_bytes(text.encode("utf-8"))
+    assert fl._test_change_forbidden(path, text, None) is False      # the same bytes: not a change
+
+
+def test_i75_the_green_checkpoint_holds_crlf_text_exactly(tmp_path, windows_text_io):
+    files = {"pieces/calc.py": CRLF_CANDIDATE, "pieces/new.py": None}
+    p1b.write_green_checkpoint(tmp_path, files, p1b._texts_hash(files))
+    assert p1b.read_green_checkpoint(tmp_path)["files"] == files
+
+
+def test_i75_restore_puts_the_crlf_bytes_back(tmp_path, windows_text_io):
+    p1b.restore_files(tmp_path, {"pieces/calc.py": CRLF_ORIGINAL, "pieces/new.py": None})
+    assert (tmp_path / "pieces" / "calc.py").read_bytes() == CRLF_ORIGINAL.encode("utf-8")
+
+
+# The functions that read or write the contents of job, original, candidate, green, attempt, plan and review files. None of them may do
+# text-mode file I/O (read_text, write_text, or open in a text mode): the exact helpers or bytes only. A rename must update this table.
+GUARDED = {
+    "fix_loop.py": ["_read_file_safe", "_prepare_job_folder", "_save_attempt", "_test_change_forbidden", "_parses"],
+    "p1b_production.py": ["_produced", "_snapshot", "restore_files", "write_green_checkpoint", "read_green_checkpoint", "_texts_hash", "_apply_edits"],
+    "plan_job.py": ["_write", "_summary", "package_members", "read_package"],
+    "exact_text.py": ["read_text_exact", "write_text_exact"],
+}
+SOURCE = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "source"
+
+
+def _text_mode_calls(func):
+    """(line, what) for each read_text, write_text or open-in-text-mode call inside the function."""
+    found = []
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and fn.attr in ("read_text", "write_text"):
+            found.append((node.lineno, fn.attr))
+            continue
+        is_open = (isinstance(fn, ast.Name) and fn.id == "open") or (isinstance(fn, ast.Attribute) and fn.attr == "open")
+        if is_open:
+            mode_at = 0 if isinstance(fn, ast.Attribute) else 1           # Path.open(mode) or open(file, mode)
+            mode = node.args[mode_at] if len(node.args) > mode_at else next((k.value for k in node.keywords if k.arg == "mode"), None)
+            if mode is None or not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)) or "b" not in mode.value:
+                found.append((node.lineno, "open in text mode"))
+    return found
+
+
+def _functions(path):
+    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
+    return {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+@pytest.mark.parametrize("module", sorted(GUARDED))
+def test_i75_the_guarded_content_functions_do_no_text_mode_io(module):
+    defs = _functions(SOURCE / module)
+    for name in GUARDED[module]:
+        assert name in defs, f"{module}: {name} is not defined any more; update GUARDED"
+        assert _text_mode_calls(defs[name]) == [], f"{module}: {name} does text-mode file I/O on contents"
+
+
+def test_i75_the_guard_itself_catches_text_mode_io():
+    def func(source):
+        return _text_mode_calls(ast.parse(source).body[0])
+    assert func("def f(p):\n    return p.read_text(encoding='utf-8')")
+    assert func("def f(p, t):\n    p.write_text(t)")
+    assert func("def f(p):\n    return open(p, 'r').read()")
+    assert func("def f(p):\n    return open(p).read()")
+    assert func("def f(p):\n    return p.open('w')")
+    assert func("def f(p, m):\n    return open(p, m)")
+    assert func("def f(p):\n    return open(p, 'rb').read()") == []
+    assert func("def f(p, t):\n    p.write_bytes(t.encode())") == []
