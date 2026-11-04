@@ -140,6 +140,7 @@ other HTTP error is `http-error`, and an unexpected exception is 500 `internal`,
   `verified_at` is set (`ui/src/api/eligibility.ts`). A stage row with no `required_contract` offers no model.
 - **Locked rows are not sent.** `queueJob` sends only the rows with `model_selectable === true` (`ui/src/api/client.ts`). A locked row, such
   as `reviewer_a` under the test profile, is left out rather than sent as null.
+- **Audit (2026-11-04).** `npm audit --omit=dev` finds 0 runtime vulnerabilities. The 11 moderate findings in `npm audit` are dev-only: `eslint`, `typescript-eslint`, `@typescript-eslint/*` (parser, type-utils, typescript-estree, utils, eslint-plugin), `@eslint/eslintrc`, `@eslint-community/eslint-utils`, `@eslint/config-array`, all through `minimatch <11.0.1`. Not bumped here; the lint toolchain would need a major version change.
 
 ### Decisions (I9, I10)
 
