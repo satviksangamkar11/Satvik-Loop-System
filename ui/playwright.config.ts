@@ -8,6 +8,8 @@ const launchOptions = fs.existsSync(PREINSTALLED_CHROMIUM) ? { executablePath: P
 export default defineConfig({
   testDir: './tests',
   testMatch: '**/*.spec.ts',
+  // The real-API spec needs the live backend: it runs only through playwright.live.config.ts (npm run test:e2e:real).
+  testIgnore: '**/e2e.real.spec.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

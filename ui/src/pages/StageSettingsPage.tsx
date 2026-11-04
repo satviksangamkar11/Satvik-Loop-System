@@ -2,6 +2,7 @@ import React from 'react';
 import { Lock } from 'lucide-react';
 import type { Effort, ModelRecord, ProfileName, StageKey, StageSetting } from '../api/types';
 import { fmtInt, fmtStr } from '../api/format';
+import { isEligibleForStage } from '../api/eligibility';
 
 export interface StageSettingsPageProps {
   profile: ProfileName;
@@ -173,11 +174,18 @@ export const StageSettingsPage: React.FC<StageSettingsPageProps> = ({
                   {st.configured_model_id !== null && !allModels.some((m) => m.model_id === st.configured_model_id) && (
                     <option value={st.configured_model_id}>{st.configured_model_id}</option>
                   )}
-                  {allModels.map((m) => (
-                    <option key={m.model_id} value={m.model_id}>
-                      {m.model_id}
-                    </option>
-                  ))}
+                  {allModels.map((m) => {
+                    const eligible = isEligibleForStage(m, st.required_contract);
+                    // Only eligible models are offered. The saved value stays listed (disabled) so the select shows what is set.
+                    if (!eligible && m.model_id !== st.configured_model_id) return null;
+                    return (
+                      <option key={m.model_id} value={m.model_id} disabled={!eligible}>
+                        {eligible
+                          ? m.model_id
+                          : `${m.model_id} (not verified for ${st.required_contract ?? 'any contract'})`}
+                      </option>
+                    );
+                  })}
                 </select>
                 <p className={`text-[11px] ${textMuted}`}>
                   POST /stages/validate checks that the model is eligible for this stage.
